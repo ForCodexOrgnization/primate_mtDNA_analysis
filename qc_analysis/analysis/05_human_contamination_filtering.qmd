@@ -1,0 +1,117 @@
+---
+title: "Human contamination filtering QC"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+execute:
+  warning: false
+  message: false
+params:
+  qc_input: "../data/human_contamination_qc.tsv"
+  haplogroup_overlap_input: "../data/human_haplogroup_site_overlap.tsv"
+  output_status_table: "reports/human_contamination_status.tsv"
+---
+
+```{r setup}
+qc_root <- if (basename(getwd()) == "analysis") normalizePath("..") else normalizePath(".")
+source(file.path(qc_root, "R", "contamination_qc.R"))
+
+resolve_from_qc_root <- function(path) {
+  if (grepl("^/", path)) {
+    return(path)
+  }
+  file.path(qc_root, path)
+}
+
+qc_input <- resolve_from_qc_root(params$qc_input)
+haplogroup_overlap_input <- resolve_from_qc_root(params$haplogroup_overlap_input)
+output_status_table <- resolve_from_qc_root(params$output_status_table)
+
+qc_table <- read_optional_table(qc_input)
+haplogroup_overlap <- read_optional_table(haplogroup_overlap_input)
+qc_table <- classify_contamination(qc_table)
+status_summary <- summarize_status(qc_table)
+```
+
+## 输入文件
+
+This report is intended to be rendered from the repository-local QC workspace:
+
+```bash
+cd qc_analysis
+quarto render analysis/05_human_contamination_filtering.qmd
+```
+
+Expected inputs live under the repository-level `data/` directory and are referenced from `qc_analysis/` by default:
+
+| Input | Default path | Purpose |
+|---|---|---|
+| Human contamination QC table | `r params$qc_input` | Per-sample low-VAF and contamination metrics. |
+| Human haplogroup site overlap table | `r params$haplogroup_overlap_input` | Sites overlapping known human haplogroup markers. |
+
+```{r input-status}
+data.frame(
+  input = c("qc_input", "haplogroup_overlap_input"),
+  path = c(qc_input, haplogroup_overlap_input),
+  exists = c(file.exists(qc_input), file.exists(haplogroup_overlap_input))
+)
+```
+
+## low-VAF 定义
+
+Low-VAF variants are defined here as candidate heteroplasmic or contaminant-supporting alleles with variant allele fraction between 1% and 5% by default. The helper function `normalize_low_vaf()` in `R/contamination_qc.R` applies this definition and can be reused in upstream table-generation scripts.
+
+## human haplogroup site overlap
+
+Variants that overlap known human haplogroup-informative sites are summarized in this section. These overlaps help distinguish expected primate mitochondrial signal from likely human contamination.
+
+```{r haplogroup-overlap-preview}
+if (nrow(haplogroup_overlap) == 0) {
+  data.frame(note = "No haplogroup overlap input was found; add the table under data/ to populate this section.")
+} else {
+  utils::head(haplogroup_overlap, 20)
+}
+```
+
+## 阈值选择
+
+The default contamination status thresholds are:
+
+- `pass`: contamination score < 0.05
+- `review`: contamination score >= 0.05 and < 0.10
+- `contaminated`: contamination score >= 0.10
+- `not_evaluated`: contamination score missing or unavailable
+
+These thresholds are centralized in `classify_contamination()` so future reports and scripts can share the same classification logic.
+
+## 最终 contamination status
+
+```{r final-status-summary}
+if (nrow(status_summary) == 0) {
+  data.frame(note = "No QC table was found; add the table under data/ to compute contamination status.")
+} else {
+  status_summary
+}
+```
+
+## 图
+
+```{r status-plot, fig.width=7, fig.height=5}
+plot_status_counts(status_summary)
+```
+
+## 输出表格
+
+The final contamination status table is written to `r params$output_status_table` when QC input rows are available.
+
+```{r write-output-table}
+if (nrow(qc_table) > 0) {
+  dir.create(dirname(output_status_table), recursive = TRUE, showWarnings = FALSE)
+  utils::write.table(qc_table, output_status_table, sep = "\t", quote = FALSE, row.names = FALSE)
+  data.frame(output = output_status_table, rows = nrow(qc_table))
+} else {
+  data.frame(note = "No output table written because the QC input table is unavailable or empty.")
+}
+```
