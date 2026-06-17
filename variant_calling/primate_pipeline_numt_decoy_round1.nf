@@ -1,0 +1,1002 @@
+#!/usr/bin/env nextflow
+nextflow.enable.dsl=2
+
+/*
+ * PRIMATE mtDNA PIPELINE - NUMT DECOY ROUND1
+ * ------------------------------------------------------------
+ * Input sample TSV columns:
+ *   col1 = sample_id
+ *   col2 = species_name
+ *   col3 = ref_name
+ *
+ * This pipeline starts from existing WGS CRAMs and performs:
+ *   1) locate CRAM/CRAI
+ *   2) build chrM + NUMT decoy reference
+ *   3) MitoHPC-like extraction of primary reads overlapping chrM + NUMT intervals
+ *      and retain only templates with both mates in the target subset
+ *   4) FASTQ conversion + realignment to chrM+NUMT decoy
+ *   5) call NUMT variants on the chrM+NUMT decoy coordinate system
+ *   6) keep only final chrM alignments
+ *   7) convert cleaned chrM BAM -> CRAM
+ *   8) feed cleaned chrM CRAM into existing RUN_WDL_VARIANT_CALLING module
+ *
+ * Notes:
+ *   - NUMT BED is treated as decoy only.
+ *   - NUMT variant calling is done on the round1 chrM+NUMT decoy reference.
+ *   - Output CRAM contains chrM-only cleaned reads aligned to chrM.
+ */
+
+log.info """
+PRIMATE NUMT-DECOY ROUND1 PIPELINE START
+========================================
+Sample TSV:              ${params.sample_tsv}
+Output Directory:        ${params.outdir}
+CRAM search dirs:        ${params.cram_dirs}
+Whole-genome ref dir:    ${params.global_ref_dir}
+mt ref dir:              ${params.ref_dir}
+NUMT BED dir:            ${params.numt_bed_dir}
+Consensus NUMT dir:      ${params.consensus_numt_dir ?: 'not_set'}
+WDL Script:              ${params.wdl_script}
+========================================
+"""
+
+ch_samples = Channel.fromPath(params.sample_tsv)
+    .splitCsv(header: false, sep: '\t')
+    .filter { row -> row.size() >= 3 && row[0]?.trim() && row[1]?.trim() && row[2]?.trim() }
+    .map { row ->
+        def sample_id = row[0].trim()
+        def species = row[1].trim()
+        def ref_name = row[2].trim()
+
+        def round1_dir      = file("${params.outdir}/${sample_id}/round_1")
+        def vc_dir          = file("${params.outdir}/${sample_id}/round_1_variant_calling_decoy")
+        def numt_vc_vcf     = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.raw.vcf.gz")
+        def numt_vc_tbi     = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.raw.vcf.gz.tbi")
+        def decoy_interval  = file("${params.outdir}/${sample_id}/round_1/numt_decoy_ref/${sample_id}.decoy_numt.interval_list")
+
+        if (round1_dir.exists() && vc_dir.exists() && numt_vc_vcf.exists() && numt_vc_tbi.exists() && decoy_interval.exists()) {
+            log.info "SKIP completed sample ${sample_id}: existing mtDNA outputs plus ${numt_vc_vcf}, ${numt_vc_tbi}, and ${decoy_interval}"
+            return null
+        }
+
+        def meta = [id: sample_id]
+        tuple(meta, species, ref_name)
+    }
+    .filter { it != null }
+
+ch_cromwell_conf = file("${baseDir}/cromwell.conf")
+
+workflow {
+
+    LOCATE_CRAM(ch_samples)
+    PREPARE_DECOY_REFERENCE(LOCATE_CRAM.out.cram_info)
+
+    // MitoHPC-like candidate read selection:
+    //   1) subset primary alignments overlapping chrM + NUMT intervals
+    //   2) name-sort
+    //   3) keep only templates with both mates present in the target subset
+    // This avoids rescuing arbitrary NUMT/chrM mates from elsewhere in the genome.
+    EXTRACT_CANDIDATE_READS(LOCATE_CRAM.out.cram_info)
+
+    ch_bam_plus_ref = EXTRACT_CANDIDATE_READS.out.bam_with_mates.join(PREPARE_DECOY_REFERENCE.out.decoy_ref, by: [0,1,2])
+    REALIGN_TO_DECOY(ch_bam_plus_ref)
+
+    ch_numt_call_input = REALIGN_TO_DECOY.out.realign_bam.join(PREPARE_DECOY_REFERENCE.out.decoy_ref_for_numt_calling, by: [0,1,2])
+    CALL_NUMT_VARIANTS_DECOY(ch_numt_call_input)
+    ch_consensus_numt_input = PREPARE_DECOY_REFERENCE.out.original_numt_fa.join(CALL_NUMT_VARIANTS_DECOY.out.numt_vcf, by: [0,1,2])
+    GENERATE_CONSENSUS_NUMT_FASTA(ch_consensus_numt_input)
+
+    EXTRACT_FINAL_CHRM_BAM(REALIGN_TO_DECOY.out.realign_bam)
+
+    ch_final_bam_plus_cram = EXTRACT_FINAL_CHRM_BAM.out.final_bam.join(LOCATE_CRAM.out.cram_info, by: [0,1,2])
+    BAM_TO_CRAM_CLEAN(ch_final_bam_plus_cram)
+
+    GENERATE_CRAM_TSV(BAM_TO_CRAM_CLEAN.out.cram)
+    GENERATE_WDL_JSON(GENERATE_CRAM_TSV.out.tsv)
+    RUN_WDL_VARIANT_CALLING(GENERATE_WDL_JSON.out.json, ch_cromwell_conf)
+}
+
+workflow.onComplete {
+    if( workflow.success ) {
+        log.info "Pipeline completed successfully. Output files are in: ${params.outdir}"
+    } else {
+        log.error "Pipeline finished with errors. Check .nextflow.log and failed task work dirs."
+    }
+}
+workflow.onError {
+    log.error """
+    ----------------------------------------------------
+    PIPELINE FAILED
+    ----------------------------------------------------
+    See '.nextflow.log' for details and the failing task report.
+    ----------------------------------------------------
+    """
+}
+
+process LOCATE_CRAM {
+    tag { "Locate CRAM for ${meta.id}" }
+    label 'generation_related'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.input.cram"), path("${meta.id}.input.cram.crai"), emit: cram_info
+
+    script:
+    def cramDirs = (params.cram_dirs instanceof List ? params.cram_dirs : params.cram_dirs.toString().split(',')*.trim()).findAll{ it }
+    def cramDirsBash = cramDirs.collect { '"' + it + '"' }.join(' ')
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    sample_id="${meta.id}"
+    found_cram=""
+    found_crai=""
+
+    for d in ${cramDirsBash}; do
+      cand_cram="\${d}/\${sample_id}/alignment/\${sample_id}.cram"
+      cand_crai="\${d}/\${sample_id}/alignment/\${sample_id}.cram.crai"
+      if [[ -s "\${cand_cram}" && -s "\${cand_crai}" ]]; then
+        found_cram="\${cand_cram}"
+        found_crai="\${cand_crai}"
+        break
+      fi
+    done
+
+    if [[ -z "\${found_cram}" ]]; then
+      echo "ERROR: CRAM/CRAI not found for \${sample_id} in any search dir." >&2
+      exit 1
+    fi
+
+    ln -sf "\${found_cram}" ${meta.id}.input.cram
+    ln -sf "\${found_crai}" ${meta.id}.input.cram.crai
+    """
+}
+
+process PREPARE_DECOY_REFERENCE {
+    tag { "Prepare decoy ref for ${meta.id}" }
+    label 'alignment_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/numt_decoy_ref", mode: 'copy'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), path(cram), path(crai)
+
+    output:
+    // Keep the original decoy_ref output structure unchanged,
+    // so downstream processes using decoy_ref will not break.
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.chrM_plus_numt.fa"),
+          path("${meta.id}.chrM_plus_numt.fa.fai"),
+          path("${meta.id}.chrM_plus_numt.fa.amb"),
+          path("${meta.id}.chrM_plus_numt.fa.ann"),
+          path("${meta.id}.chrM_plus_numt.fa.bwt"),
+          path("${meta.id}.chrM_plus_numt.fa.pac"),
+          path("${meta.id}.chrM_plus_numt.fa.sa"),
+          emit: decoy_ref
+
+    // Decoy reference bundle for NUMT variant calling in decoy coordinates.
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.chrM_plus_numt.fa"),
+          path("${meta.id}.chrM_plus_numt.fa.fai"),
+          path("${meta.id}.chrM_plus_numt.dict"),
+          path("${meta.id}.decoy_numt.interval_list"),
+          emit: decoy_ref_for_numt_calling
+
+    // New output for Round 2:
+    // original NUMT sequences extracted from the original whole-genome reference.
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.original_numt.fa"),
+          path("${meta.id}.original_numt.fa.fai"),
+          emit: original_numt_fa
+
+    script:
+    def whole_ref = "${params.global_ref_dir}/${ref_name}.fasta"
+    def numt_bed  = "${params.numt_bed_dir}/${meta.id}${params.numt_bed_suffix}"
+    def mt_contig = params.mt_contig ?: "chrM"
+    def consensus_numt_dir = params.consensus_numt_dir ?: ""
+    def consensus_numt_suffix = params.consensus_numt_suffix ?: ".consensus_numt.fa"
+    def consensus_numt_fa = consensus_numt_dir ? "${consensus_numt_dir}/${meta.id}${consensus_numt_suffix}" : ""
+
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    REF="${whole_ref}"
+    BED="${numt_bed}"
+    MT_CONTIG="${mt_contig}"
+    CONS_NUMT="${consensus_numt_fa}"
+
+    echo "[INFO] Sample: ${meta.id}"
+    echo "[INFO] Species: ${species_name}"
+    echo "[INFO] Reference name: ${ref_name}"
+    echo "[INFO] Whole-genome reference: \${REF}"
+    echo "[INFO] NUMT BED: \${BED}"
+    echo "[INFO] mtDNA contig: \${MT_CONTIG}"
+    echo "[INFO] Consensus NUMT FASTA: \${CONS_NUMT:-not_set}"
+
+    [[ -s "\${REF}" ]] || { echo "ERROR: Missing reference fasta: \${REF}" >&2; exit 1; }
+    [[ -s "\${REF}.fai" ]] || { echo "ERROR: Missing reference fasta index: \${REF}.fai" >&2; exit 1; }
+    [[ -e "\${BED}" ]] || { echo "ERROR: Missing NUMT BED file: \${BED}" >&2; exit 1; }
+    if [[ ! -s "\${BED}" ]]; then
+        echo "[WARN] NUMT BED exists but is empty: \${BED}"
+        echo "[WARN] Proceeding with chrM-only decoy reference for this sample."
+    fi
+
+    # 1. Extract original chrM sequence from whole-genome reference.
+    samtools faidx "\${REF}" "\${MT_CONTIG}" > chrM.fa
+
+    [[ -s chrM.fa ]] || {
+        echo "ERROR: Failed to extract \${MT_CONTIG} from \${REF}" >&2
+        exit 1
+    }
+
+    # 2. Prepare named NUMT BED.
+    # The name will become the FASTA header when using bedtools getfasta -nameOnly.
+    awk 'BEGIN{OFS="\\t"}
+         \$0 !~ /^#/ && NF >= 3 && \$3 > \$2 {
+           name=sprintf("NUMT_%s_%s_%s_%s", NR, \$1, \$2+1, \$3)
+           print \$1,\$2,\$3,name
+         }' "\${BED}" > numt.named.bed
+
+    if [[ -s numt.named.bed ]]; then
+        # 3. Extract original NUMT sequences from the whole-genome reference.
+        bedtools getfasta \
+            -fi "\${REF}" \
+            -bed numt.named.bed \
+            -nameOnly \
+            -fo numt_decoy.fa
+
+        [[ -s numt_decoy.fa ]] || {
+            echo "ERROR: bedtools getfasta produced empty NUMT fasta despite non-empty parsed BED" >&2
+            exit 1
+        }
+    else
+        echo "[WARN] No valid NUMT intervals after parsing BED: \${BED}"
+        echo "[WARN] Creating an empty original NUMT FASTA and chrM-only decoy reference."
+        : > numt_decoy.fa
+    fi
+
+    # 4. Publish original NUMT FASTA for Round 2 mtSwirl-like reference:
+    #    consensus chrM + original NUMT. If BED is empty, this FASTA is intentionally empty.
+    cp numt_decoy.fa ${meta.id}.original_numt.fa
+    if [[ -s ${meta.id}.original_numt.fa ]]; then
+        samtools faidx ${meta.id}.original_numt.fa
+    else
+        : > ${meta.id}.original_numt.fa.fai
+    fi
+
+    echo "[INFO] Number of original NUMT contigs:"
+    grep -c '^>' ${meta.id}.original_numt.fa || true
+
+    # 5. Build Round 1 decoy reference: original chrM + original NUMT.
+    #    Consensus NUMT is generated later, after CALL_NUMT_VARIANTS_DECOY.
+    #    If no valid NUMT intervals exist, numt_decoy.fa is empty and this becomes chrM-only.
+    cat chrM.fa numt_decoy.fa > ${meta.id}.chrM_plus_numt.fa
+
+    [[ -s ${meta.id}.chrM_plus_numt.fa ]] || {
+        echo "ERROR: Failed to create ${meta.id}.chrM_plus_numt.fa" >&2
+        exit 1
+    }
+
+    # 7. Index decoy reference and prepare decoy-coordinate NUMT intervals.
+    samtools faidx ${meta.id}.chrM_plus_numt.fa
+    java -Xmx4G -jar "${params.picard_jar}" CreateSequenceDictionary \
+        R=${meta.id}.chrM_plus_numt.fa \
+        O=${meta.id}.chrM_plus_numt.dict
+    bwa index ${meta.id}.chrM_plus_numt.fa
+
+    cp ${meta.id}.chrM_plus_numt.dict ${meta.id}.decoy_numt.interval_list
+    awk 'BEGIN{OFS="\t"} \$1 ~ /^NUMT_/ {print \$1,1,\$2,"+",\$1}' \
+        ${meta.id}.chrM_plus_numt.fa.fai >> ${meta.id}.decoy_numt.interval_list
+
+    echo "[INFO] Decoy reference created successfully:"
+    ls -lh ${meta.id}.chrM_plus_numt.fa* ${meta.id}.chrM_plus_numt.dict ${meta.id}.decoy_numt.interval_list
+    echo "[INFO] Original NUMT FASTA created successfully:"
+    ls -lh ${meta.id}.original_numt.fa*
+    """
+}
+
+process EXTRACT_CANDIDATE_READS {
+    tag { "MitoHPC-like target-paired reads for ${meta.id}" }
+    label 'alignment_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/candidate_reads", mode: 'copy', pattern: "*.{bam,bai,tsv,bed}"
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), path(cram), path(crai)
+
+    output:
+    // This BAM replaces the previous chrM/NUMT seed + arbitrary mate-rescue BAM.
+    // It contains only primary records where both mates were present in the
+    // chrM + NUMT target subset, following the MitoHPC-style restriction.
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.with_mates.bam"), emit: bam_with_mates
+
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.with_mates.bam.bai"), emit: bam_with_mates_index
+
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.target_chrM_plus_NUMT.bed"),
+          path("${meta.id}.candidate_read_selection.summary.tsv"),
+          emit: candidate_summary
+
+    script:
+    def mt_contig = params.mt_contig ?: "chrM"
+    def numt_bed  = "${params.numt_bed_dir}/${meta.id}${params.numt_bed_suffix}"
+
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    SAMPLE_ID="${meta.id}"
+    REF="${params.global_ref_dir}/${ref_name}.fasta"
+    BED="${numt_bed}"
+    MT_CONTIG="${mt_contig}"
+    THREADS=${task.cpus ?: 4}
+
+    echo "[INFO] Sample: \${SAMPLE_ID}"
+    echo "[INFO] MitoHPC-like candidate read extraction"
+    echo "[INFO] Strategy: primary reads overlapping chrM + NUMT intervals, then keep only read-pairs with both mates in target subset"
+    echo "[INFO] Reference: \${REF}"
+    echo "[INFO] NUMT BED: \${BED}"
+    echo "[INFO] mtDNA contig: \${MT_CONTIG}"
+
+    [[ -s "\${REF}" ]] || { echo "ERROR: Missing whole-genome reference: \${REF}" >&2; exit 1; }
+    [[ -s "\${REF}.fai" ]] || { echo "ERROR: Missing whole-genome reference index: \${REF}.fai" >&2; exit 1; }
+    [[ -s "${cram}" ]] || { echo "ERROR: Missing input CRAM: ${cram}" >&2; exit 1; }
+    [[ -e "\${BED}" ]] || { echo "ERROR: Missing NUMT BED file: \${BED}" >&2; exit 1; }
+    if [[ ! -s "\${BED}" ]]; then
+        echo "[WARN] NUMT BED exists but is empty: \${BED}"
+        echo "[WARN] Candidate target BED will contain chrM only."
+    fi
+
+    MT_LEN=\$(awk -v C="\${MT_CONTIG}" '\$1==C{print \$2; exit}' "\${REF}.fai")
+    [[ -n "\${MT_LEN}" ]] || { echo "ERROR: Cannot find \${MT_CONTIG} in \${REF}.fai" >&2; exit 1; }
+
+    # Build target BED: full chrM plus sample-specific NUMT intervals.
+    # BED is 0-based half-open. chrM is added as 0..MT_LEN.
+    awk -v mt="\${MT_CONTIG}" -v len="\${MT_LEN}" 'BEGIN{OFS="\\t"; print mt,0,len}' > \${SAMPLE_ID}.target_chrM_plus_NUMT.bed
+    awk 'BEGIN{OFS="\\t"} \$0 !~ /^#/ && NF>=3 && \$3>\$2 {print \$1,\$2,\$3}' "\${BED}" >> \${SAMPLE_ID}.target_chrM_plus_NUMT.bed
+
+    [[ -s \${SAMPLE_ID}.target_chrM_plus_NUMT.bed ]] || { echo "ERROR: target BED is empty" >&2; exit 1; }
+
+    echo "[INFO] Target intervals:"
+    wc -l \${SAMPLE_ID}.target_chrM_plus_NUMT.bed
+
+    # Step 1: subset primary alignments overlapping chrM + NUMT intervals.
+    # -F 0x900 matches the MitoHPC-style exclusion of secondary and supplementary records.
+    samtools view \
+        -@ "\${THREADS}" \
+        -T "\${REF}" \
+        -b \
+        -F 0x900 \
+        -L \${SAMPLE_ID}.target_chrM_plus_NUMT.bed \
+        "${cram}" \
+        > \${SAMPLE_ID}.target.primary.unsorted.bam
+
+    target_records=\$(samtools view -c \${SAMPLE_ID}.target.primary.unsorted.bam || echo 0)
+    echo "[INFO] Primary records overlapping chrM+NUMT target intervals: \${target_records}"
+    [[ "\${target_records}" -gt 0 ]] || { echo "ERROR: no primary target records extracted" >&2; exit 1; }
+
+    # Step 2: name-sort, then keep only read names with both mates present in the target subset.
+    # This is the key difference from the previous arbitrary mate-rescue strategy.
+    samtools sort -n -@ "\${THREADS}" \
+        -o \${SAMPLE_ID}.target.primary.name.bam \
+        \${SAMPLE_ID}.target.primary.unsorted.bam
+
+    samtools view -h \${SAMPLE_ID}.target.primary.name.bam | \
+      awk 'BEGIN{FS=OFS="\\t"}
+           /^@/ {print; next}
+           {
+             q=\$1
+             if (curr=="") {curr=q; n=0}
+             if (q!=curr) {
+               if (n>=2) {for(i=1;i<=n;i++) print rec[i]}
+               delete rec; n=0; curr=q
+             }
+             rec[++n]=\$0
+           }
+           END{
+             if (n>=2) {for(i=1;i<=n;i++) print rec[i]}
+           }' | \
+      samtools view -@ "\${THREADS}" -b -o \${SAMPLE_ID}.target_pairs.name.bam -
+
+    pair_records=\$(samtools view -c \${SAMPLE_ID}.target_pairs.name.bam || echo 0)
+    echo "[INFO] Records retained after requiring both mates in chrM+NUMT target subset: \${pair_records}"
+    [[ "\${pair_records}" -gt 0 ]] || { echo "ERROR: no complete target-region read pairs retained" >&2; exit 1; }
+
+    # Coordinate-sort for downstream handling. REALIGN_TO_DECOY will name-sort again before FASTQ conversion.
+    samtools sort -@ "\${THREADS}" \
+        -o \${SAMPLE_ID}.with_mates.bam \
+        \${SAMPLE_ID}.target_pairs.name.bam
+    samtools index -@ "\${THREADS}" \${SAMPLE_ID}.with_mates.bam
+
+    # Diagnostic summary.
+    target_qnames=\$(samtools view \${SAMPLE_ID}.target.primary.unsorted.bam | cut -f1 | sort -u | wc -l)
+    pair_qnames=\$(samtools view \${SAMPLE_ID}.with_mates.bam | cut -f1 | sort -u | wc -l)
+    chrm_records=\$(samtools view \${SAMPLE_ID}.with_mates.bam | awk -v mt="\${MT_CONTIG}" '\$3==mt{n++} END{print n+0}')
+    numt_records=\$(samtools view \${SAMPLE_ID}.with_mates.bam | awk -v mt="\${MT_CONTIG}" '\$3!=mt{n++} END{print n+0}')
+
+    cat > \${SAMPLE_ID}.candidate_read_selection.summary.tsv <<EOF_SUMMARY
+metric\tvalue
+target_intervals_n\t\$(wc -l < \${SAMPLE_ID}.target_chrM_plus_NUMT.bed)
+primary_target_records_before_pair_filter\t\${target_records}
+primary_target_readnames_before_pair_filter\t\${target_qnames}
+records_after_requiring_both_mates_in_target_subset\t\${pair_records}
+readnames_after_requiring_both_mates_in_target_subset\t\${pair_qnames}
+retained_records_mapped_to_chrM_in_original_cram\t\${chrm_records}
+retained_records_mapped_to_NUMT_intervals_or_other_target_contigs_in_original_cram\t\${numt_records}
+selection_mode\tmitoHPC_like_chrM_plus_NUMT_target_pairs_no_arbitrary_mate_rescue
+excluded_flags_initial_subset\t0x900_secondary_and_supplementary
+EOF_SUMMARY
+
+    echo "[INFO] Candidate read selection summary:"
+    cat \${SAMPLE_ID}.candidate_read_selection.summary.tsv
+
+    rm -f \${SAMPLE_ID}.target.primary.unsorted.bam \${SAMPLE_ID}.target.primary.name.bam \${SAMPLE_ID}.target_pairs.name.bam
+    """
+}
+
+
+process REALIGN_TO_DECOY {
+    tag { "Realign to decoy for ${meta.id}" }
+    label 'alignment_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/decoy_realign", mode: 'copy', pattern: "*.decoy_realign.bam*"
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), path(bam_with_mates), path(decoy_fa), path(decoy_fai), path(decoy_amb), path(decoy_ann), path(decoy_bwt), path(decoy_pac), path(decoy_sa)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.decoy_realign.bam"),
+          path("${meta.id}.decoy_realign.bam.bai"),
+          emit: realign_bam
+
+    script:
+    def sort_mem_per_thread = task.memory ? "${(task.memory.toGiga() * 0.65 / Math.max(task.cpus ?: 1,1)).toInteger()}G" : "2G"
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    tmp="\$(mktemp -d -p /tmp "\${USER}_nf_${meta.id}_decoy_XXXXXX")"
+    cleanup() { rm -rf "\$tmp" || true; }
+    trap cleanup EXIT
+
+    samtools sort -n -@ ${task.cpus ?: 4} -o ${meta.id}.with_mates.name.bam ${bam_with_mates}
+
+    samtools fastq \
+      -1 ${meta.id}.R1.fastq.gz \
+      -2 ${meta.id}.R2.fastq.gz \
+      -0 /dev/null -s /dev/null -n \
+      ${meta.id}.with_mates.name.bam
+
+    bwa mem -K 100000000 -v 3 -t ${task.cpus ?: 4} \
+      -R '@RG\\tID:${meta.id}\\tSM:${meta.id}\\tLB:${meta.id}\\tPL:ILLUMINA\\tPU:${meta.id}' \
+      ${decoy_fa} \
+      ${meta.id}.R1.fastq.gz ${meta.id}.R2.fastq.gz | \
+      samtools sort -@ ${task.cpus ?: 4} -m ${sort_mem_per_thread} -T "\$tmp/${meta.id}" -o ${meta.id}.decoy_realign.bam -
+
+    samtools index -@ ${task.cpus ?: 4} ${meta.id}.decoy_realign.bam
+
+    rm -f ${meta.id}.with_mates.name.bam ${meta.id}.R1.fastq.gz ${meta.id}.R2.fastq.gz
+    """
+}
+
+process CALL_NUMT_VARIANTS_DECOY {
+    tag { "Call NUMT variants on decoy for ${meta.id}" }
+    label 'wdl_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/numt_decoy_variant_calling", mode: 'copy'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name),
+          path(decoy_bam), path(decoy_bai),
+          path(decoy_fa), path(decoy_fai), path(decoy_dict),
+          path(decoy_numt_interval_list)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.numt_decoy.raw.vcf.gz"),
+          path("${meta.id}.numt_decoy.raw.vcf.gz.tbi"),
+          emit: numt_vcf
+
+    // Publish the exact decoy-coordinate interval list next to the VCF as a
+    // visible replacement for the removed WDL nuc_interval_list input.
+    path("${meta.id}.decoy_numt.interval_list"), emit: numt_interval_list
+
+    script:
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    JAVA_BIN="\${JAVA_HOME:-}/bin/java"
+    if [[ ! -x "\$JAVA_BIN" ]]; then
+        JAVA_BIN=\$(command -v java || true)
+    fi
+    [[ -n "\$JAVA_BIN" && -x "\$JAVA_BIN" ]] || {
+        echo "ERROR: java not found" >&2
+        exit 127
+    }
+
+    [[ -s ${decoy_bam} ]] || { echo "ERROR: missing decoy BAM: ${decoy_bam}" >&2; exit 1; }
+    [[ -s ${decoy_bai} ]] || { echo "ERROR: missing decoy BAM index: ${decoy_bai}" >&2; exit 1; }
+    [[ -s ${decoy_fa} ]] || { echo "ERROR: missing decoy FASTA: ${decoy_fa}" >&2; exit 1; }
+    [[ -s ${decoy_fai} ]] || { echo "ERROR: missing decoy FASTA index: ${decoy_fai}" >&2; exit 1; }
+    [[ -s ${decoy_dict} ]] || { echo "ERROR: missing decoy sequence dictionary: ${decoy_dict}" >&2; exit 1; }
+    [[ -s ${decoy_numt_interval_list} ]] || { echo "ERROR: missing decoy NUMT interval list: ${decoy_numt_interval_list}" >&2; exit 1; }
+
+    if [[ \$(grep -vc '^@' ${decoy_numt_interval_list}) -eq 0 ]]; then
+        echo "[INFO] No NUMT intervals in decoy reference; creating empty indexed VCF." >&2
+        python3 - <<'PY_EMPTY_VCF'
+from pathlib import Path
+import zlib
+
+sample = "${meta.id}"
+fai = Path("${decoy_fai}")
+out = Path(f"{sample}.numt_decoy.raw.vcf.gz")
+
+lines = ["##fileformat=VCFv4.2", "##source=CALL_NUMT_VARIANTS_DECOY"]
+with fai.open() as handle:
+    for line in handle:
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) >= 2:
+            lines.append(f"##contig=<ID={fields[0]},length={fields[1]}>")
+lines.append(f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}")
+payload = ("\n".join(lines) + "\n").encode()
+
+# Write a minimal BGZF stream so GATK can create an index without requiring
+# external HTSlib compression/indexing binaries on the cluster node.
+def bgzf_block(data: bytes) -> bytes:
+    compressor = zlib.compressobj(level=6, method=zlib.DEFLATED, wbits=-15)
+    compressed = compressor.compress(data) + compressor.flush()
+    bsize = 18 + len(compressed) + 8 - 1
+    header = bytes([31, 139, 8, 4, 0, 0, 0, 0, 0, 255, 6, 0, 66, 67, 2, 0]) + bsize.to_bytes(2, "little")
+    trailer = (zlib.crc32(data) & 0xffffffff).to_bytes(4, "little") + (len(data) & 0xffffffff).to_bytes(4, "little")
+    return header + compressed + trailer
+
+# Standard 28-byte BGZF EOF marker.
+eof = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+with out.open("wb") as handle:
+    for offset in range(0, len(payload), 65280):
+        handle.write(bgzf_block(payload[offset:offset + 65280]))
+    handle.write(eof)
+PY_EMPTY_VCF
+        "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile \
+          -I ${meta.id}.numt_decoy.raw.vcf.gz
+        [[ -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]] || { echo "ERROR: GATK did not create ${meta.id}.numt_decoy.raw.vcf.gz.tbi" >&2; exit 1; }
+        exit 0
+    fi
+
+    "\$JAVA_BIN" -Xmx8G -jar ${params.gatk_jar} HaplotypeCaller \
+      -R ${decoy_fa} \
+      -I ${decoy_bam} \
+      --read-index ${decoy_bai} \
+      -L ${decoy_numt_interval_list} \
+      -O ${meta.id}.numt_decoy.raw.vcf.gz \
+      --create-output-variant-index true \
+      --max-reads-per-alignment-start 75 \
+      --annotation StrandBiasBySample
+
+    if [[ ! -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]]; then
+        "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile \
+          -I ${meta.id}.numt_decoy.raw.vcf.gz
+    fi
+    [[ -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]] || { echo "ERROR: missing HaplotypeCaller VCF index: ${meta.id}.numt_decoy.raw.vcf.gz.tbi" >&2; exit 1; }
+    """
+}
+
+process GENERATE_CONSENSUS_NUMT_FASTA {
+    tag { "Generate consensus NUMT FASTA for ${meta.id}" }
+    label 'generation_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/consensus_numt_ref", mode: 'copy'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name),
+          path(original_numt_fa), path(original_numt_fai),
+          path(numt_vcf), path(numt_vcf_tbi)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.consensus_numt.fa"),
+          path("${meta.id}.consensus_numt.fa.fai"),
+          emit: consensus_numt_fa
+
+    script:
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    python3 - <<'PY_CONSENSUS_NUMT'
+from pathlib import Path
+import gzip
+import sys
+
+sample = "${meta.id}"
+original_fa = Path("${original_numt_fa}")
+numt_vcf = Path("${numt_vcf}")
+out_fa = Path(f"{sample}.consensus_numt.fa")
+
+def open_text(path):
+    path = Path(path)
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt")
+    return path.open("rt")
+
+def read_fasta(path):
+    records = []
+    header = None
+    seq_parts = []
+    with Path(path).open() as handle:
+        for line in handle:
+            line = line.rstrip("\\n")
+            if not line:
+                continue
+            if line.startswith(">"):
+                if header is not None:
+                    records.append((header, "".join(seq_parts).upper()))
+                header = line[1:].strip()
+                seq_parts = []
+            else:
+                seq_parts.append(line.strip())
+        if header is not None:
+            records.append((header, "".join(seq_parts).upper()))
+    return records
+
+def write_wrapped(handle, seq, width=60):
+    for i in range(0, len(seq), width):
+        handle.write(seq[i:i + width] + "\\n")
+
+def read_vcf_variants(path):
+    variants = {}
+    if not path.exists() or path.stat().st_size == 0:
+        return variants
+    with open_text(path) as handle:
+        for line in handle:
+            if not line or line.startswith("#"):
+                continue
+            fields = line.rstrip("\\n").split("\\t")
+            if len(fields) < 8:
+                continue
+            chrom, pos_s, _id, ref, alt, _qual, filt, _info = fields[:8]
+            if filt not in ("PASS", "."):
+                continue
+            if "," in alt or alt in (".", "*") or alt.startswith("<"):
+                continue
+            try:
+                pos = int(pos_s)
+            except ValueError:
+                continue
+            variants.setdefault(chrom, []).append((pos, ref.upper(), alt.upper()))
+    for chrom in variants:
+        variants[chrom].sort(key=lambda item: item[0])
+    return variants
+
+if not original_fa.exists():
+    raise SystemExit(f"ERROR: missing original NUMT FASTA: {original_fa}")
+
+if original_fa.stat().st_size == 0:
+    print(f"[INFO] Original NUMT FASTA is empty for {sample}; writing empty consensus FASTA", file=sys.stderr)
+    out_fa.write_text("")
+    raise SystemExit(0)
+
+records = read_fasta(original_fa)
+variants = read_vcf_variants(numt_vcf)
+applied_total = 0
+
+with out_fa.open("w") as out:
+    for header, seq in records:
+        contig = header.split()[0]
+        seq_list = list(seq)
+        offset = 0
+        last_ref_end = 0
+        applied = 0
+        for pos, ref, alt in variants.get(contig, []):
+            ref_end = pos + len(ref) - 1
+            if pos <= last_ref_end:
+                print(f"[WARN] Skipping overlapping NUMT variant {contig}:{pos} {ref}>{alt}", file=sys.stderr)
+                continue
+            local0 = pos - 1 + offset
+            observed = "".join(seq_list[local0:local0 + len(ref)]).upper()
+            if observed != ref:
+                print(f"[WARN] Skipping NUMT variant {contig}:{pos} {ref}>{alt}: observed {observed}", file=sys.stderr)
+                continue
+            seq_list[local0:local0 + len(ref)] = list(alt)
+            offset += len(alt) - len(ref)
+            last_ref_end = ref_end
+            applied += 1
+        out.write(f">{header}\\n")
+        write_wrapped(out, "".join(seq_list))
+        applied_total += applied
+
+print(f"[INFO] Wrote consensus NUMT FASTA: {out_fa} (records={len(records)}, applied_variants={applied_total})")
+PY_CONSENSUS_NUMT
+
+    if [[ -s ${meta.id}.consensus_numt.fa ]]; then
+        samtools faidx ${meta.id}.consensus_numt.fa
+    else
+        : > ${meta.id}.consensus_numt.fa.fai
+    fi
+    """
+}
+
+process EXTRACT_FINAL_CHRM_BAM {
+    tag { "Extract final primary chrM BAM for ${meta.id}" }
+    label 'alignment_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/chrM_clean", mode: 'copy', pattern: "*.final_chrM.sorted.bam*"
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name),
+          path(realign_bam), path(realign_bai)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.final_chrM.sorted.bam"),
+          path("${meta.id}.final_chrM.sorted.bam.bai"),
+          emit: final_bam
+
+    script:
+    def sort_mem_per_thread = task.memory ? "${(task.memory.toGiga() * 0.65 / Math.max(task.cpus ?: 1,1)).toInteger()}G" : "2G"
+    def mt_contig = params.mt_contig ?: "chrM"
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    MT_CONTIG="${mt_contig}"
+
+    tmp="\$(mktemp -d -p /tmp "\${USER}_nf_${meta.id}_finalchrm_XXXXXX")"
+    cleanup() { rm -rf "\$tmp" || true; }
+    trap cleanup EXIT
+
+    # Diagnostics before final extraction.
+    all_chrM_records=\$(samtools view -c ${realign_bam} "\${MT_CONTIG}" || echo 0)
+    primary_chrM_records=\$(samtools view -c -F 0x900 ${realign_bam} "\${MT_CONTIG}" || echo 0)
+    secondary_chrM_records=\$(samtools view -c -f 0x100 ${realign_bam} "\${MT_CONTIG}" || echo 0)
+    supplementary_chrM_records=\$(samtools view -c -f 0x800 ${realign_bam} "\${MT_CONTIG}" || echo 0)
+
+    echo "[INFO] chrM records in decoy-realigned BAM:"
+    echo "[INFO]   all chrM records:           \${all_chrM_records}"
+    echo "[INFO]   primary chrM records:       \${primary_chrM_records}"
+    echo "[INFO]   secondary chrM records:     \${secondary_chrM_records}"
+    echo "[INFO]   supplementary chrM records: \${supplementary_chrM_records}"
+
+    # 1) chrM-only header: keep chrM @SQ, drop NUMT_* @SQ, keep all non-@SQ header lines.
+    samtools view -H ${realign_bam} | \
+      awk -v mt="\${MT_CONTIG}" 'BEGIN{OFS="\\t"}
+           /^@SQ/ {
+             if (\$2=="SN:" mt) print;
+             next
+           }
+           { print }' > "\$tmp/chrM_only.header.sam"
+
+    # 2) chrM-only body, primary alignments only.
+    # -F 0x900 removes secondary and supplementary records. This prevents reads whose
+    # primary alignment is NUMT but secondary/supplementary alignment is chrM from entering calling.
+    samtools view -@ ${task.cpus ?: 4} -F 0x900 ${realign_bam} "\${MT_CONTIG}" > "\$tmp/chrM_only.body.sam"
+
+    # 3) rebuild BAM with cleaned chrM-only header.
+    cat "\$tmp/chrM_only.header.sam" "\$tmp/chrM_only.body.sam" | \
+      samtools view -@ ${task.cpus ?: 4} -b -o "\$tmp/${meta.id}.final_chrM.bam" -
+
+    # 4) sort + index.
+    samtools sort -@ ${task.cpus ?: 4} -m ${sort_mem_per_thread} \
+      -T "\$tmp/${meta.id}" \
+      -o ${meta.id}.final_chrM.sorted.bam \
+      "\$tmp/${meta.id}.final_chrM.bam"
+
+    samtools index -@ ${task.cpus ?: 4} ${meta.id}.final_chrM.sorted.bam
+
+    # 5) sanity check.
+    samtools idxstats ${meta.id}.final_chrM.sorted.bam > ${meta.id}.final_chrM.sorted.idxstats.txt
+    samtools quickcheck -v ${meta.id}.final_chrM.sorted.bam
+    """
+}
+
+process BAM_TO_CRAM_CLEAN {
+    tag { "BAM to cleaned CRAM for ${meta.id}" }
+    label 'alignment_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/alignment_numt_decoy", mode: 'copy', pattern: "*.{cram,crai}"
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), path(final_bam), path(final_bai), path(orig_cram), path(orig_crai)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.numt_decoy.clean.cram"),
+          path("${meta.id}.numt_decoy.clean.cram.crai"),
+          emit: cram
+
+    script:
+    def mt_ref = "${params.ref_dir}/${ref_name}.fasta"
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    tmp="\$(mktemp -d -p /tmp "\${USER}_nf_${meta.id}_cleancram_XXXXXX")"
+    cleanup() { rm -rf "\$tmp" || true; }
+    trap cleanup EXIT
+
+    samtools view -@ ${task.cpus ?: 4} \
+      -T ${mt_ref} \
+      -O cram,version=3.0 \
+      -o "\$tmp/${meta.id}.numt_decoy.clean.cram" \
+      ${final_bam}
+
+    samtools index -@ ${task.cpus ?: 4} "\$tmp/${meta.id}.numt_decoy.clean.cram"
+
+    samtools quickcheck -v "\$tmp/${meta.id}.numt_decoy.clean.cram"
+    samtools idxstats "\$tmp/${meta.id}.numt_decoy.clean.cram" > "\$tmp/${meta.id}.numt_decoy.clean.idxstats.txt"
+
+    mv -f "\$tmp/${meta.id}.numt_decoy.clean.cram" .
+    mv -f "\$tmp/${meta.id}.numt_decoy.clean.cram.crai" .
+    """
+}
+
+process GENERATE_CRAM_TSV {
+    tag { "Generate CRAM TSV for ${meta.id}" }
+    label 'generation_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/wdl_inputs", mode: 'copy'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), path(cram), path(crai)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}_cram_list.tsv"), emit: tsv
+
+    script:
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    abspath() {
+      if command -v readlink >/dev/null 2>&1; then
+        readlink -f "\$1"
+      else
+        realpath "\$1"
+      fi
+    }
+    cram_path=\$(abspath ${cram})
+    crai_path=\$(abspath ${crai})
+
+    echo -e "\${cram_path}\t\${crai_path}" > "${meta.id}_cram_list.tsv"
+    """
+}
+
+process GENERATE_WDL_JSON {
+    tag { "Generate WDL JSON for ${meta.id}" }
+    label 'generation_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/wdl_inputs", mode: 'copy'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), path(cram_tsv)
+
+    output:
+    tuple val(meta), path("${meta.id}_wdl_inputs.json"), emit: json
+
+    script:
+    def mt_fasta = "${params.ref_dir}/${ref_name}.fasta"
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ensure_fai() {
+        local fa="\$1"; local fai="\${fa}.fai"
+        if [[ ! -s "\$fai" ]]; then samtools faidx "\$fa"; fi
+        echo "\$fai"
+    }
+    choose_mt_contig() {
+        local fai="\$1"
+        local name=\$(awk '\$1~/^(chr)?M(T)?\$/{print \$1; exit}' "\$fai")
+        if [[ -z "\$name" ]]; then
+            name=\$(awk 'NR==1{print \$1}' "\$fai")
+        fi
+        echo "\$name"
+    }
+    contig_length_from_fai() { awk -v C="\$2" '\$1==C{print \$2}' "\$1"; }
+
+    MT_FAI=\$(ensure_fai "${mt_fasta}")
+    CHR_NAME=\$(choose_mt_contig "\$MT_FAI")
+    MT_LEN=\$(contig_length_from_fai "\$MT_FAI" "\$CHR_NAME")
+
+
+    cat > ${meta.id}_wdl_inputs.json <<-EOFJSON
+{
+  "MitochondriaMultiSamplePipeline.picard": "${params.picard_jar}",
+  "MitochondriaMultiSamplePipeline.haplocheckCLI": "${params.haplocheck_jar}",
+  "MitochondriaMultiSamplePipeline.gatk": "${params.gatk_jar}",
+  "MitochondriaMultiSamplePipeline.compress_output_vcf": true,
+  "MitochondriaMultiSamplePipeline.inputSamplesFile": "\$(readlink -f ${cram_tsv})",
+
+  "MitochondriaMultiSamplePipeline.ref_fasta": "${params.global_ref_dir}/${ref_name}.fasta",
+  "MitochondriaMultiSamplePipeline.ref_fasta_index": "${params.global_ref_dir}/${ref_name}.fasta.fai",
+  "MitochondriaMultiSamplePipeline.ref_dict": "${params.global_ref_dir}/${ref_name}.dict",
+
+  "MitochondriaMultiSamplePipeline.mt_dict": "${params.ref_dir}/${ref_name}.dict",
+  "MitochondriaMultiSamplePipeline.mt_fasta": "${params.ref_dir}/${ref_name}.fasta",
+  "MitochondriaMultiSamplePipeline.mt_fasta_index": "${params.ref_dir}/${ref_name}.fasta.fai",
+  "MitochondriaMultiSamplePipeline.mt_amb": "${params.ref_dir}/${ref_name}.fasta.amb",
+  "MitochondriaMultiSamplePipeline.mt_ann": "${params.ref_dir}/${ref_name}.fasta.ann",
+  "MitochondriaMultiSamplePipeline.mt_bwt": "${params.ref_dir}/${ref_name}.fasta.bwt",
+  "MitochondriaMultiSamplePipeline.mt_pac": "${params.ref_dir}/${ref_name}.fasta.pac",
+  "MitochondriaMultiSamplePipeline.mt_sa": "${params.ref_dir}/${ref_name}.fasta.sa",
+
+  "MitochondriaMultiSamplePipeline.mt_shifted_dict": "${params.ref_shift_8000_dir}/${ref_name}.dict",
+  "MitochondriaMultiSamplePipeline.mt_shifted_fasta": "${params.ref_shift_8000_dir}/${ref_name}.fasta",
+  "MitochondriaMultiSamplePipeline.mt_shifted_fasta_index": "${params.ref_shift_8000_dir}/${ref_name}.fasta.fai",
+  "MitochondriaMultiSamplePipeline.mt_shifted_amb": "${params.ref_shift_8000_dir}/${ref_name}.fasta.amb",
+  "MitochondriaMultiSamplePipeline.mt_shifted_ann": "${params.ref_shift_8000_dir}/${ref_name}.fasta.ann",
+  "MitochondriaMultiSamplePipeline.mt_shifted_bwt": "${params.ref_shift_8000_dir}/${ref_name}.fasta.bwt",
+  "MitochondriaMultiSamplePipeline.mt_shifted_pac": "${params.ref_shift_8000_dir}/${ref_name}.fasta.pac",
+  "MitochondriaMultiSamplePipeline.mt_shifted_sa": "${params.ref_shift_8000_dir}/${ref_name}.fasta.sa",
+
+  "MitochondriaMultiSamplePipeline.shift_back_chain": "${params.shift_back_chain_dir}/${ref_name}_ShiftBack.chain",
+  "MitochondriaMultiSamplePipeline.non_control_region_interval_list": "${params.ref_interval_dir}/${ref_name}_non_control_region.interval_list",
+  "MitochondriaMultiSamplePipeline.control_region_shifted_reference_interval_list": "${params.ref_interval_dir}/${ref_name}_control_region_shifted.interval_list",
+  "MitochondriaMultiSamplePipeline.mt_chr_name": "\$CHR_NAME",
+  "MitochondriaMultiSamplePipeline.mt_length": \$MT_LEN,
+  "MitochondriaMultiSamplePipeline.mt_nc_start": ${params.mt_nc_start},
+  "MitochondriaMultiSamplePipeline.mt_right_pad": ${params.mt_right_pad},
+  "MitochondriaMultiSamplePipeline.mt_shift": ${params.mt_shift}
+}
+EOFJSON
+    """
+}
+
+process RUN_WDL_VARIANT_CALLING {
+    tag "Variant Calling on ${meta.id}"
+    label 'wdl_related'
+    publishDir "${params.outdir}/${meta.id}/round_1_variant_calling_decoy/", mode: 'copy'
+
+    input:
+    tuple val(meta), path(wdl_inputs_json)
+    path cromwell_config
+
+    output:
+    path "cromwell-executions/**"
+
+    script:
+    """
+    #!/bin/bash
+    set -e
+
+    cat > cromwell_options.json <<EOFOPT
+{
+  "final_workflow_outputs_dir": ".",
+  "final_workflow_log_dir": ".",
+  "default_runtime_attributes": {
+    "queue": "${params.cromwell_options.queue ?: ''}",
+    "cpus": ${params.cromwell_options.cpus},
+    "memory": ${params.cromwell_options.memory},
+    "runtime_minutes": ${params.cromwell_options.runtime_minutes}
+  }
+}
+EOFOPT
+
+    cat > sbatch_throttle.sh <<'EOS'
+#!/usr/bin/env bash
+set -euo pipefail
+PER_HOUR="\${SUBMITS_PER_HOUR:-180}"
+(( PER_HOUR > 0 )) || PER_HOUR=180
+MIN_GAP=\$(( 3600 / PER_HOUR ))
+STATE_DIR="\${HOME}/.sbatch_rate"
+LOCK_FILE="\${STATE_DIR}/lock"
+TS_FILE="\${STATE_DIR}/last_submit.ts"
+mkdir -p "\${STATE_DIR}"
+exec 200>"\${LOCK_FILE}"
+flock 200
+now=\$(date +%s); last=0
+[[ -f "\${TS_FILE}" ]] && read -r last < "\${TS_FILE}" || true
+if (( now - last < MIN_GAP )); then
+  sleep \$(( MIN_GAP - (now - last) ))
+fi
+date +%s > "\${TS_FILE}"
+unset SLURM_CONF || true
+exec sbatch "\$@"
+EOS
+    chmod +x sbatch_throttle.sh
+
+    export SUBMITS_PER_HOUR="${params.cromwell_submit_rate_limit ?: '180'}"
+
+    "\${JAVA_HOME}/bin/java" -Dconfig.file=${cromwell_config} \
+         -jar ${params.cromwell_jar} run \
+         ${params.wdl_script} \
+         --inputs ${wdl_inputs_json} \
+         --options cromwell_options.json
+    """
+}
