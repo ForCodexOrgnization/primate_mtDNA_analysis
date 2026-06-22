@@ -12,6 +12,7 @@ Steps:
   in_house_score             Launch/iterate in-house score jobs.
   variant_inputs             Prepare variant-calling input table.
   post_reference_review      Run reference_materialization, in_house_score, variant_inputs.
+  all_unreviewed             Run all stages using the raw discovery summary without manual review.
   reports                    Render preprocessing Quarto reports.
   all                        Run reference_discovery only, then stop for manual review.
 
@@ -90,6 +91,22 @@ run_reference_discovery() {
 EOFMSG
 }
 
+use_raw_discovery_summary_without_review() {
+  local raw_summary="${REFERENCE_DISCOVERY_OUTDIR}/species_reference_chrM_summary.tsv"
+  if [[ ! -s "$raw_summary" ]]; then
+    echo "ERROR: raw reference-discovery summary is missing or empty: $raw_summary" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$SPECIES_REFERENCE_SUMMARY")"
+  cp "$raw_summary" "$SPECIES_REFERENCE_SUMMARY"
+  cat >&2 <<EOFMSG
+[preprocessing] WARNING: skipped manual reference review.
+[preprocessing] Copied raw discovery summary to reviewed-manifest path:
+  ${SPECIES_REFERENCE_SUMMARY}
+[preprocessing] Downstream reference choices may need later manual correction.
+EOFMSG
+}
+
 run_reference_materialization() {
   echo "[preprocessing] Building reference materialization manifest from: $SPECIES_REFERENCE_SUMMARY" >&2
   Rscript preprocessing/scripts/build_reference_materialization_manifest.R \
@@ -133,6 +150,13 @@ case "$STEP" in
     run_variant_inputs
     ;;
   post_reference_review)
+    run_reference_materialization
+    run_in_house_score
+    run_variant_inputs
+    ;;
+  all_unreviewed)
+    run_reference_discovery
+    use_raw_discovery_summary_without_review
     run_reference_materialization
     run_in_house_score
     run_variant_inputs

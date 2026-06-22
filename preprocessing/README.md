@@ -52,6 +52,14 @@ bash preprocessing/scripts/run_preprocessing.sh post_reference_review config/pre
 
 The `all` command intentionally runs only reference discovery and then stops, because `species_reference_chrM_summary.tsv` requires manual review before reference materialization, in-house scoring, or variant input preparation.
 
+If you intentionally want to skip manual reference review and run all preprocessing stages in one command, use the explicit unreviewed mode:
+
+```bash
+bash preprocessing/scripts/run_preprocessing.sh all_unreviewed config/preprocessing_paths.yaml
+```
+
+This copies the raw discovery summary into the reviewed-manifest path and continues through materialization, in-house score, and variant input preparation. Use this only for exploratory runs where unreviewed reference choices are acceptable.
+
 Downloaded WG FASTA files, chrM FASTA files, FASTA indexes, BLAST outputs, and other generated reference artifacts are HPC-local outputs. Do not commit these large downloaded/generated reference files to GitHub; commit only small metadata/configuration files and reviewed manifests when appropriate.
 
 ## Step 0. Reference discovery
