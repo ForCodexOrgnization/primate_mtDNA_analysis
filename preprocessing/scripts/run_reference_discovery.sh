@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SPECIES_TABLE=${SPECIES_TABLE:-data/metadata/preprint_species_list.tsv}
+SPECIES_TABLE=${SPECIES_TABLE:-data/metadata/all_species_list.txt}
 MITO_FASTA=${MITO_FASTA:-/path/to/mitochondrion.1.1.genomic.fna.gz}
 TREE_NEWICK=${TREE_NEWICK:-/path/to/primate_tree.nwk}
 OUTDIR=${OUTDIR:-results/preprocessing/reference_discovery}
