@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
+#SBATCH --job-name=preprocessing
+#SBATCH --output=logs/preprocessing/%x_%j.out
+#SBATCH --error=logs/preprocessing/%x_%j.err
+#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=8G
+
 set -euo pipefail
 
 usage() {
   cat <<'USAGE'
 Usage:
-  bash preprocessing/scripts/run_preprocessing.sh <step> config/preprocessing_paths.yaml
+  bash preprocessing/scripts/run_preprocessing.sh [--submit] <step> [config/preprocessing_paths.yaml]
+  sbatch preprocessing/scripts/run_preprocessing.sh <step> [config/preprocessing_paths.yaml]
+
+Run modes:
+  --submit                  Submit this script to Slurm from a login/frontend node.
+                            Without --submit, bash runs the step immediately.
 
 Steps:
   reference_discovery        Run reference discovery only.
@@ -16,11 +28,30 @@ Steps:
   reports                    Render preprocessing Quarto reports.
   all                        Run reference_discovery only, then stop for manual review.
 
+Slurm submit environment overrides for --submit:
+  SLURM_PARTITION           Optional partition/queue name.
+  SLURM_TIME                Walltime passed to sbatch (default: 24:00:00).
+  SLURM_MEM                 Memory passed to sbatch (default: 8G).
+  SLURM_CPUS                CPUs passed to sbatch (default: 1).
+  SLURM_LOG_DIR             Log directory (default: logs/preprocessing).
+  SLURM_JOB_NAME            Job name prefix (default: preprocessing_<step>).
+
+Examples:
+  bash preprocessing/scripts/run_preprocessing.sh --submit reference_discovery config/preprocessing_paths.yaml
+  sbatch preprocessing/scripts/run_preprocessing.sh post_reference_review config/preprocessing_paths.yaml
+  bash preprocessing/scripts/run_preprocessing.sh reports config/preprocessing_paths.yaml
+
 Important:
   The all step intentionally stops after reference discovery because
   species_reference_chrM_summary.tsv must be manually reviewed before downstream steps.
 USAGE
 }
+
+SUBMIT_TO_SLURM=0
+if [[ "${1:-}" == "--submit" ]]; then
+  SUBMIT_TO_SLURM=1
+  shift
+fi
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
   usage >&2
@@ -30,9 +61,53 @@ fi
 STEP="$1"
 CONFIG="${2:-config/preprocessing_paths.yaml}"
 
+case "$STEP" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+esac
+
 if [[ ! -s "$CONFIG" ]]; then
   echo "ERROR: missing or empty config file: $CONFIG" >&2
   exit 1
+fi
+
+submit_to_slurm() {
+  if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    echo "ERROR: --submit was requested from inside an existing Slurm job (${SLURM_JOB_ID})." >&2
+    exit 2
+  fi
+  if ! command -v sbatch >/dev/null 2>&1; then
+    echo "ERROR: --submit requires sbatch on PATH. Run with bash without --submit to execute immediately." >&2
+    exit 127
+  fi
+
+  local script_path log_dir job_name
+  script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  log_dir="${SLURM_LOG_DIR:-logs/preprocessing}"
+  job_name="${SLURM_JOB_NAME:-preprocessing_${STEP}}"
+  mkdir -p "$log_dir"
+
+  local sbatch_args=(
+    --job-name="$job_name"
+    --output="${log_dir}/%x_%j.out"
+    --error="${log_dir}/%x_%j.err"
+    --time="${SLURM_TIME:-24:00:00}"
+    --cpus-per-task="${SLURM_CPUS:-1}"
+    --mem="${SLURM_MEM:-8G}"
+  )
+  if [[ -n "${SLURM_PARTITION:-}" ]]; then
+    sbatch_args+=(--partition="$SLURM_PARTITION")
+  fi
+
+  echo "[preprocessing] Submitting ${STEP} to Slurm with config: ${CONFIG}" >&2
+  sbatch "${sbatch_args[@]}" "$script_path" "$STEP" "$CONFIG"
+}
+
+if [[ "$SUBMIT_TO_SLURM" == "1" ]]; then
+  submit_to_slurm
+  exit 0
 fi
 
 config_get() {
