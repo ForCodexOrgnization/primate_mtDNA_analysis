@@ -1,0 +1,6 @@
+species_reference_summary: "data/metadata/species_reference_chrM_summary.tsv"
+sample_metadata: "data/metadata/sample_metadata.tsv"
+reference_materialization_manifest: "references/manifests/reference_materialization_manifest.tsv"
+in_house_score_reference_inputs: "references/manifests/in_house_score_reference_inputs.tsv"
+merged_in_house_score: "results/preprocessing/in_house_score/merged_in_house_score.tsv"
+variant_calling_input_table: "results/preprocessing/variant_calling_inputs/variant_calling_input_table.tsv"

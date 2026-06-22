@@ -1,0 +1,9 @@
+species_table: "data/metadata/preprint_species_list.tsv"
+mito_fasta: "/path/to/mitochondrion.1.1.genomic.fna.gz"
+tree_newick: "/path/to/primate_tree.nwk"
+outdir: "results/preprocessing/reference_discovery"
+email: "your_email@yale.edu"
+max_nearest: 200
+delay: 0.34
+min_mito_len: 14000
+max_mito_len: 25000
