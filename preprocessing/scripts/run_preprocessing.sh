@@ -12,7 +12,7 @@ Steps:
   in_house_score             Launch/iterate in-house score jobs.
   variant_inputs             Prepare variant-calling input table.
   post_reference_review      Run reference_materialization, in_house_score, variant_inputs.
-  all_unreviewed             Run all stages using the raw discovery summary without manual review.
+  all_steps                  Run all preprocessing stages using the raw discovery summary without manual review.
   reports                    Render preprocessing Quarto reports.
   all                        Run reference_discovery only, then stop for manual review.
 
@@ -154,7 +154,7 @@ case "$STEP" in
     run_in_house_score
     run_variant_inputs
     ;;
-  all_unreviewed)
+  all_steps)
     run_reference_discovery
     use_raw_discovery_summary_without_review
     run_reference_materialization

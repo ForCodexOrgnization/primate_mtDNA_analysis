@@ -5,14 +5,25 @@ This module prepares species-level and sample-level inputs for mitochondrial var
 ## Quick start
 
 1. Edit `config/preprocessing_paths.yaml` so the species list, local RefSeq mitochondrion FASTA, primate tree, sample metadata, and output paths match your HPC workspace.
-2. Run reference discovery:
+
+2. If you want one command to run every preprocessing stage, use `all_steps`:
+
+   ```bash
+   bash preprocessing/scripts/run_preprocessing.sh all_steps config/preprocessing_paths.yaml
+   ```
+
+   `all_steps` copies the raw reference-discovery summary into the reviewed-manifest path and continues through reference materialization, in-house score, and variant input preparation. Use this shortcut only when unreviewed reference choices are acceptable, such as exploratory runs.
+
+If you want to manually review reference choices before downstream preprocessing, use the safer staged workflow:
+
+1. Run reference discovery:
 
    ```bash
    bash preprocessing/scripts/run_preprocessing.sh reference_discovery config/preprocessing_paths.yaml
    ```
 
-3. Manually review `results/preprocessing/reference_discovery/species_reference_chrM_summary.tsv`. Confirm that the selected WG and chrM references are biologically appropriate before any downstream step.
-4. Copy or symlink the reviewed manifest to `data/metadata/species_reference_chrM_summary.tsv`:
+2. Manually review `results/preprocessing/reference_discovery/species_reference_chrM_summary.tsv`. Confirm that the selected WG and chrM references are biologically appropriate before any downstream step.
+3. Copy or symlink the reviewed manifest to `data/metadata/species_reference_chrM_summary.tsv`:
 
    ```bash
    cp results/preprocessing/reference_discovery/species_reference_chrM_summary.tsv data/metadata/species_reference_chrM_summary.tsv
@@ -20,25 +31,25 @@ This module prepares species-level and sample-level inputs for mitochondrial var
    ln -sf ../../results/preprocessing/reference_discovery/species_reference_chrM_summary.tsv data/metadata/species_reference_chrM_summary.tsv
    ```
 
-5. Run reference materialization:
+4. Run reference materialization:
 
    ```bash
    bash preprocessing/scripts/run_preprocessing.sh reference_materialization config/preprocessing_paths.yaml
    ```
 
-6. Run in-house score and minimal NUMT mask selection:
+5. Run in-house score and minimal NUMT mask selection:
 
    ```bash
    bash preprocessing/scripts/run_preprocessing.sh in_house_score config/preprocessing_paths.yaml
    ```
 
-7. Prepare variant-calling inputs:
+6. Prepare variant-calling inputs:
 
    ```bash
    bash preprocessing/scripts/run_preprocessing.sh variant_inputs config/preprocessing_paths.yaml
    ```
 
-8. Optionally render Quarto reports:
+7. Optionally render Quarto reports:
 
    ```bash
    bash preprocessing/scripts/run_preprocessing.sh reports config/preprocessing_paths.yaml
@@ -51,14 +62,6 @@ bash preprocessing/scripts/run_preprocessing.sh post_reference_review config/pre
 ```
 
 The `all` command intentionally runs only reference discovery and then stops, because `species_reference_chrM_summary.tsv` requires manual review before reference materialization, in-house scoring, or variant input preparation.
-
-If you intentionally want to skip manual reference review and run all preprocessing stages in one command, use the explicit unreviewed mode:
-
-```bash
-bash preprocessing/scripts/run_preprocessing.sh all_unreviewed config/preprocessing_paths.yaml
-```
-
-This copies the raw discovery summary into the reviewed-manifest path and continues through materialization, in-house score, and variant input preparation. Use this only for exploratory runs where unreviewed reference choices are acceptable.
 
 Downloaded WG FASTA files, chrM FASTA files, FASTA indexes, BLAST outputs, and other generated reference artifacts are HPC-local outputs. Do not commit these large downloaded/generated reference files to GitHub; commit only small metadata/configuration files and reviewed manifests when appropriate.
 
