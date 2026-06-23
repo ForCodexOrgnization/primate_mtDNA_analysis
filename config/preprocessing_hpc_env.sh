@@ -8,9 +8,8 @@
 #
 # Examples -- uncomment and adapt to your HPC site:
 #
-# module load R
-# module load samtools
-# module load wget
+module load R/4.4.2
+module load SAMtools/1.21-GCC-13.3.0
 #
 # Or activate a conda/mamba environment:
 # source /path/to/miniconda3/etc/profile.d/conda.sh
