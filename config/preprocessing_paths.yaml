@@ -1,7 +1,7 @@
 # Edit these paths before running preprocessing/scripts/run_preprocessing.sh.
 species_table: "data/metadata/all_species_list.txt"
-mito_fasta: "/path/to/mitochondrion.1.1.genomic.fna.gz"
-tree_newick: "/path/to/primate_tree.nwk"
+mito_fasta: "/home/lt692/scratch_pi_njl27/lt692/primate_external_data/mitochondrion.1.1.genomic.fna.gz"
+tree_newick: "/home/lt692/scratch_pi_njl27/lt692/primate_external_data/primate_tree.nwk"
 reference_discovery_outdir: "results/preprocessing/reference_discovery"
 email: "your_email@yale.edu"
 max_nearest: 200
