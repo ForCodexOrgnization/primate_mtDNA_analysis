@@ -81,12 +81,12 @@ CHR_M_RE = re.compile(r"mitochondr|\bchrM\b|\bMT\b|mitogenome", re.IGNORECASE)
 # This intentionally rejects partial cytochrome-b/COX1/12S records and nuclear genes
 # with mitochondrial-related names.
 NUCCORE_BAD_TITLE_RE = re.compile(
-    r"partial|fragment|control region|D-loop|cytochrome b|cytb|cox1|coi|co1|12S|16S|rrna|trna|cds|gene|mRNA|nuclear|antiviral|pseudogene",
+    r"\b(partial|fragment|gene|cds|mRNA|nuclear|antiviral|pseudogene)\b|"
+    r"control region|D-loop|cytochrome b|\bcytb\b|\bcox[0-9a-z]*\b|\bcoi\b|\bco1\b|\b12S\b|\b16S\b|\brrna\b|\btrna\b",
     re.IGNORECASE,
 )
 NUCCORE_COMPLETE_TITLE_RE = re.compile(
-    r"mitochondr(?:ion|ial).*(complete genome|complete sequence|complete mitochondrial genome|complete mitogenome)|"
-    r"(complete genome|complete sequence|complete mitochondrial genome|complete mitogenome).*mitochondr(?:ion|ial)",
+    r"complete mitochondrial genome|complete mitogenome|mitochondr(?:ion|ial).*complete genome|complete genome.*mitochondr(?:ion|ial)",
     re.IGNORECASE,
 )
 MIN_MITO_LEN = 14000
@@ -848,7 +848,7 @@ class ReferenceFinder:
         # broad mitochondrial gene searches, because those often return partial
         # cytochrome-b/COX1/12S fragments or nuclear genes.
         terms = [
-            f'"{sp_space}"[Organism] AND (mitochondrion[Title] OR mitochondrial[Title]) AND ("complete genome"[Title] OR "complete sequence"[Title] OR "complete mitochondrial genome"[Title] OR "complete mitogenome"[Title]) NOT partial[Title] NOT fragment[Title] NOT "control region"[Title]',
+            f'"{sp_space}"[Organism] AND (mitochondrion[Title] OR mitochondrial[Title] OR mitogenome[Title]) AND ("complete genome"[Title] OR "complete mitochondrial genome"[Title] OR "complete mitogenome"[Title]) NOT partial[Title] NOT fragment[Title] NOT gene[Title] NOT cds[Title] NOT cytb[Title] NOT COX[Title] NOT 12S[Title] NOT 16S[Title] NOT rRNA[Title] NOT tRNA[Title]',
         ]
         best = None
         rejected = []
@@ -1009,11 +1009,16 @@ class ReferenceFinder:
             "nearest_fallback_reason": "",
         }
 
+        ref_key = norm_species_name(reference_species)
+
         if canonical:
             nearest = self.tree.nearest_species(target_species)[: self.max_nearest]
+            candidates = [(sp, str(rank), f"{dist:.8g}") for sp, rank, dist in nearest]
+            if ref_key and ref_key not in {sp for sp, _, _ in candidates} and ref_key != target_key:
+                candidates.append((ref_key, "REFERENCE_SPECIES", "NA"))
             info["nearest_search_mode"] = "phylogeny_distance"
             info["nearest_fallback_reason"] = "target_species_found_in_tree"
-            return [(sp, str(rank), f"{dist:.8g}") for sp, rank, dist in nearest], info
+            return candidates, info
 
         genus = target_key.split("_")[0] if target_key else ""
         if genus and getattr(self.tree, "tip_nodes", None):
@@ -1028,11 +1033,13 @@ class ReferenceFinder:
                 seen_nodes.add(id(node))
                 dedup.append(k)
             if dedup:
+                candidates = [(sp, str(i + 1), f"same_genus_proxy_{i + 1}") for i, sp in enumerate(dedup[: self.max_nearest])]
+                if ref_key and ref_key not in {sp for sp, _, _ in candidates} and ref_key != target_key:
+                    candidates.append((ref_key, "REFERENCE_SPECIES", "NA"))
                 info["nearest_search_mode"] = "same_genus_proxy"
                 info["nearest_fallback_reason"] = "target_species_absent_from_tree_using_same_genus_tree_tips"
-                return [(sp, str(i + 1), f"same_genus_proxy_{i + 1}") for i, sp in enumerate(dedup[: self.max_nearest])], info
+                return candidates, info
 
-        ref_key = norm_species_name(reference_species)
         if ref_key:
             info["nearest_search_mode"] = "REFERENCE_SPECIES_fallback"
             info["nearest_fallback_reason"] = "target_species_absent_from_tree_no_same_genus_using_REFERENCE_SPECIES"
@@ -1048,7 +1055,7 @@ class ReferenceFinder:
             if mh:
                 mh.query_species = target_species
                 mh.matched_species = sp_key
-                if info.get("nearest_search_mode") == "REFERENCE_SPECIES_fallback":
+                if rank == "REFERENCE_SPECIES" or info.get("nearest_search_mode") == "REFERENCE_SPECIES_fallback":
                     mh.source = "REFERENCE_SPECIES_refseq_mito_fasta"
                 elif info.get("nearest_search_mode") == "same_genus_proxy":
                     mh.source = "same_genus_proxy_refseq_mito_fasta"
@@ -1058,7 +1065,7 @@ class ReferenceFinder:
                 mh.phylo_distance = str(dist)
                 return mh, info
             source_prefix = "nearest_species_nuccore"
-            if info.get("nearest_search_mode") == "REFERENCE_SPECIES_fallback":
+            if rank == "REFERENCE_SPECIES" or info.get("nearest_search_mode") == "REFERENCE_SPECIES_fallback":
                 source_prefix = "REFERENCE_SPECIES_nuccore"
             elif info.get("nearest_search_mode") == "same_genus_proxy":
                 source_prefix = "same_genus_proxy_nuccore"
@@ -1175,6 +1182,10 @@ class ReferenceFinder:
 
         final_strategy = self._strategy(same_wg_best, same_wg_chrM, final_wg, final_chrM)
 
+        final_chrM_accession = ""
+        if final_chrM:
+            final_chrM_accession = first_nonempty(final_chrM.refseq_accn, final_chrM.genbank_accn, final_chrM.accession, final_chrM.contig_name)
+
         out = {
             "target_species": target,
             "sample_count": sample_count,
@@ -1214,7 +1225,7 @@ class ReferenceFinder:
             "final_chrM_source": final_chrM.source if final_chrM else "",
             "final_chrM_similarity_rank": final_chrM.similarity_rank if final_chrM else "",
             "final_chrM_phylo_distance": final_chrM.phylo_distance if final_chrM else "",
-            "final_chrM_accession": final_chrM.accession if final_chrM else "",
+            "final_chrM_accession": final_chrM_accession,
             "final_chrM_contig_name": final_chrM.contig_name if final_chrM else "",
             "final_chrM_title_or_header": final_chrM.title_or_header if final_chrM else "",
             "final_chrM_length": final_chrM.length if final_chrM else "",
@@ -1237,7 +1248,7 @@ class ReferenceFinder:
             "final_reference_strategy": final_strategy,
             "notes": ";".join(notes),
         }
-        return {k: sanitize(v) for k, v in out.items()}
+        return {k: clean_field(v) for k, v in out.items()}
 
     def _strategy(self, same_wg_best, same_wg_chrM, final_wg, final_chrM) -> str:
         if same_wg_best and same_wg_chrM:
