@@ -5,9 +5,15 @@ OUTDIR=${OUTDIR:-results/preprocessing/reference_materialization}
 LOCAL_MITO_FASTA=${LOCAL_MITO_FASTA:-}
 mkdir -p "$OUTDIR" references/wg references/chrM/embedded_from_wg references/chrM/independent references/manifests
 DL="$OUTDIR/reference_download_manifest.tsv"; EX="$OUTDIR/chrM_extraction_manifest.tsv"; IH="$OUTDIR/in_house_score_reference_inputs.tsv"
+PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
+WGET_COMMAND=${WGET_COMMAND:-wget}
+SAMTOOLS_COMMAND=${SAMTOOLS_COMMAND:-samtools}
+CURL_COMMAND=${CURL_COMMAND:-curl}
+EFETCH_COMMAND=${EFETCH_COMMAND:-efetch}
+export WGET_COMMAND SAMTOOLS_COMMAND CURL_COMMAND EFETCH_COMMAND
 echo -e "target_species\tassembly_accession\tstatus\twg_fasta_path\twg_fai_path\twg_assembly_report_path\tmessage" > "$DL"
 echo -e "target_species\tchrM_reference_context\tstatus\tchrM_fasta_path\tchrM_fai_path\tmessage" > "$EX"
-python3 - "$MANIFEST" "$DL" "$EX" <<'PY'
+"$PYTHON_COMMAND" - "$MANIFEST" "$DL" "$EX" <<'PY'
 import csv, os, subprocess, sys
 man, dl, ex = sys.argv[1:]
 rows=list(csv.DictReader(open(man), delimiter='\t'))
@@ -19,7 +25,7 @@ for r in rows:
     os.makedirs(os.path.dirname(wg), exist_ok=True); base=ftp.rstrip('/').split('/')[-1]
     src=f"{ftp.rstrip('/')}/{base}_genomic.fna.gz"; rep=f"{ftp.rstrip('/')}/{base}_assembly_report.txt"
     try:
-      subprocess.check_call(['wget','-c','-O',wg,src]); subprocess.call(['wget','-c','-O',report,rep]); subprocess.check_call(['samtools','faidx',wg]); status='success'; msg='downloaded'
+      subprocess.check_call([os.environ.get('WGET_COMMAND','wget'),'-c','-O',wg,src]); subprocess.call([os.environ.get('WGET_COMMAND','wget'),'-c','-O',report,rep]); subprocess.check_call([os.environ.get('SAMTOOLS_COMMAND','samtools'),'faidx',wg]); status='success'; msg='downloaded'
     except Exception as e: status='failure'; msg=str(e).replace('\t',' ')
   elif 'dnazoo' in r.get('final_wg_ref_source','').lower(): status='manual_review'; msg='dnazoo_download_not_implemented'
   open(dl,'a').write('\t'.join([target,asm,status,wg,wg+'.fai' if wg else '',report,msg])+'\n')
@@ -34,7 +40,7 @@ for r in rows:
     except Exception as e: estatus='failure'; emsg=str(e).replace('\t',' ')
   open(ex,'a').write('\t'.join([target,ctx,estatus,chrout,chrout+'.fai' if chrout else '',emsg])+'\n')
 PY
-python3 - "$MANIFEST" "$DL" "$EX" "$IH" <<'PY'
+"$PYTHON_COMMAND" - "$MANIFEST" "$DL" "$EX" "$IH" <<'PY'
 import csv, sys
 man,dl,ex,ih=sys.argv[1:]
 dlmap={r['target_species']:r for r in csv.DictReader(open(dl), delimiter='\t')}
