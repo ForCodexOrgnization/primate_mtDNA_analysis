@@ -2,7 +2,6 @@
 #SBATCH --job-name=merge_ref
 #SBATCH --output=logs/numt_%A_%a.out
 #SBATCH --error=logs/numt_%A_%a.err
-#SBATCH --array=1-158%50
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
@@ -23,11 +22,26 @@ set -euo pipefail
 #   4. Mask BED/fragment TSV files are written only for #C-Ambiguous references.
 #
 # Recommended use:
-#   jid=$(sbatch --array=1-${N}%50 in_house_score_with_minimal_numt_mask_FIXED.sh | awk '{print $4}')
-#   sbatch --dependency=afterok:${jid} --export=ALL,MERGE_ONLY=1 in_house_score_with_minimal_numt_mask_FIXED.sh
+#   SUBMIT_ARRAY=1 bash preprocessing/scripts/in_house_score_with_minimal_numt_mask.sh
+#
+# Or submit manually after checking the manifest row count:
+#   N=$(python3 - <<'PY_N'
+# import csv
+# seen = set()
+# with open("references/manifests/in_house_score_reference_inputs.tsv", newline="") as h:
+#     for r in csv.DictReader(h, delimiter="\t"):
+#         key = tuple((r.get(c) or "").strip()
+#                     for c in ("target_species", "wg_fasta_path", "chrM_fasta_path"))
+#         if all(key):
+#             seen.add(key)
+# print(len(seen))
+# PY_N
+#   )
+#   jid=$(sbatch --array=1-${N}%50 preprocessing/scripts/in_house_score_with_minimal_numt_mask.sh | awk '{print $4}')
+#   sbatch --dependency=afterok:${jid} --export=ALL,MERGE_ONLY=1 preprocessing/scripts/in_house_score_with_minimal_numt_mask.sh
 #
 # Or after array finishes:
-#   MERGE_ONLY=1 bash in_house_score_with_minimal_numt_mask_FIXED.sh
+#   MERGE_ONLY=1 bash preprocessing/scripts/in_house_score_with_minimal_numt_mask.sh
 # =============================================================================
 
 # -------------------- Config --------------------
@@ -40,6 +54,7 @@ MERGED_IN_HOUSE_SCORE="${MERGED_IN_HOUSE_SCORE:-${OUTDIR}/merged_in_house_score.
 PYTHON_COMMAND="${PYTHON_COMMAND:-python3}"
 MAKEBLASTDB_COMMAND="${MAKEBLASTDB_COMMAND:-makeblastdb}"
 BLASTN_COMMAND="${BLASTN_COMMAND:-blastn}"
+ARRAY_CONCURRENCY="${ARRAY_CONCURRENCY:-50}"
 
 mkdir -p "$OUTDIR" "logs" "${OUTDIR}/numt_candidates" "${OUTDIR}/numt_beds"
 if [[ -n "${BLAST_MODULE:-}" ]] && command -v module >/dev/null 2>&1; then
@@ -868,7 +883,14 @@ if [[ "${MERGE_ONLY:-0}" == "1" ]]; then
 fi
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-  err "SLURM_ARRAY_TASK_ID is not set. Submit array with: sbatch --array=1-${N_SPECIES}%50 $0, or merge with: MERGE_ONLY=1 bash $0"
+  if [[ "${SUBMIT_ARRAY:-0}" == "1" ]]; then
+    log "Submitting ${N_SPECIES} in-house score array tasks with concurrency ${ARRAY_CONCURRENCY}."
+    jid=$(sbatch --array="1-${N_SPECIES}%${ARRAY_CONCURRENCY}" "$0" | awk '{print $4}')
+    log "Submitted array job ${jid}; submitting dependent MERGE_ONLY job."
+    sbatch --dependency="afterok:${jid}" --export=ALL,MERGE_ONLY=1 "$0"
+    exit 0
+  fi
+  err "SLURM_ARRAY_TASK_ID is not set. Submit array with: sbatch --array=1-${N_SPECIES}%${ARRAY_CONCURRENCY} $0, use SUBMIT_ARRAY=1 bash $0, or merge with: MERGE_ONLY=1 bash $0"
   exit 1
 fi
 
