@@ -1,0 +1,2 @@
+sample_id	target_species	cram_path	cram_index_path
+SAMPLE_ID	Genus species	/path/to/sample.cram	/path/to/sample.cram.crai
