@@ -32,13 +32,20 @@ set -euo pipefail
 # =============================================================================
 
 # -------------------- Config --------------------
-SPECIES_LIST="/home/lt692/ycga_work/Primate_extension/update/full_list.txt"
-AUTOREF_DIR="/home/lt692/ycga_work/Primate_extension/update/Full_genome"
-MITOREF_DIR="/home/lt692/ycga_work/Primate_extension/Refseq_chrM"
-OUTDIR="/home/lt692/ycga_work/Primate_extension/update/in_house_score_update"
+# Reference-level inputs produced by materialize_references.sh. This step does
+# not read CRAM/sample files; NUMT candidates are detected by BLASTing each chrM
+# FASTA against its selected whole-genome reference FASTA.
+REF_INPUTS="${REF_INPUTS:-references/manifests/in_house_score_reference_inputs.tsv}"
+OUTDIR="${OUTDIR:-results/preprocessing/in_house_score}"
+MERGED_IN_HOUSE_SCORE="${MERGED_IN_HOUSE_SCORE:-${OUTDIR}/merged_in_house_score.tsv}"
+PYTHON_COMMAND="${PYTHON_COMMAND:-python3}"
+MAKEBLASTDB_COMMAND="${MAKEBLASTDB_COMMAND:-makeblastdb}"
+BLASTN_COMMAND="${BLASTN_COMMAND:-blastn}"
 
 mkdir -p "$OUTDIR" "logs" "${OUTDIR}/numt_candidates" "${OUTDIR}/numt_beds"
-module load BLAST/2.2.26-Linux_x86_64
+if [[ -n "${BLAST_MODULE:-}" ]] && command -v module >/dev/null 2>&1; then
+  module load "$BLAST_MODULE"
+fi
 
 # Use Slurm value if available, otherwise safe local default.
 THREADS="${SLURM_CPUS_PER_TASK:-4}"
@@ -81,6 +88,9 @@ ts() { date "+%F %T"; }
 log(){ echo "[$(ts)] [INFO] $*" >&2; }
 warn(){ echo "[$(ts)] [WARN] $*" >&2; }
 err(){ echo "[$(ts)] [ERROR] $*" >&2; }
+safe_id() {
+  printf "%s" "$1" | tr ' /' '__' | tr -cd '[:alnum:]_.-'
+}
 
 fasta_header_full() {
   local sp="$1" contig="$2"
@@ -97,7 +107,7 @@ calc_score_py() {
   local total_hit_ratio="$2"
   local contig_ratio="$3"
 
-  python3 - "$max_hit_ratio" "$total_hit_ratio" "$contig_ratio" <<'PY'
+  "$PYTHON_COMMAND" - "$max_hit_ratio" "$total_hit_ratio" "$contig_ratio" <<'PY'
 import math, sys
 MHR = float(sys.argv[1]); THR = float(sys.argv[2]); CR = float(sys.argv[3])
 M = max(0.0, min(1.0, MHR))
@@ -125,7 +135,7 @@ select_annotated_mito_contig_py() {
   local genome="$1"
   local mito_len="$2"
 
-  python3 - "$genome" "$mito_len" "$CHRMSIZE_RATIO_MIN" "$CHRMSIZE_RATIO_MAX" <<'PY'
+  "$PYTHON_COMMAND" - "$genome" "$mito_len" "$CHRMSIZE_RATIO_MIN" "$CHRMSIZE_RATIO_MAX" <<'PY'
 import sys
 
 genome = sys.argv[1]
@@ -176,7 +186,7 @@ merge_blast_stats_py() {
   local annotated_contig="$2"
   local mito_len="$3"
 
-  python3 - "$blast_file" "$annotated_contig" "$mito_len" <<'PY'
+  "$PYTHON_COMMAND" - "$blast_file" "$annotated_contig" "$mito_len" <<'PY'
 import sys
 from collections import defaultdict
 blast_file = sys.argv[1]; annotated = sys.argv[2]
@@ -244,7 +254,7 @@ classify_ref_py() {
   local thr="${12}"
   local cr="${13}"
 
-  python3 - "$has_valid_annotated_mito" "$top_contig_len" "$mito_len" \
+  "$PYTHON_COMMAND" - "$has_valid_annotated_mito" "$top_contig_len" "$mito_len" \
     "$top_merged_len" "$top_merged_ratio" "$longest_merged_hit" \
     "$cumulative_merged_len" "$merged_contigs_n" "$merged_intervals_n" \
     "$score" "$mhr" "$thr" "$cr" \
@@ -291,15 +301,17 @@ numt_mask_summary_py() {
   local mito_len="$3"
   local ref_type="$4"
 
-  local candidate_tsv="${OUTDIR}/numt_candidates/${species}.highconf_reference_mtlike_candidates.tsv"
-  local full_tsv="${OUTDIR}/numt_beds/${species}.full_highconf.tsv"
-  local minimal_tsv="${OUTDIR}/numt_beds/${species}.minimal_chrMcover.tsv"
-  local full_bed="${OUTDIR}/numt_beds/${species}.full_highconf.bed"
-  local minimal_bed="${OUTDIR}/numt_beds/${species}.minimal_chrMcover.bed"
-  local final_tsv="${OUTDIR}/numt_beds/${species}.FINAL_numt_mask.tsv"
-  local final_bed="${OUTDIR}/numt_beds/${species}.FINAL_numt_mask.bed"
+  local species_id
+  species_id=$(safe_id "$species")
+  local candidate_tsv="${OUTDIR}/numt_candidates/${species_id}.highconf_reference_mtlike_candidates.tsv"
+  local full_tsv="${OUTDIR}/numt_beds/${species_id}.full_highconf.tsv"
+  local minimal_tsv="${OUTDIR}/numt_beds/${species_id}.minimal_chrMcover.tsv"
+  local full_bed="${OUTDIR}/numt_beds/${species_id}.full_highconf.bed"
+  local minimal_bed="${OUTDIR}/numt_beds/${species_id}.minimal_chrMcover.bed"
+  local final_tsv="${OUTDIR}/numt_beds/${species_id}.FINAL_numt_mask.tsv"
+  local final_bed="${OUTDIR}/numt_beds/${species_id}.FINAL_numt_mask.bed"
 
-  python3 - "$species" "$blast_file" "$mito_len" "$ref_type" \
+  "$PYTHON_COMMAND" - "$species" "$blast_file" "$mito_len" "$ref_type" \
     "$candidate_tsv" "$full_tsv" "$minimal_tsv" "$full_bed" "$minimal_bed" "$final_tsv" "$final_bed" \
     "$NUMT_MIN_PIDENT" "$NUMT_MIN_ALN_LEN" "$NUMT_MAX_EVALUE" "$NUMT_MIN_BITSCORE" \
     "$NUMT_TARGET_CHRM_COV" "$NUMT_PAD_BP" \
@@ -568,7 +580,7 @@ merge_all_summaries() {
 
   local sp summary_file
   for sp in "${ALL_SPECIES[@]}"; do
-    summary_file="${OUTDIR}/${sp}.summary.tsv"
+    summary_file="${OUTDIR}/$(safe_id "$sp").summary.tsv"
     if [[ -s "$summary_file" ]]; then
       tail -n +2 "$summary_file" >> "$merged"
     else
@@ -585,12 +597,13 @@ merge_all_summaries() {
   printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "$c_ambig_final_bed"
 
   for sp in "${ALL_SPECIES[@]}"; do
-    [[ -s "${OUTDIR}/numt_beds/${sp}.minimal_chrMcover.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp}.minimal_chrMcover.tsv" >> "$c_ambig_min"
-    [[ -s "${OUTDIR}/numt_beds/${sp}.full_highconf.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp}.full_highconf.tsv" >> "$c_ambig_full"
-    [[ -s "${OUTDIR}/numt_beds/${sp}.minimal_chrMcover.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp}.minimal_chrMcover.bed" >> "$c_ambig_min_bed"
-    [[ -s "${OUTDIR}/numt_beds/${sp}.full_highconf.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp}.full_highconf.bed" >> "$c_ambig_full_bed"
-    [[ -s "${OUTDIR}/numt_beds/${sp}.FINAL_numt_mask.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp}.FINAL_numt_mask.tsv" >> "$c_ambig_final"
-    [[ -s "${OUTDIR}/numt_beds/${sp}.FINAL_numt_mask.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp}.FINAL_numt_mask.bed" >> "$c_ambig_final_bed"
+    sp_id=$(safe_id "$sp")
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" >> "$c_ambig_min"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.tsv" >> "$c_ambig_full"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" >> "$c_ambig_min_bed"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" >> "$c_ambig_full_bed"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.tsv" >> "$c_ambig_final"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.bed" >> "$c_ambig_final_bed"
   done
 
   local n_total n_merged n_missing
@@ -607,13 +620,15 @@ merge_all_summaries() {
 }
 
 process_species() {
-  local species="$1"
 
-  GENOME="${AUTOREF_DIR}/${species}.fasta"
-  MITO_REF="${MITOREF_DIR}/${species}.fasta"
-  BLAST_DB="${OUTDIR}/${species}_db"
-  STATUS_FILE="${OUTDIR}/${species}.status"
-  SUMMARY_FILE="${OUTDIR}/${species}.summary.tsv"
+  local index="$1"
+  species="${SPECIES_NAMES[$index]}"
+  GENOME="${WG_FASTA_PATHS[$index]}"
+  MITO_REF="${CHRM_FASTA_PATHS[$index]}"
+  SPECIES_ID=$(safe_id "$species")
+  BLAST_DB="${OUTDIR}/${SPECIES_ID}_db"
+  STATUS_FILE="${OUTDIR}/${SPECIES_ID}.status"
+  SUMMARY_FILE="${OUTDIR}/${SPECIES_ID}.summary.tsv"
 
   echo "Running" > "$STATUS_FILE"
   log "Processing ${species}"
@@ -626,9 +641,9 @@ process_species() {
     return 0
   fi
 
-  TEMP_MITO="${OUTDIR}/${species}_temp_mito.fa"
-  BLAST_TEMP="${OUTDIR}/${species}_blast_all.tsv"
-  TOP_BLAST_OUT="${OUTDIR}/${species}_blast_top.tsv"
+  TEMP_MITO="${OUTDIR}/${SPECIES_ID}_temp_mito.fa"
+  BLAST_TEMP="${OUTDIR}/${SPECIES_ID}_blast_all.tsv"
+  TOP_BLAST_OUT="${OUTDIR}/${SPECIES_ID}_blast_top.tsv"
 
   fasta_header_full "$species" "chrM" > "$TEMP_MITO"
   grep -v '^>' "$MITO_REF" | format_sequence >> "$TEMP_MITO"
@@ -640,7 +655,7 @@ process_species() {
     select_annotated_mito_contig_py "$GENOME" "$MITO_LEN"
   )
 
-  if ! makeblastdb -in "$GENOME" -dbtype nucl -out "$BLAST_DB" &> "${OUTDIR}/${species}_makeblastdb.log"; then
+  if ! "$MAKEBLASTDB_COMMAND" -in "$GENOME" -dbtype nucl -out "$BLAST_DB" &> "${OUTDIR}/${SPECIES_ID}_makeblastdb.log"; then
     err "makeblastdb failed for ${species}"
     printf "%s\n" "$SUMMARY_HEADER" > "$SUMMARY_FILE"
     printf "%s\tMakeDBFail\tmakeblastdb_failed\t%s\t%s\t%s\tNA\t0\t%s\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tno\tNA\tNA\tmakeblastdb_failed\tNA\tNA\tNA\n" \
@@ -649,7 +664,7 @@ process_species() {
     return 0
   fi
 
-  blastn -query "$TEMP_MITO" \
+  "$BLASTN_COMMAND" -query "$TEMP_MITO" \
     -db "$BLAST_DB" \
     -out "$BLAST_TEMP" \
     -outfmt "6 qseqid sseqid qstart qend sstart send length pident mismatch evalue bitscore" \
@@ -657,7 +672,7 @@ process_species() {
     -perc_identity 90 \
     -num_threads "$THREADS" \
     -max_target_seqs 10000 \
-    -task blastn &> "${OUTDIR}/${species}_blastn.log" || warn "blastn had non-zero exit for ${species}"
+    -task blastn &> "${OUTDIR}/${SPECIES_ID}_blastn.log" || warn "blastn had non-zero exit for ${species}"
 
   SCORE="0"; M_CLIP="0"; DCPLUS="0"; DCMINUS="0"; DTPLUS="0"; DTMINUS="0"
   REF_TYPE="#C-likely_incomp"; MTLIKE_PATTERN="weak_or_no_mtlike_signal"
@@ -692,9 +707,16 @@ process_species() {
     if [[ "$MITO_LEN" -le 0 ]]; then
       MAX_HIT_RATIO=0; TOTAL_HIT_RATIO=0; CONTIG_RATIO=0
     else
-      MAX_HIT_RATIO=$(echo "scale=6; (${MAX_HIT_LENGTH})/($MITO_LEN)" | bc)
-      TOTAL_HIT_RATIO=$(echo "scale=6; (${TOTAL_HIT_LENGTH})/($MITO_LEN)" | bc)
-      CONTIG_RATIO=$(echo "scale=6; (${TOP_CONTIG_LEN})/($MITO_LEN)" | bc)
+      read -r MAX_HIT_RATIO TOTAL_HIT_RATIO CONTIG_RATIO < <(
+        "$PYTHON_COMMAND" - "$MAX_HIT_LENGTH" "$TOTAL_HIT_LENGTH" "$TOP_CONTIG_LEN" "$MITO_LEN" <<'PY'
+import sys
+max_hit, total_hit, top_len, mito_len = map(float, sys.argv[1:])
+if mito_len <= 0:
+    print("0 0 0")
+else:
+    print(f"{max_hit/mito_len:.6g} {total_hit/mito_len:.6g} {top_len/mito_len:.6g}")
+PY
+      )
     fi
 
     read -r SCORE M_CLIP DCPLUS DCMINUS DTPLUS DTMINUS < <(calc_score_py "$MAX_HIT_RATIO" "$TOTAL_HIT_RATIO" "$CONTIG_RATIO")
@@ -735,16 +757,53 @@ process_species() {
 }
 
 # -------------------- Execution --------------------
-mapfile -t ALL_SPECIES < <(
-  sed 's/\r$//' "$SPECIES_LIST" \
-  | awk 'NF && $1 !~ /^#/ {print $1}' \
-  | sort -u
+if [[ ! -s "$REF_INPUTS" ]]; then
+  err "Missing or empty in-house score reference input manifest: ${REF_INPUTS}"
+  exit 1
+fi
+
+mapfile -t REFERENCE_ROWS < <(
+  "$PYTHON_COMMAND" - "$REF_INPUTS" <<'PY'
+import csv, sys
+manifest = sys.argv[1]
+seen = set()
+with open(manifest, newline="") as handle:
+    for row in csv.DictReader(handle, delimiter="\t"):
+        species = (row.get("target_species") or "").strip()
+        wg = (row.get("wg_fasta_path") or "").strip()
+        chrm = (row.get("chrM_fasta_path") or "").strip()
+        if not species or not wg or not chrm:
+            continue
+        key = (species, wg, chrm)
+        if key in seen:
+            continue
+        seen.add(key)
+        print("\t".join([species, wg, chrm]))
+PY
 )
+
+if [[ "${#REFERENCE_ROWS[@]}" -eq 0 ]]; then
+  err "No usable reference-level rows found in ${REF_INPUTS}; required columns are target_species, wg_fasta_path, chrM_fasta_path."
+  exit 1
+fi
+
+ALL_SPECIES=()
+SPECIES_NAMES=()
+WG_FASTA_PATHS=()
+CHRM_FASTA_PATHS=()
+for row in "${REFERENCE_ROWS[@]}"; do
+  IFS=$'\t' read -r species wg_fasta chrM_fasta <<< "$row"
+  ALL_SPECIES+=("$species")
+  SPECIES_NAMES+=("$species")
+  WG_FASTA_PATHS+=("$wg_fasta")
+  CHRM_FASTA_PATHS+=("$chrM_fasta")
+done
 
 N_SPECIES="${#ALL_SPECIES[@]}"
 
 if [[ "${MERGE_ONLY:-0}" == "1" ]]; then
   merge_all_summaries
+  cp "${OUTDIR}/all_species.in_house_summary.with_numt_mask.tsv" "$MERGED_IN_HOUSE_SCORE"
   exit 0
 fi
 
@@ -758,14 +817,15 @@ if (( SLURM_ARRAY_TASK_ID < 1 || SLURM_ARRAY_TASK_ID > N_SPECIES )); then
   exit 1
 fi
 
-SPECIES="${ALL_SPECIES[$((SLURM_ARRAY_TASK_ID-1))]}"
+SPECIES_INDEX=$((SLURM_ARRAY_TASK_ID-1))
+SPECIES="${ALL_SPECIES[$SPECIES_INDEX]}"
 log "Selected species index ${SLURM_ARRAY_TASK_ID}/${N_SPECIES}: ${SPECIES}"
 
 {
-  process_species "$SPECIES"
+  process_species "$SPECIES_INDEX"
 } || {
   err "Processing failed for $SPECIES"
-  echo "Failed" > "${OUTDIR}/${SPECIES}.status"
+  echo "Failed" > "${OUTDIR}/$(safe_id "$SPECIES").status"
   exit 1
 }
 

@@ -11,8 +11,26 @@ if (!"target_species" %in% names(samples)) samples$target_species <- if ("specie
 samples$join_species <- normalize_species(samples$target_species); refs$join_species <- normalize_species(refs$target_species)
 vc <- merge(samples, refs, by = "join_species", all.x = TRUE, suffixes = c("", ".ref"))
 if (file.exists(score_file) && file.info(score_file)$size > 0) {
-  scores <- read_tsv_flexible(score_file); if (!"sample_id" %in% names(scores)) scores$sample_id <- ""
-  vc <- merge(vc, scores, by = "sample_id", all.x = TRUE, suffixes = c("", ".score"))
+  scores <- read_tsv_flexible(score_file)
+  if (!"numt_mask_path" %in% names(scores)) {
+    scores$numt_mask_path <- if ("MaskPriority" %in% names(scores) && "MinimalMaskBED" %in% names(scores) && "FullMaskBED" %in% names(scores)) {
+      ifelse(grepl("full_mask", scores$MaskPriority) & "FullMaskBED" %in% names(scores), scores$FullMaskBED, scores$MinimalMaskBED)
+    } else {
+      ""
+    }
+  }
+  if (!"minimal_numt_mask_status" %in% names(scores)) {
+    scores$minimal_numt_mask_status <- if ("MaskPriority" %in% names(scores)) scores$MaskPriority else "completed"
+  }
+  if ("sample_id" %in% names(scores) && any(scores$sample_id %in% vc$sample_id)) {
+    vc <- merge(vc, scores, by = "sample_id", all.x = TRUE, suffixes = c("", ".score"))
+  } else if ("Species" %in% names(scores)) {
+    scores$join_species <- normalize_species(scores$Species)
+    vc <- merge(vc, scores, by = "join_species", all.x = TRUE, suffixes = c("", ".score"))
+  } else if ("target_species" %in% names(scores)) {
+    scores$join_species <- normalize_species(scores$target_species)
+    vc <- merge(vc, scores, by = "join_species", all.x = TRUE, suffixes = c("", ".score"))
+  }
 }
 vc$target_species <- coalesce_chr(vc$target_species, vc$target_species.ref)
 vc <- ensure_columns(vc, c("sample_id","cram_path","cram_index_path","final_wg_ref_species","final_wg_assembly_accession","wg_fasta_path","wg_fai_path","final_chrM_species","final_chrM_accession","chrM_fasta_path","chrM_fai_path","chrM_reference_context","reference_pairing_status","final_reference_strategy","numt_mask_path","minimal_numt_mask_status","sample_qc_status","manual_review_required","manual_review_reason"))
