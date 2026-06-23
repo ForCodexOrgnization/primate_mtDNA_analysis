@@ -1,0 +1,73 @@
+GENUS	FAMILY	ORDER	taxonomy_source	note
+Allenopithecus	Cercopithecidae	Primates	project_genus_map	Old World monkey family
+Allochrocebus	Cercopithecidae	Primates	project_genus_map	Old World monkey family
+Alouatta	Atelidae	Primates	project_genus_map	Howler monkeys
+Aotus	Aotidae	Primates	project_genus_map	Night monkeys; some resources may place under Cebidae/Aotinae
+Arctocebus	Lorisidae	Primates	project_genus_map	African lorisid
+Ateles	Atelidae	Primates	project_genus_map	Spider monkeys
+Avahi	Indriidae	Primates	project_genus_map	Woolly lemurs
+Brachyteles	Atelidae	Primates	project_genus_map	Muriquis
+Cacajao	Pitheciidae	Primates	project_genus_map	Uakaris
+Callibella	Callitrichidae	Primates	project_genus_map	Dwarf marmoset; some resources may place callitrichines under Cebidae
+Callimico	Callitrichidae	Primates	project_genus_map	Goeldi's monkey; some resources may place callitrichines under Cebidae
+Callithrix	Callitrichidae	Primates	project_genus_map	Marmosets; some resources may place callitrichines under Cebidae
+Carlito	Tarsiidae	Primates	project_genus_map	Tarsier
+Cebuella	Callitrichidae	Primates	project_genus_map	Pygmy marmosets; some resources may place callitrichines under Cebidae
+Cebus	Cebidae	Primates	project_genus_map	Capuchins
+Cephalopachus	Tarsiidae	Primates	project_genus_map	Tarsier
+Cercocebus	Cercopithecidae	Primates	project_genus_map	Mangabeys
+Cercopithecus	Cercopithecidae	Primates	project_genus_map	Guenons
+Cheirogaleus	Cheirogaleidae	Primates	project_genus_map	Dwarf lemurs
+Cheracebus	Pitheciidae	Primates	project_genus_map	Titi monkeys
+Chiropotes	Pitheciidae	Primates	project_genus_map	Sakis/bearded sakis
+Chlorocebus	Cercopithecidae	Primates	project_genus_map	Vervet/green monkeys
+Colobus	Cercopithecidae	Primates	project_genus_map	Colobines
+Daubentonia	Daubentoniidae	Primates	project_genus_map	Aye-aye
+Erythrocebus	Cercopithecidae	Primates	project_genus_map	Patas monkeys
+Eulemur	Lemuridae	Primates	project_genus_map	True lemurs
+Galago	Galagidae	Primates	project_genus_map	Galagos
+Galagoides	Galagidae	Primates	project_genus_map	Galagos; genus boundaries may vary across databases
+Gorilla	Hominidae	Primates	project_genus_map	Great apes
+Hapalemur	Lemuridae	Primates	project_genus_map	Bamboo lemurs
+Hoolock	Hylobatidae	Primates	project_genus_map	Gibbons
+Hylobates	Hylobatidae	Primates	project_genus_map	Gibbons
+Indri	Indriidae	Primates	project_genus_map	Indriids
+Lagothrix	Atelidae	Primates	project_genus_map	Woolly monkeys
+Lemur	Lemuridae	Primates	project_genus_map	Ring-tailed lemur genus
+Leontocebus	Callitrichidae	Primates	project_genus_map	Tamarins; some resources may place callitrichines under Cebidae
+Leontopithecus	Callitrichidae	Primates	project_genus_map	Lion tamarins; some resources may place callitrichines under Cebidae
+Lepilemur	Lepilemuridae	Primates	project_genus_map	Sportive lemurs
+Lophocebus	Cercopithecidae	Primates	project_genus_map	Mangabeys
+Loris	Lorisidae	Primates	project_genus_map	Slender lorises
+Macaca	Cercopithecidae	Primates	project_genus_map	Macaques
+Mandrillus	Cercopithecidae	Primates	project_genus_map	Mandrill/drill
+Mico	Callitrichidae	Primates	project_genus_map	Amazonian marmosets; some resources may place callitrichines under Cebidae
+Microcebus	Cheirogaleidae	Primates	project_genus_map	Mouse lemurs
+Miopithecus	Cercopithecidae	Primates	project_genus_map	Talapoins
+Mirza	Cheirogaleidae	Primates	project_genus_map	Giant mouse lemurs
+Nasalis	Cercopithecidae	Primates	project_genus_map	Proboscis monkey
+Nomascus	Hylobatidae	Primates	project_genus_map	Gibbons
+Nycticebus	Lorisidae	Primates	project_genus_map	Slow lorises; note N. pygmaeus may appear as Xanthonycticebus pygmaeus in NCBI
+Otolemur	Galagidae	Primates	project_genus_map	Greater galagos
+Pan	Hominidae	Primates	project_genus_map	Chimpanzees/bonobos
+Papio	Cercopithecidae	Primates	project_genus_map	Baboons
+Perodicticus	Lorisidae	Primates	project_genus_map	Pottos
+Piliocolobus	Cercopithecidae	Primates	project_genus_map	Red colobus
+Pithecia	Pitheciidae	Primates	project_genus_map	Sakis
+Plecturocebus	Pitheciidae	Primates	project_genus_map	Titi monkeys
+Pongo	Hominidae	Primates	project_genus_map	Orangutans
+Presbytis	Cercopithecidae	Primates	project_genus_map	Surilis/langurs
+Prolemur	Lemuridae	Primates	project_genus_map	Greater bamboo lemur
+Propithecus	Indriidae	Primates	project_genus_map	Sifakas
+Pygathrix	Cercopithecidae	Primates	project_genus_map	Douc langurs
+Rhinopithecus	Cercopithecidae	Primates	project_genus_map	Snub-nosed monkeys
+Saguinus	Callitrichidae	Primates	project_genus_map	Tamarins; some resources may place callitrichines under Cebidae
+Saimiri	Cebidae	Primates	project_genus_map	Squirrel monkeys
+Sapajus	Cebidae	Primates	project_genus_map	Robust capuchins
+Semnopithecus	Cercopithecidae	Primates	project_genus_map	Langurs
+Symphalangus	Hylobatidae	Primates	project_genus_map	Siamang
+Tarsius	Tarsiidae	Primates	project_genus_map	Tarsiers
+Theropithecus	Cercopithecidae	Primates	project_genus_map	Gelada
+Trachypithecus	Cercopithecidae	Primates	project_genus_map	Langurs/lutungs
+Varecia	Lemuridae	Primates	project_genus_map	Ruffed lemurs
+Xanthonycticebus	Lorisidae	Primates	project_genus_map	Pygmy slow loris genus in some current taxonomies/NCBI
