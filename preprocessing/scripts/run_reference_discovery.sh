@@ -7,12 +7,15 @@ OUTDIR=${OUTDIR:-results/preprocessing/reference_discovery}
 EMAIL=${EMAIL:-your_email@yale.edu}
 MAX_NEAREST=${MAX_NEAREST:-200}
 DELAY=${DELAY:-0.34}
+REFERENCE_DISCOVERY_THREADS=${REFERENCE_DISCOVERY_THREADS:-1}
+PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
 mkdir -p "$OUTDIR"
-python3 preprocessing/scripts/find_primate_wg_chrM_refs.py \
+"$PYTHON_COMMAND" preprocessing/scripts/find_primate_wg_chrM_refs.py \
   --species "$SPECIES_TABLE" \
   --mito-fasta "$MITO_FASTA" \
   --tree "$TREE_NEWICK" \
   --outdir "$OUTDIR" \
   --email "$EMAIL" \
   --max-nearest "$MAX_NEAREST" \
-  --delay "$DELAY"
+  --delay "$DELAY" \
+  --threads "$REFERENCE_DISCOVERY_THREADS"

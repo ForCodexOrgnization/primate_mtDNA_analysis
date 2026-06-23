@@ -28,6 +28,18 @@ Steps:
   reports                    Render preprocessing Quarto reports.
   all                        Run reference_discovery only, then stop for manual review.
 
+HPC environment config keys:
+  environment_setup_script  Optional shell script to source before running a step.
+                            Use it for module load / conda activate commands.
+  rscript_command           Rscript executable name/path (default: Rscript).
+  python_command            Python executable name/path (default: python3).
+  wget_command              wget executable name/path (default: wget).
+  samtools_command          samtools executable name/path (default: samtools).
+  curl_command             curl executable name/path (default: curl).
+  efetch_command           efetch executable name/path (default: efetch).
+  reference_discovery_threads
+                            Species-level worker threads for reference discovery (default: 1).
+
 Slurm submit environment overrides for --submit:
   SLURM_PARTITION           Optional partition/queue name.
   SLURM_TIME                Walltime passed to sbatch (default: 24:00:00).
@@ -136,6 +148,7 @@ REFERENCE_DISCOVERY_OUTDIR=$(config_get reference_discovery_outdir "results/prep
 EMAIL=$(config_get email "your_email@yale.edu")
 MAX_NEAREST=$(config_get max_nearest "200")
 DELAY=$(config_get delay "0.34")
+REFERENCE_DISCOVERY_THREADS=$(config_get reference_discovery_threads "1")
 
 SPECIES_REFERENCE_SUMMARY=$(config_get species_reference_summary "data/metadata/species_reference_chrM_summary.tsv")
 REFERENCE_MATERIALIZATION_RESULTS_MANIFEST=$(config_get reference_materialization_results_manifest "results/preprocessing/reference_materialization/reference_materialization_manifest.tsv")
@@ -145,7 +158,70 @@ SAMPLE_METADATA=$(config_get sample_metadata "data/metadata/sample_metadata.tsv"
 MERGED_IN_HOUSE_SCORE=$(config_get merged_in_house_score "results/preprocessing/in_house_score/merged_in_house_score.tsv")
 VARIANT_CALLING_INPUT_TABLE=$(config_get variant_calling_input_table "results/preprocessing/variant_calling_inputs/variant_calling_input_table.tsv")
 
+ENVIRONMENT_SETUP_SCRIPT=$(config_get environment_setup_script "")
+RSCRIPT_COMMAND=$(config_get rscript_command "Rscript")
+PYTHON_COMMAND=$(config_get python_command "python3")
+WGET_COMMAND=$(config_get wget_command "wget")
+SAMTOOLS_COMMAND=$(config_get samtools_command "samtools")
+CURL_COMMAND=$(config_get curl_command "curl")
+EFETCH_COMMAND=$(config_get efetch_command "efetch")
+
+source_environment_setup() {
+  if [[ -z "$ENVIRONMENT_SETUP_SCRIPT" ]]; then
+    return 0
+  fi
+  if [[ ! -s "$ENVIRONMENT_SETUP_SCRIPT" ]]; then
+    echo "ERROR: environment_setup_script is configured but missing or empty: $ENVIRONMENT_SETUP_SCRIPT" >&2
+    exit 1
+  fi
+  echo "[preprocessing] Sourcing HPC environment setup: $ENVIRONMENT_SETUP_SCRIPT" >&2
+  # shellcheck source=/dev/null
+  source "$ENVIRONMENT_SETUP_SCRIPT"
+}
+
+require_command() {
+  local command_name="$1" description="${2:-$1}"
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    cat >&2 <<EOFMSG
+ERROR: required command not found for preprocessing: ${command_name} (${description})
+Configure environment_setup_script in ${CONFIG} to load your HPC modules/conda env,
+or set the corresponding *_command config key to an executable path.
+EOFMSG
+    exit 127
+  fi
+}
+
+
+require_nonempty_file() {
+  local path="$1" description="${2:-file}"
+  if [[ ! -s "$path" ]]; then
+    echo "ERROR: missing or empty ${description}: ${path}" >&2
+    exit 1
+  fi
+}
+
+check_reference_discovery_environment() {
+  require_command "$PYTHON_COMMAND" "Python interpreter for reference discovery"
+}
+
+check_reference_materialization_environment() {
+  require_command "$RSCRIPT_COMMAND" "Rscript for manifest generation"
+  require_command "$PYTHON_COMMAND" "Python interpreter for materialization helpers"
+  require_command "$WGET_COMMAND" "wget for reference downloads"
+  require_command "$SAMTOOLS_COMMAND" "samtools for FASTA indexing/extraction"
+  if ! command -v "$EFETCH_COMMAND" >/dev/null 2>&1; then
+    require_command "$CURL_COMMAND" "curl fallback for NCBI efetch downloads"
+  fi
+}
+
+check_variant_inputs_environment() {
+  require_command "$RSCRIPT_COMMAND" "Rscript for variant-input preparation"
+}
+
+source_environment_setup
+
 run_reference_discovery() {
+  check_reference_discovery_environment
   echo "[preprocessing] Running reference discovery with species table: $SPECIES_TABLE" >&2
   SPECIES_TABLE="$SPECIES_TABLE" \
   MITO_FASTA="$MITO_FASTA" \
@@ -154,6 +230,8 @@ run_reference_discovery() {
   EMAIL="$EMAIL" \
   MAX_NEAREST="$MAX_NEAREST" \
   DELAY="$DELAY" \
+  REFERENCE_DISCOVERY_THREADS="$REFERENCE_DISCOVERY_THREADS" \
+  PYTHON_COMMAND="$PYTHON_COMMAND" \
     bash preprocessing/scripts/run_reference_discovery.sh
   cat >&2 <<EOFMSG
 
@@ -184,12 +262,19 @@ EOFMSG
 
 run_reference_materialization() {
   echo "[preprocessing] Building reference materialization manifest from: $SPECIES_REFERENCE_SUMMARY" >&2
-  Rscript preprocessing/scripts/build_reference_materialization_manifest.R \
+  require_nonempty_file "$SPECIES_REFERENCE_SUMMARY" "reviewed species reference summary"
+  check_reference_materialization_environment
+  "$RSCRIPT_COMMAND" preprocessing/scripts/build_reference_materialization_manifest.R \
     "$SPECIES_REFERENCE_SUMMARY" \
     "$REFERENCE_MATERIALIZATION_RESULTS_MANIFEST" \
     "$REFERENCE_MATERIALIZATION_MANIFEST"
   echo "[preprocessing] Materializing references from: $REFERENCE_MATERIALIZATION_MANIFEST" >&2
-  bash preprocessing/scripts/materialize_references.sh "$REFERENCE_MATERIALIZATION_MANIFEST"
+  PYTHON_COMMAND="$PYTHON_COMMAND" \
+  WGET_COMMAND="$WGET_COMMAND" \
+  SAMTOOLS_COMMAND="$SAMTOOLS_COMMAND" \
+  CURL_COMMAND="$CURL_COMMAND" \
+  EFETCH_COMMAND="$EFETCH_COMMAND" \
+    bash preprocessing/scripts/materialize_references.sh "$REFERENCE_MATERIALIZATION_MANIFEST"
 }
 
 run_in_house_score() {
@@ -200,7 +285,10 @@ run_in_house_score() {
 
 run_variant_inputs() {
   echo "[preprocessing] Preparing variant-calling inputs: $VARIANT_CALLING_INPUT_TABLE" >&2
-  Rscript preprocessing/scripts/prepare_variant_calling_inputs.R \
+  require_nonempty_file "$SAMPLE_METADATA" "sample metadata"
+  require_nonempty_file "$IN_HOUSE_SCORE_REFERENCE_INPUTS" "in-house score reference inputs"
+  check_variant_inputs_environment
+  "$RSCRIPT_COMMAND" preprocessing/scripts/prepare_variant_calling_inputs.R \
     "$SAMPLE_METADATA" \
     "$IN_HOUSE_SCORE_REFERENCE_INPUTS" \
     "$MERGED_IN_HOUSE_SCORE" \

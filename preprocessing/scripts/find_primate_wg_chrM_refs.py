@@ -56,6 +56,8 @@ import os
 import re
 import sys
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -511,6 +513,10 @@ class ReferenceFinder:
         self.nuccore_cache: Dict[str, Optional[MitoHit]] = {}
         self.all_candidate_hits: List[AssemblyHit] = []
         self.nuccore_hits: List[MitoHit] = []
+        self._cache_lock = threading.RLock()
+        self._results_lock = threading.Lock()
+        self._eutils_lock = threading.Lock()
+        self._last_eutils_request = 0.0
         self._prepare_assembly_summaries(force_download)
 
     def _prepare_assembly_summaries(self, force: bool):
@@ -627,8 +633,10 @@ class ReferenceFinder:
         if hit.source not in ("NCBI_RefSeq", "NCBI_GenBank") or not hit.ftp_path:
             hit.has_chrM = "unknown"
             return hit
-        if hit.assembly_accession in self.assembly_report_cache:
-            cached = self.assembly_report_cache[hit.assembly_accession]
+        with self._cache_lock:
+            cached_marker = self.assembly_report_cache.get(hit.assembly_accession, "__missing__")
+        if cached_marker != "__missing__":
+            cached = cached_marker
             if cached is not None:
                 # copy chrM fields
                 for k, v in asdict(cached).items():
@@ -669,11 +677,13 @@ class ReferenceFinder:
                     )
             else:
                 hit.has_chrM = "no"
-            self.assembly_report_cache[hit.assembly_accession] = AssemblyHit(**asdict(hit))
+            with self._cache_lock:
+                self.assembly_report_cache[hit.assembly_accession] = AssemblyHit(**asdict(hit))
         except Exception as e:
             hit.has_chrM = "assembly_report_unavailable"
             warn(f"Failed to check assembly report for {hit.assembly_accession}: {e}")
-            self.assembly_report_cache[hit.assembly_accession] = None
+            with self._cache_lock:
+                self.assembly_report_cache[hit.assembly_accession] = None
         return hit
 
     def _parse_assembly_report_for_chrM(self, path: str) -> Optional[Dict[str, str]]:
@@ -822,8 +832,10 @@ class ReferenceFinder:
 
     def search_nuccore_mito(self, species: str, source_label: str) -> Optional[MitoHit]:
         key = norm_species_name(species)
-        if key in self.nuccore_cache:
-            cached = self.nuccore_cache[key]
+        with self._cache_lock:
+            cached_marker = self.nuccore_cache.get(key, "__missing__")
+        if cached_marker != "__missing__":
+            cached = cached_marker
             if cached:
                 mh = MitoHit(**asdict(cached))
                 mh.source = source_label
@@ -842,11 +854,9 @@ class ReferenceFinder:
         rejected = []
         for term in terms:
             ids = self._eutils_esearch(term, retmax=50)
-            time.sleep(self.delay)
             if not ids:
                 continue
             summaries = self._eutils_esummary(ids)
-            time.sleep(self.delay)
             candidates = []
             for s in summaries:
                 title = s.get("Title") or s.get("title") or ""
@@ -865,7 +875,8 @@ class ReferenceFinder:
             if rejected:
                 r0, reason = rejected[0]
                 warn(f"nuccore rejected non-complete mito hit for {species}: {r0.get('accession')} {reason} {r0.get('title')}")
-            self.nuccore_cache[key] = None
+            with self._cache_lock:
+                self.nuccore_cache[key] = None
             return None
         mh_cache = MitoHit(
             query_species=species,
@@ -876,10 +887,12 @@ class ReferenceFinder:
             title_or_header=best["title"],
             length=best["length"],
         )
-        self.nuccore_cache[key] = mh_cache
+        with self._cache_lock:
+            self.nuccore_cache[key] = mh_cache
         mh = MitoHit(**asdict(mh_cache))
         mh.source = source_label
-        self.nuccore_hits.append(mh)
+        with self._results_lock:
+            self.nuccore_hits.append(mh)
         return mh
 
     def _is_complete_mito_nuccore(self, h: Dict[str, str]) -> Tuple[bool, str]:
@@ -901,6 +914,17 @@ class ReferenceFinder:
             return False, "missing_accession"
         return True, "ok"
 
+    def _wait_for_eutils_slot(self) -> None:
+        """Rate-limit NCBI E-utility requests across worker threads."""
+        if self.delay <= 0:
+            return
+        with self._eutils_lock:
+            now = time.monotonic()
+            wait = self.delay - (now - self._last_eutils_request)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_eutils_request = time.monotonic()
+
     def _eutils_esearch(self, term: str, retmax: int = 20) -> List[str]:
         params = {"db": "nuccore", "term": term, "retmode": "json", "retmax": str(retmax)}
         if self.email:
@@ -909,6 +933,7 @@ class ReferenceFinder:
             params["api_key"] = self.api_key
         url = f"{EUTILS_BASE}/esearch.fcgi?" + urllib.parse.urlencode(params)
         try:
+            self._wait_for_eutils_slot()
             data = json.loads(urlopen_text(url, timeout=45))
             return data.get("esearchresult", {}).get("idlist", [])
         except Exception as e:
@@ -925,6 +950,7 @@ class ReferenceFinder:
             params["api_key"] = self.api_key
         url = f"{EUTILS_BASE}/esummary.fcgi?" + urllib.parse.urlencode(params)
         try:
+            self._wait_for_eutils_slot()
             data = json.loads(urlopen_text(url, timeout=45))
             result = data.get("result", {})
             return [result[i] for i in result.get("uids", []) if i in result]
@@ -1062,8 +1088,9 @@ class ReferenceFinder:
         sample_count = row.get("sample_count", "") or row.get("samples", "") or row.get("n_samples", "")
 
         same_hits = self.find_same_species_wg(target)
-        for h in same_hits:
-            self.all_candidate_hits.append(h)
+        if same_hits:
+            with self._results_lock:
+                self.all_candidate_hits.extend(same_hits)
 
         same_wg_best = same_hits[0] if same_hits else None
         same_wg_chrM = self.find_wg_with_chrM_among_hits(same_hits) if same_hits else None
@@ -1297,6 +1324,7 @@ def main():
     ap.add_argument("--max-nearest", type=int, default=200, help="Maximum nearest species to try in phylogeny")
     ap.add_argument("--force-download", action="store_true", help="Re-download NCBI assembly summaries")
     ap.add_argument("--delay", type=float, default=0.34, help="Delay between NCBI E-utility requests")
+    ap.add_argument("--threads", type=int, default=1, help="Number of species to analyze concurrently; NCBI E-utility requests remain rate-limited by --delay")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -1315,18 +1343,32 @@ def main():
         delay=args.delay,
     )
 
-    summary_rows = []
-    for i, row in enumerate(species_rows, 1):
+    def analyze_one(i: int, row: Dict[str, str]) -> Tuple[int, Dict[str, str]]:
         log(f"[{i}/{len(species_rows)}] {row['species']}")
         try:
-            summary_rows.append(finder.analyze_species(row))
+            return i - 1, finder.analyze_species(row)
         except Exception as e:
             warn(f"Failed species {row.get('species')}: {e}")
-            summary_rows.append({
+            return i - 1, {
                 "target_species": row.get("species", ""),
                 "final_reference_strategy": "error",
                 "notes": sanitize(str(e)),
-            })
+            }
+
+    threads = max(1, args.threads)
+    summary_rows = [None] * len(species_rows)
+    if threads == 1 or len(species_rows) <= 1:
+        for i, row in enumerate(species_rows, 1):
+            idx, result = analyze_one(i, row)
+            summary_rows[idx] = result
+    else:
+        log(f"Analyzing species with {threads} worker threads")
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = [executor.submit(analyze_one, i, row) for i, row in enumerate(species_rows, 1)]
+            for future in as_completed(futures):
+                idx, result = future.result()
+                summary_rows[idx] = result
+    summary_rows = [r for r in summary_rows if r is not None]
 
     summary_path = os.path.join(args.outdir, "species_reference_chrM_summary.tsv")
     write_tsv(summary_path, summary_rows)
