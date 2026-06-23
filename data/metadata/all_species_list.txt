@@ -146,7 +146,7 @@ Macaca_fascicularis	Macaca_mulatta
 Macaca_fuscata	Macaca_mulatta		
 Macaca_hecki	Macaca_nemestrina		
 Macaca_leonina	Macaca_mulatta		
-Macaca_leucogenys	Macaca_thibetana_thibetana		
+Macaca_leucogenys	Macaca_thibetana		
 Macaca_maura	Macaca_mulatta		
 Macaca_mulatta	Macaca_mulatta		
 Macaca_nemestrina	Macaca_mulatta		
@@ -155,7 +155,7 @@ Macaca_nigrescens	Macaca_nemestrina
 Macaca_radiata	Macaca_mulatta		
 Macaca_siberu	Macaca_mulatta		
 Macaca_silenus	Macaca_mulatta		
-Macaca_sinica	Macaca_thibetana_thibetana		
+Macaca_sinica	Macaca_thibetana		
 Macaca_sylvanus	Macaca_mulatta		
 Macaca_thibetana	Macaca_mulatta		
 Macaca_tonkeana	Macaca_mulatta		
@@ -181,9 +181,9 @@ Nomascus_concolor	Nomascus_siki
 Nomascus_gabriellae	Nomascus_siki		
 Nomascus_leucogenys	Nomascus_siki		
 Nomascus_siki	Nomascus_siki		
-Nycticebus_bengalensis	Nycticebus_pygmaeus		
-Nycticebus_coucang	Nycticebus_pygmaeus		
-Nycticebus_pygmaeus	Nycticebus_pygmaeus		
+Nycticebus_bengalensis	Nycticebus_coucang		
+Nycticebus_coucang	Nycticebus_coucang		
+Nycticebus_pygmaeus	Nycticebus_coucang		
 Otolemur_crassicaudatus	Otolemur_garnettii		
 Otolemur_garnettii	Otolemur_crassicaudatus		
 Otolemur_garnettii_garnetti	Otolemur_garnettii		
@@ -197,8 +197,8 @@ Papio_hamadryas	Macaca_mulatta
 Papio_kindae	Macaca_mulatta		
 Papio_papio	Macaca_mulatta		
 Papio_ursinus	Macaca_mulatta		
-Perodicticus_ibeanus	Nycticebus_pygmaeus		
-Perodicticus_potto	Nycticebus_pygmaeus		
+Perodicticus_ibeanus	Nycticebus_coucang		
+Perodicticus_potto	Nycticebus_coucang		
 Piliocolobus_badius	Rhinopithecus_roxellana		
 Piliocolobus_gordonorum	Rhinopithecus_roxellana		
 Piliocolobus_kirkii	Rhinopithecus_roxellana		
@@ -270,7 +270,6 @@ Semnopithecus_priam_thersites	Rhinopithecus_roxellana
 Semnopithecus_schistaceus	Rhinopithecus_roxellana		
 Semnopithecus_vetulus	Rhinopithecus_roxellana		
 Symphalangus_syndactylus	Symphalangus_syndactylus		
-Tarsius_dentatus	NA		
 Tarsius_lariang	Carlito_syrichta		
 Tarsius_wallacei	Carlito_syrichta		
 Theropithecus_gelada	Theropithecus_gelada		
