@@ -91,6 +91,41 @@ safe_id() {
   printf "%s" "$1" | tr ' /' '__' | tr -cd '[:alnum:]_.-'
 }
 
+acquire_merge_lock() {
+  local lockdir="$1"
+  local waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    if (( waited >= 3600 )); then
+      err "Timed out waiting for merge lock: ${lockdir}"
+      exit 1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+}
+
+release_merge_lock() {
+  local lockdir="$1"
+  rmdir "$lockdir" 2>/dev/null || true
+}
+
+append_valid_summary_body() {
+  local summary_file="$1" merged_file="$2" expected_cols="$3"
+  local cleaned_body
+  cleaned_body="$(mktemp "${OUTDIR}/.summary_body.XXXXXX")"
+  if LC_ALL=C tr -d '\000' < "$summary_file" | awk -F'\t' -v n="$expected_cols" '
+      NR == 1 { next }
+      NF == n { print; next }
+      { bad++ }
+      END { if (bad) exit 2 }
+    ' > "$cleaned_body"; then
+    cat "$cleaned_body" >> "$merged_file"
+  else
+    warn "Skipping malformed summary ${summary_file}; expected every data row to have ${expected_cols} tab-delimited columns. Re-run its array task before trusting the merged table."
+  fi
+  rm -f "$cleaned_body"
+}
+
 fasta_header_full() {
   local sp="$1" contig="$2"
   local norm="${sp// /_}"
@@ -299,9 +334,7 @@ numt_mask_summary_py() {
   local blast_file="$2"
   local mito_len="$3"
   local ref_type="$4"
-
-  local species_id
-  species_id=$(safe_id "$species")
+  local species_id="${5:-$(safe_id "$species")}"
   local candidate_tsv="${OUTDIR}/numt_candidates/${species_id}.highconf_reference_mtlike_candidates.tsv"
   local full_tsv="${OUTDIR}/numt_beds/${species_id}.full_highconf.tsv"
   local minimal_tsv="${OUTDIR}/numt_beds/${species_id}.minimal_chrMcover.tsv"
@@ -572,38 +605,60 @@ merge_all_summaries() {
   local c_ambig_full_bed="${OUTDIR}/C_Ambiguous.full_highconf.bed"
   local c_ambig_final="${OUTDIR}/C_Ambiguous.FINAL_numt_mask.fragments.tsv"
   local c_ambig_final_bed="${OUTDIR}/C_Ambiguous.FINAL_numt_mask.bed"
+  local lockdir="${OUTDIR}/.merge_all_summaries.lock"
+  local tmp_prefix
+  tmp_prefix="$(mktemp -d "${OUTDIR}/.merge_tmp.XXXXXX")"
+  local expected_cols
+  expected_cols=$(awk -F'\t' '{print NF; exit}' <<< "$SUMMARY_HEADER")
 
-  log "Merging per-species summaries into ${merged}"
-  printf "%s\n" "$SUMMARY_HEADER" > "$merged"
-  : > "$missing"
+  acquire_merge_lock "$lockdir"
+  trap 'release_merge_lock "$lockdir"; rm -rf "$tmp_prefix"' RETURN
 
-  local sp summary_file
-  for sp in "${ALL_SPECIES[@]}"; do
-    summary_file="${OUTDIR}/$(safe_id "$sp").summary.tsv"
+  log "Merging per-reference summaries into ${merged}"
+  printf "%s\n" "$SUMMARY_HEADER" > "${tmp_prefix}/merged"
+  : > "${tmp_prefix}/missing"
+
+  local idx sp summary_id summary_file
+  for idx in "${!ALL_SPECIES[@]}"; do
+    sp="${ALL_SPECIES[$idx]}"
+    summary_id="${SUMMARY_IDS[$idx]}"
+    summary_file="${OUTDIR}/${summary_id}.summary.tsv"
     if [[ -s "$summary_file" ]]; then
-      tail -n +2 "$summary_file" >> "$merged"
+      append_valid_summary_body "$summary_file" "${tmp_prefix}/merged" "$expected_cols"
     else
-      printf "%s\n" "$sp" >> "$missing"
+      printf "%s\t%s\n" "$sp" "$summary_id" >> "${tmp_prefix}/missing"
     fi
   done
 
-  # Merge #C-Ambiguous fragment lists. Keep one header.
-  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "$c_ambig_min"
-  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "$c_ambig_full"
-  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "$c_ambig_min_bed"
-  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "$c_ambig_full_bed"
-  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "$c_ambig_final"
-  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "$c_ambig_final_bed"
+  mv -f "${tmp_prefix}/merged" "$merged"
+  mv -f "${tmp_prefix}/missing" "$missing"
 
-  for sp in "${ALL_SPECIES[@]}"; do
-    sp_id=$(safe_id "$sp")
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" >> "$c_ambig_min"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.tsv" >> "$c_ambig_full"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" >> "$c_ambig_min_bed"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" >> "$c_ambig_full_bed"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.tsv" >> "$c_ambig_final"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.bed" >> "$c_ambig_final_bed"
+  # Merge #C-Ambiguous fragment lists. Keep one header.
+  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "${tmp_prefix}/c_ambig_min"
+  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "${tmp_prefix}/c_ambig_full"
+  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "${tmp_prefix}/c_ambig_min_bed"
+  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "${tmp_prefix}/c_ambig_full_bed"
+  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "${tmp_prefix}/c_ambig_final"
+  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "${tmp_prefix}/c_ambig_final_bed"
+
+  for idx in "${!ALL_SPECIES[@]}"; do
+    sp="${ALL_SPECIES[$idx]}"
+    sp_id="${SUMMARY_IDS[$idx]}"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" >> "${tmp_prefix}/c_ambig_min"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.tsv" >> "${tmp_prefix}/c_ambig_full"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" >> "${tmp_prefix}/c_ambig_min_bed"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" >> "${tmp_prefix}/c_ambig_full_bed"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.tsv" >> "${tmp_prefix}/c_ambig_final"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.bed" >> "${tmp_prefix}/c_ambig_final_bed"
   done
+
+
+  mv -f "${tmp_prefix}/c_ambig_min" "$c_ambig_min"
+  mv -f "${tmp_prefix}/c_ambig_full" "$c_ambig_full"
+  mv -f "${tmp_prefix}/c_ambig_min_bed" "$c_ambig_min_bed"
+  mv -f "${tmp_prefix}/c_ambig_full_bed" "$c_ambig_full_bed"
+  mv -f "${tmp_prefix}/c_ambig_final" "$c_ambig_final"
+  mv -f "${tmp_prefix}/c_ambig_final_bed" "$c_ambig_final_bed"
 
   local n_total n_merged n_missing
   n_total="${#ALL_SPECIES[@]}"
@@ -624,7 +679,7 @@ process_species() {
   species="${SPECIES_NAMES[$index]}"
   GENOME="${WG_FASTA_PATHS[$index]}"
   MITO_REF="${CHRM_FASTA_PATHS[$index]}"
-  SPECIES_ID=$(safe_id "$species")
+  SPECIES_ID="${SUMMARY_IDS[$index]}"
   BLAST_DB="${OUTDIR}/${SPECIES_ID}_db"
   STATUS_FILE="${OUTDIR}/${SPECIES_ID}.status"
   SUMMARY_FILE="${OUTDIR}/${SPECIES_ID}.summary.tsv"
@@ -728,7 +783,7 @@ PY
   fi
 
   read -r ALL_FRAG_N ALL_CONTIG_N ALL_SUBJECT_LEN ALL_LONGEST ALL_Q_BP ALL_Q_RATIO MIN_FRAG_N MIN_CONTIG_N MIN_SUBJECT_LEN MIN_LONGEST MIN_Q_BP MIN_Q_RATIO MIN_TARGET FRAG_RATIO LEN_RATIO MASK_PRIORITY MIN_BED FULL_BED CAND_TSV < <(
-    numt_mask_summary_py "$species" "$BLAST_TEMP" "$MITO_LEN" "$REF_TYPE"
+    numt_mask_summary_py "$species" "$BLAST_TEMP" "$MITO_LEN" "$REF_TYPE" "$SPECIES_ID"
   )
 
   {
@@ -777,7 +832,9 @@ with open(manifest, newline="") as handle:
         if key in seen:
             continue
         seen.add(key)
-        print("\t".join([species, wg, chrm]))
+        ordinal = len(seen)
+        safe = ''.join(ch if ch.isalnum() or ch in '_.-' else '_' for ch in species.replace(' ', '_').replace('/', '_'))
+        print("\t".join([species, wg, chrm, f"{safe}_ref{ordinal:04d}"]))
 PY
 )
 
@@ -790,19 +847,23 @@ ALL_SPECIES=()
 SPECIES_NAMES=()
 WG_FASTA_PATHS=()
 CHRM_FASTA_PATHS=()
+SUMMARY_IDS=()
 for row in "${REFERENCE_ROWS[@]}"; do
-  IFS=$'\t' read -r species wg_fasta chrM_fasta <<< "$row"
+  IFS=$'\t' read -r species wg_fasta chrM_fasta summary_id <<< "$row"
   ALL_SPECIES+=("$species")
   SPECIES_NAMES+=("$species")
   WG_FASTA_PATHS+=("$wg_fasta")
   CHRM_FASTA_PATHS+=("$chrM_fasta")
+  SUMMARY_IDS+=("$summary_id")
 done
 
 N_SPECIES="${#ALL_SPECIES[@]}"
 
 if [[ "${MERGE_ONLY:-0}" == "1" ]]; then
   merge_all_summaries
-  cp "${OUTDIR}/all_species.in_house_summary.with_numt_mask.tsv" "$MERGED_IN_HOUSE_SCORE"
+  tmp_merged_score="$(mktemp "${OUTDIR}/.merged_in_house_score.XXXXXX")"
+  cp "${OUTDIR}/all_species.in_house_summary.with_numt_mask.tsv" "$tmp_merged_score"
+  mv -f "$tmp_merged_score" "$MERGED_IN_HOUSE_SCORE"
   exit 0
 fi
 
@@ -824,7 +885,7 @@ log "Selected species index ${SLURM_ARRAY_TASK_ID}/${N_SPECIES}: ${SPECIES}"
   process_species "$SPECIES_INDEX"
 } || {
   err "Processing failed for $SPECIES"
-  echo "Failed" > "${OUTDIR}/$(safe_id "$SPECIES").status"
+  echo "Failed" > "${OUTDIR}/${SUMMARY_IDS[$SPECIES_INDEX]}.status"
   exit 1
 }
 
