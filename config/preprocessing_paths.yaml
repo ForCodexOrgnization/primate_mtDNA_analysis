@@ -6,6 +6,22 @@ reference_discovery_outdir: "results/preprocessing/reference_discovery"
 email: "your_email@yale.edu"
 max_nearest: 200
 delay: 0.34
+# Number of target species to analyze concurrently during reference discovery.
+# Keep at 1 for the most conservative NCBI/DNAZoo access; increase cautiously on HPC.
+reference_discovery_threads: 1
+
+# Optional HPC environment setup. Point this to a shell script that loads modules
+# or activates a conda environment before preprocessing checks required commands.
+# Example setup script contents:
+#   module load R samtools wget
+#   # or: source /path/to/miniconda3/etc/profile.d/conda.sh && conda activate primate-mtdna
+environment_setup_script: "config/preprocessing_hpc_env.sh"
+# rscript_command: "Rscript"
+# python_command: "python3"
+# wget_command: "wget"
+# samtools_command: "samtools"
+# curl_command: "curl"
+# efetch_command: "efetch"
 
 # Optional HPC environment setup. Point this to a shell script that loads modules
 # or activates a conda environment before preprocessing checks required commands.

@@ -37,6 +37,8 @@ HPC environment config keys:
   samtools_command          samtools executable name/path (default: samtools).
   curl_command             curl executable name/path (default: curl).
   efetch_command           efetch executable name/path (default: efetch).
+  reference_discovery_threads
+                            Species-level worker threads for reference discovery (default: 1).
 
 Slurm submit environment overrides for --submit:
   SLURM_PARTITION           Optional partition/queue name.
@@ -146,6 +148,7 @@ REFERENCE_DISCOVERY_OUTDIR=$(config_get reference_discovery_outdir "results/prep
 EMAIL=$(config_get email "your_email@yale.edu")
 MAX_NEAREST=$(config_get max_nearest "200")
 DELAY=$(config_get delay "0.34")
+REFERENCE_DISCOVERY_THREADS=$(config_get reference_discovery_threads "1")
 
 SPECIES_REFERENCE_SUMMARY=$(config_get species_reference_summary "data/metadata/species_reference_chrM_summary.tsv")
 REFERENCE_MATERIALIZATION_RESULTS_MANIFEST=$(config_get reference_materialization_results_manifest "results/preprocessing/reference_materialization/reference_materialization_manifest.tsv")
@@ -188,6 +191,15 @@ EOFMSG
   fi
 }
 
+
+require_nonempty_file() {
+  local path="$1" description="${2:-file}"
+  if [[ ! -s "$path" ]]; then
+    echo "ERROR: missing or empty ${description}: ${path}" >&2
+    exit 1
+  fi
+}
+
 check_reference_discovery_environment() {
   require_command "$PYTHON_COMMAND" "Python interpreter for reference discovery"
 }
@@ -218,6 +230,7 @@ run_reference_discovery() {
   EMAIL="$EMAIL" \
   MAX_NEAREST="$MAX_NEAREST" \
   DELAY="$DELAY" \
+  REFERENCE_DISCOVERY_THREADS="$REFERENCE_DISCOVERY_THREADS" \
   PYTHON_COMMAND="$PYTHON_COMMAND" \
     bash preprocessing/scripts/run_reference_discovery.sh
   cat >&2 <<EOFMSG
@@ -249,6 +262,7 @@ EOFMSG
 
 run_reference_materialization() {
   echo "[preprocessing] Building reference materialization manifest from: $SPECIES_REFERENCE_SUMMARY" >&2
+  require_nonempty_file "$SPECIES_REFERENCE_SUMMARY" "reviewed species reference summary"
   check_reference_materialization_environment
   "$RSCRIPT_COMMAND" preprocessing/scripts/build_reference_materialization_manifest.R \
     "$SPECIES_REFERENCE_SUMMARY" \
@@ -271,6 +285,8 @@ run_in_house_score() {
 
 run_variant_inputs() {
   echo "[preprocessing] Preparing variant-calling inputs: $VARIANT_CALLING_INPUT_TABLE" >&2
+  require_nonempty_file "$SAMPLE_METADATA" "sample metadata"
+  require_nonempty_file "$IN_HOUSE_SCORE_REFERENCE_INPUTS" "in-house score reference inputs"
   check_variant_inputs_environment
   "$RSCRIPT_COMMAND" preprocessing/scripts/prepare_variant_calling_inputs.R \
     "$SAMPLE_METADATA" \

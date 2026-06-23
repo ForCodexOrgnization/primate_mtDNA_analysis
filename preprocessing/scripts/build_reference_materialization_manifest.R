@@ -17,7 +17,7 @@ df$chrM_source_fasta_type <- ifelse(df$chrM_reference_context == "embedded_in_wg
 df$chrM_source_accession <- coalesce_chr(df$final_chrM_accession, df$final_chrM_refseq_accn, df$final_chrM_genbank_accn)
 df$chrM_source_assembly_accession <- coalesce_chr(df$final_chrM_assembly_accession)
 df$chrM_source_contig_name <- coalesce_chr(df$final_chrM_contig_name, df$final_chrM_refseq_accn, df$final_chrM_genbank_accn, df$final_chrM_accession)
-df$wg_expected_output_fasta <- ifelse(coalesce_chr(df$final_wg_assembly_accession) == "", "", file.path("references/wg", df$final_wg_assembly_accession, paste0(df$final_wg_assembly_accession, ".genome.fa.gz")))
+df$wg_expected_output_fasta <- ifelse(coalesce_chr(df$final_wg_assembly_accession) == "", "", file.path("references/wg", df$final_wg_assembly_accession, paste0(df$final_wg_assembly_accession, ".genome.fa")))
 chr_fallback <- paste0(safe_token(df$target_species), ".chrM.fa")
 df$chrM_expected_output_fasta <- ifelse(df$chrM_reference_context == "embedded_in_wg_ref", file.path("references/chrM/embedded_from_wg", paste0(df$final_wg_assembly_accession, ".chrM.fa")), ifelse(df$chrM_reference_context == "independent_chrM_ref", file.path("references/chrM/independent", ifelse(coalesce_chr(df$final_chrM_accession) == "", chr_fallback, paste0(df$final_chrM_accession, ".fa"))), ""))
 df$reference_pairing_status <- reference_pairing_status(df$target_species, df$final_wg_ref_species, df$final_chrM_species)
