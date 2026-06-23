@@ -23,19 +23,6 @@ environment_setup_script: "config/preprocessing_hpc_env.sh"
 # curl_command: "curl"
 # efetch_command: "efetch"
 
-# Optional HPC environment setup. Point this to a shell script that loads modules
-# or activates a conda environment before preprocessing checks required commands.
-# Example setup script contents:
-#   module load R samtools wget
-#   # or: source /path/to/miniconda3/etc/profile.d/conda.sh && conda activate primate-mtdna
-environment_setup_script: "config/preprocessing_hpc_env.sh"
-# rscript_command: "Rscript"
-# python_command: "python3"
-# wget_command: "wget"
-# samtools_command: "samtools"
-# curl_command: "curl"
-# efetch_command: "efetch"
-
 # Reviewed reference-discovery manifest used after manual review.
 species_reference_summary: "data/metadata/species_reference_chrM_summary.tsv"
 
