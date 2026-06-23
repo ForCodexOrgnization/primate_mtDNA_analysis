@@ -65,6 +65,34 @@ The `all` command intentionally runs only reference discovery and then stops, be
 
 Downloaded WG FASTA files, chrM FASTA files, FASTA indexes, BLAST outputs, and other generated reference artifacts are HPC-local outputs. Do not commit these large downloaded/generated reference files to GitHub; commit only small metadata/configuration files and reviewed manifests when appropriate.
 
+
+## HPC environment setup
+
+Before each preprocessing step runs, `preprocessing/scripts/run_preprocessing.sh` can source an optional setup script configured in `config/preprocessing_paths.yaml`. Use this for HPC-specific commands such as `module load`, `conda activate`, or site-specific executable paths. The runner checks required commands before starting each step and fails early with a clear message if a required tool is still unavailable.
+
+Example config:
+
+```yaml
+environment_setup_script: "config/preprocessing_hpc_env.sh"
+rscript_command: "Rscript"
+python_command: "python3"
+wget_command: "wget"
+samtools_command: "samtools"
+curl_command: "curl"
+efetch_command: "efetch"
+```
+
+A safe example setup file is included at `config/preprocessing_hpc_env.sh` and is referenced by the default config. Edit that file for your cluster before running steps that require modules or a conda environment. For example:
+
+```bash
+module load R samtools wget
+# or activate a project environment:
+# source /path/to/miniconda3/etc/profile.d/conda.sh
+# conda activate primate-mtdna
+```
+
+If your cluster provides tools under non-standard names or absolute paths, set the matching `*_command` key instead of relying on `PATH`.
+
 ## Step 0. Reference discovery
 
 `preprocessing/scripts/run_reference_discovery.sh` runs `find_primate_wg_chrM_refs.py` on `data/metadata/all_species_list.txt`, a local RefSeq mitochondrion FASTA, and a primate tree. The raw output is written to `results/preprocessing/reference_discovery/species_reference_chrM_summary.tsv`. After manual review, copy or symlink the stable manifest to `data/metadata/species_reference_chrM_summary.tsv`.
