@@ -1111,10 +1111,21 @@ class ReferenceFinder:
         notes = []
 
         if same_wg_best:
-            final_wg = same_wg_best
             final_wg_rank = "0"
             final_wg_dist = "0"
             if same_wg_chrM:
+                # If the RefSeq/GenBank partner accessions differ, the highest-scoring
+                # WG assembly is not always the assembly that actually carries a
+                # complete chrM record.  For embedded chrM references, download the
+                # accession whose assembly report proved chrM is present; otherwise
+                # materialization may fetch the GCA/GCF partner lacking chrM and then
+                # fail extraction.
+                final_wg = same_wg_chrM
+                if same_wg_best.assembly_accession != same_wg_chrM.assembly_accession:
+                    notes.append(
+                        "final_wg_switched_to_chrM_bearing_assembly:"
+                        f"{same_wg_best.assembly_accession}->{same_wg_chrM.assembly_accession}"
+                    )
                 final_chrM = self.make_mito_hit_from_wg_chrM(
                     target,
                     same_wg_chrM,
@@ -1123,6 +1134,7 @@ class ReferenceFinder:
                     dist="0",
                 )
             else:
+                final_wg = same_wg_best
                 final_chrM = self.search_same_species_chrM(target)
                 if not final_chrM:
                     final_chrM, nearest_chrM_info = self.search_nearest_chrM(target, preprint_ref)
@@ -1146,10 +1158,17 @@ class ReferenceFinder:
                 preprint_wg = pre_hits[0]
                 preprint_wg_chrM = self.find_wg_with_chrM_among_hits(pre_hits)
                 if final_wg is None:
-                    final_wg = preprint_wg
+                    # As above, use the preprint-reference accession that was
+                    # verified to contain chrM when one is available.
+                    final_wg = preprint_wg_chrM if preprint_wg_chrM else preprint_wg
                     final_wg_rank = "preprint_REFERENCE_SPECIES"
                     final_wg_dist = "NA"
                     notes.append("final_wg_used_preprint_REFERENCE_SPECIES_fallback")
+                    if preprint_wg_chrM and preprint_wg.assembly_accession != preprint_wg_chrM.assembly_accession:
+                        notes.append(
+                            "final_wg_switched_to_preprint_chrM_bearing_assembly:"
+                            f"{preprint_wg.assembly_accession}->{preprint_wg_chrM.assembly_accession}"
+                        )
                 if final_chrM is None and preprint_wg_chrM:
                     final_chrM = self.make_mito_hit_from_wg_chrM(
                         target,
