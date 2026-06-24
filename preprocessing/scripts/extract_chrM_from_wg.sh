@@ -13,6 +13,55 @@ for c in "$@"; do
   m=$(awk -v c="$c" '$1 ~ "^" c "(\\.|$)" {print $1; exit}' "$WG_FASTA.fai")
   [[ -n "$m" ]] && { match="$m"; break; }
 done
+if [[ -z "$match" ]]; then
+  # Do not rely only on manifest/assembly-report accessions.  Some NCBI GCA/GCF
+  # partners use mitochondrial names such as chrMT/MT/M in the local FASTA even
+  # when the expected accession fields differ, so scan the actual local FASTA
+  # headers and keep only complete-mitogenome-sized records.
+  match=$(
+    awk -v min="$MIN_LEN" -v max="$MAX_LEN" '
+      function emit() {
+        if (name != "" && len >= min && len <= max && is_mito(header, name)) {
+          score = mito_score(header, name)
+          if (score > best_score) {
+            best_score = score
+            best_name = name
+          }
+        }
+      }
+      function is_mito(h, n, lower_h, lower_n) {
+        lower_h = tolower(h)
+        lower_n = tolower(n)
+        return (lower_n ~ /^(chrm|chrmt|mt|m)$/ || lower_n ~ /(^|[_|.:-])(chrm|chrmt|mt|mitochondrion|mitochondrial)([_|.:-]|$)/ || lower_h ~ /(^|[[:space:]_.,;:|()-])(chrm|chrmt|mt|mitochondrion|mitochondrial|mitochondria)([[:space:]_.,;:|()-]|$)/)
+      }
+      function mito_score(h, n, lower_h, lower_n, s) {
+        lower_h = tolower(h)
+        lower_n = tolower(n)
+        s = 0
+        if (lower_n == "chrm" || lower_n == "chrmt" || lower_n == "mt" || lower_n == "m") s += 100
+        if (lower_h ~ /complete[[:space:]_-]+mitochond/) s += 50
+        if (lower_h ~ /mitochond/) s += 20
+        return s
+      }
+      /^>/ {
+        emit()
+        header = substr($0, 2)
+        split(header, parts, /[[:space:]]+/)
+        name = parts[1]
+        len = 0
+        next
+      }
+      {
+        gsub(/[[:space:]]/, "", $0)
+        len += length($0)
+      }
+      END {
+        emit()
+        if (best_name != "") print best_name
+      }
+    ' "$WG_FASTA"
+  )
+fi
 [[ -n "$match" ]] || { echo -e "failure\tno_candidate_found" >&2; exit 1; }
 "$SAMTOOLS_COMMAND" faidx "$WG_FASTA" "$match" > "$OUT"
 "$SAMTOOLS_COMMAND" faidx "$OUT"
