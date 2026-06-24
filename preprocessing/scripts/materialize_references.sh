@@ -59,6 +59,82 @@ def ensure_indexable_wg_fasta(wg_path, src_url):
     return fasta_path
 
 
+def clean_path(path):
+    if not path:
+        return
+    for candidate in [path, path + ".fai", path + ".gz"]:
+        try:
+            if os.path.isdir(candidate):
+                shutil.rmtree(candidate)
+            elif os.path.exists(candidate):
+                os.remove(candidate)
+        except FileNotFoundError:
+            pass
+
+
+def clean_wg_materialization(asm):
+    if asm:
+        clean_path(os.path.join("references", "wg", asm))
+
+
+def ncbi_summary_cache_path(kind):
+    return os.path.join(os.path.dirname(dl), f"assembly_summary_{kind}.txt")
+
+
+def ensure_ncbi_summary(kind):
+    path = ncbi_summary_cache_path(kind)
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return path
+    url = f"https://ftp.ncbi.nlm.nih.gov/genomes/{kind}/assembly_summary_{kind}.txt"
+    download_file(url, path)
+    return path
+
+
+def find_ncbi_assembly_row(accession):
+    if not accession:
+        return None
+    fields = None
+    for kind in ["refseq", "genbank"]:
+        path = ensure_ncbi_summary(kind)
+        with open(path, newline="") as handle:
+            for line in handle:
+                if line.startswith("# assembly_accession"):
+                    fields = line[2:].rstrip("\n").split("\t")
+                    continue
+                if line.startswith("#"):
+                    continue
+                vals = line.rstrip("\n").split("\t")
+                if fields and len(vals) >= len(fields) and vals[0] == accession:
+                    return dict(zip(fields, vals))
+    return None
+
+
+def find_gca_gcf_partner(accession):
+    row = find_ncbi_assembly_row(accession)
+    if not row:
+        return None
+    partner = row.get("gbrs_paired_asm", "")
+    if not partner or partner in ("na", "-", accession):
+        return None
+    return find_ncbi_assembly_row(partner)
+
+
+def materialize_wg_from_row(row):
+    asm = row.get("assembly_accession", "")
+    ftp = row.get("ftp_path", "")
+    if not asm or not ftp or ftp in ("na", "-"):
+        raise RuntimeError("paired_assembly_missing_ftp_or_accession")
+    wg_path = f"references/wg/{asm}/{asm}.genome.fa"
+    report_path = f"references/wg/{asm}/{asm}.assembly_report.txt"
+    os.makedirs(os.path.dirname(wg_path), exist_ok=True)
+    base = ftp.rstrip("/").split("/")[-1]
+    src = f"{ftp.rstrip('/')}/{base}_genomic.fna.gz"
+    rep = f"{ftp.rstrip('/')}/{base}_assembly_report.txt"
+    wg_path = ensure_indexable_wg_fasta(wg_path, src)
+    download_file(rep, report_path)
+    return asm, wg_path, report_path
+
+
 rows = list(csv.DictReader(open(man), delimiter="\t"))
 for r in rows:
     asm = r.get("final_wg_assembly_accession", "")
@@ -85,9 +161,6 @@ for r in rows:
     elif "dnazoo" in r.get("final_wg_ref_source", "").lower():
         status = "manual_review"
         msg = "dnazoo_download_not_implemented"
-    with open(dl, "a") as handle:
-        handle.write("\t".join([target, asm, status, wg, wg + ".fai" if wg else "", report, msg]) + "\n")
-
     chrout = r.get("chrM_expected_output_fasta", "")
     ctx = r.get("chrM_reference_context", "")
     estatus = "skipped"
@@ -99,8 +172,37 @@ for r in rows:
             estatus = "success"
             emsg = "extracted_from_wg"
         except Exception as e:
-            estatus = "failure"
-            emsg = str(e).replace("\t", " ")
+            first_error = str(e).replace("\t", " ")
+            partner_row = None
+            try:
+                partner_row = find_gca_gcf_partner(asm)
+            except Exception as partner_lookup_error:
+                first_error += f"; paired_assembly_lookup_failed:{str(partner_lookup_error).replace(chr(9), ' ')}"
+            if partner_row:
+                partner_asm = partner_row.get("assembly_accession", "")
+                partner_chrout = os.path.join("references", "chrM", "embedded_from_wg", f"{partner_asm}.chrM.fa")
+                clean_path(chrout)
+                clean_wg_materialization(asm)
+                try:
+                    partner_asm, wg, report = materialize_wg_from_row(partner_row)
+                    chrout = partner_chrout
+                    asm = partner_asm
+                    subprocess.check_call(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg, chrout] + cands)
+                    status = "success"
+                    msg = "downloaded_gca_gcf_partner_after_chrM_missing"
+                    estatus = "success"
+                    emsg = f"extracted_from_gca_gcf_partner_after_initial_failure:{first_error}"
+                except Exception as partner_error:
+                    clean_path(partner_chrout)
+                    clean_wg_materialization(partner_asm)
+                    estatus = "failure"
+                    emsg = (
+                        f"{first_error}; paired_assembly_{partner_asm}_chrM_extraction_failed:"
+                        f"{str(partner_error).replace(chr(9), ' ')}"
+                    )
+            else:
+                estatus = "failure"
+                emsg = first_error + "; no_gca_gcf_partner_found"
     elif chrout and ctx == "independent_chrM_ref":
         acc = r.get("final_chrM_accession", "")
         try:
@@ -110,6 +212,8 @@ for r in rows:
         except Exception as e:
             estatus = "failure"
             emsg = str(e).replace("\t", " ")
+    with open(dl, "a") as handle:
+        handle.write("\t".join([target, asm, status, wg, wg + ".fai" if wg else "", report, msg]) + "\n")
     with open(ex, "a") as handle:
         handle.write("\t".join([target, ctx, estatus, chrout, chrout + ".fai" if chrout else "", emsg]) + "\n")
 PY
