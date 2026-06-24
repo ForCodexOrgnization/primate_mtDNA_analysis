@@ -119,6 +119,32 @@ def find_gca_gcf_partner(accession):
     return find_ncbi_assembly_row(partner)
 
 
+def parse_assembly_report_chrM_candidates(report_path):
+    candidates = []
+    if not report_path or not os.path.exists(report_path):
+        return candidates
+    with open(report_path, newline="") as handle:
+        for line in handle:
+            if not line.strip() or line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 10:
+                continue
+            sequence_role = fields[1].lower()
+            assigned_molecule = fields[2].lower()
+            genbank_accn = fields[4]
+            refseq_accn = fields[6]
+            ucsc_name = fields[9]
+            if (
+                assigned_molecule in ("mt", "m", "mitochondrion", "mitochondria", "chrm")
+                or "mitochond" in assigned_molecule
+                or "mitochond" in sequence_role
+                or ucsc_name == "chrM"
+            ):
+                candidates.extend([ucsc_name, refseq_accn, genbank_accn, fields[0]])
+    return [c for c in dict.fromkeys(candidates) if c and c not in ("na", "-")]
+
+
 def materialize_wg_from_row(row):
     asm = row.get("assembly_accession", "")
     ftp = row.get("ftp_path", "")
@@ -187,7 +213,14 @@ for r in rows:
                     partner_asm, wg, report = materialize_wg_from_row(partner_row)
                     chrout = partner_chrout
                     asm = partner_asm
-                    subprocess.check_call(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg, chrout] + cands)
+                    partner_cands = parse_assembly_report_chrM_candidates(report)
+                    subprocess.check_call(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg, chrout] + partner_cands + cands)
+                    r["final_wg_assembly_accession"] = partner_asm
+                    r["final_wg_ftp_path"] = partner_row.get("ftp_path", "")
+                    r["final_chrM_assembly_accession"] = partner_asm
+                    r["chrM_source_assembly_accession"] = partner_asm
+                    r["wg_expected_output_fasta"] = wg
+                    r["chrM_expected_output_fasta"] = chrout
                     status = "success"
                     msg = "downloaded_gca_gcf_partner_after_chrM_missing"
                     estatus = "success"
@@ -216,6 +249,20 @@ for r in rows:
         handle.write("\t".join([target, asm, status, wg, wg + ".fai" if wg else "", report, msg]) + "\n")
     with open(ex, "a") as handle:
         handle.write("\t".join([target, ctx, estatus, chrout, chrout + ".fai" if chrout else "", emsg]) + "\n")
+
+if rows:
+    with open(man, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()), delimiter="\t", extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    manifest_counterparts = [
+        os.path.join("references", "manifests", "reference_materialization_manifest.tsv"),
+        os.path.join("results", "preprocessing", "reference_materialization", "reference_materialization_manifest.tsv"),
+    ]
+    for counterpart in manifest_counterparts:
+        if os.path.normpath(counterpart) != os.path.normpath(man):
+            os.makedirs(os.path.dirname(counterpart), exist_ok=True)
+            shutil.copyfile(man, counterpart)
 PY
 "$PYTHON_COMMAND" - "$MANIFEST" "$DL" "$EX" "$IH" <<'PY'
 import csv, sys
