@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=merge_ref
-#SBATCH --output=logs/numt_%A_%a.out
-#SBATCH --error=logs/numt_%A_%a.err
+#SBATCH --output=log/preprocessing/numt_%A_%a.out
+#SBATCH --error=log/preprocessing/numt_%A_%a.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
@@ -55,8 +55,9 @@ PYTHON_COMMAND="${PYTHON_COMMAND:-python3}"
 MAKEBLASTDB_COMMAND="${MAKEBLASTDB_COMMAND:-makeblastdb}"
 BLASTN_COMMAND="${BLASTN_COMMAND:-blastn}"
 ARRAY_CONCURRENCY="${ARRAY_CONCURRENCY:-50}"
+IN_HOUSE_SCORE_LOG_DIR="${IN_HOUSE_SCORE_LOG_DIR:-log/preprocessing}"
 
-mkdir -p "$OUTDIR" "logs" "${OUTDIR}/numt_candidates" "${OUTDIR}/numt_beds"
+mkdir -p "$OUTDIR" "$IN_HOUSE_SCORE_LOG_DIR" "${OUTDIR}/numt_candidates" "${OUTDIR}/numt_beds"
 if [[ -n "${BLAST_MODULE:-}" ]] && command -v module >/dev/null 2>&1; then
   module load "$BLAST_MODULE"
 fi
@@ -724,7 +725,7 @@ process_species() {
     select_annotated_mito_contig_py "$GENOME" "$MITO_LEN"
   )
 
-  if ! "$MAKEBLASTDB_COMMAND" -in "$GENOME" -dbtype nucl -out "$BLAST_DB" &> "${OUTDIR}/${SPECIES_ID}_makeblastdb.log"; then
+  if ! "$MAKEBLASTDB_COMMAND" -in "$GENOME" -dbtype nucl -out "$BLAST_DB" &> "${IN_HOUSE_SCORE_LOG_DIR}/${SPECIES_ID}_makeblastdb.log"; then
     err "makeblastdb failed for ${species}"
     printf "%s\n" "$SUMMARY_HEADER" > "$SUMMARY_FILE"
     printf "%s\tMakeDBFail\tmakeblastdb_failed\t%s\t%s\t%s\tNA\t0\t%s\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tno\tNA\tNA\tmakeblastdb_failed\tNA\tNA\tNA\n" \
@@ -741,7 +742,7 @@ process_species() {
     -perc_identity 90 \
     -num_threads "$THREADS" \
     -max_target_seqs 10000 \
-    -task blastn &> "${OUTDIR}/${SPECIES_ID}_blastn.log" || warn "blastn had non-zero exit for ${species}"
+    -task blastn &> "${IN_HOUSE_SCORE_LOG_DIR}/${SPECIES_ID}_blastn.log" || warn "blastn had non-zero exit for ${species}"
 
   SCORE="0"; M_CLIP="0"; DCPLUS="0"; DCMINUS="0"; DTPLUS="0"; DTMINUS="0"
   REF_TYPE="#C-likely_incomp"; MTLIKE_PATTERN="weak_or_no_mtlike_signal"
