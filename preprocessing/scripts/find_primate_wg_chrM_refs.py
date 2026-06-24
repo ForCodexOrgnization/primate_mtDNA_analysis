@@ -217,6 +217,8 @@ class AssemblyHit:
     seq_rel_date: str = ""
     asm_name: str = ""
     submitter: str = ""
+    gbrs_paired_asm: str = ""
+    paired_asm_comp: str = ""
     ftp_path: str = ""
     dna_zoo_prefix: str = ""
     score: int = 0
@@ -509,9 +511,11 @@ class ReferenceFinder:
         setattr(self.tree, "max_nearest", max_nearest)
         self.delay = delay
         self.assemblies_by_species: Dict[str, List[AssemblyHit]] = defaultdict(list)
+        self.assemblies_by_accession: Dict[str, AssemblyHit] = {}
         self.assembly_report_cache: Dict[str, Optional[AssemblyHit]] = {}
         self.nuccore_cache: Dict[str, Optional[MitoHit]] = {}
         self.all_candidate_hits: List[AssemblyHit] = []
+        self.checked_assembly_hits: List[AssemblyHit] = []
         self.nuccore_hits: List[MitoHit] = []
         self._cache_lock = threading.RLock()
         self._results_lock = threading.Lock()
@@ -555,11 +559,14 @@ class ReferenceFinder:
                     genome_rep=f[13],
                     seq_rel_date=f[14],
                     asm_name=f[15],
-                    submitter=f[17],
+                    submitter=f[16],
+                    gbrs_paired_asm=f[17],
+                    paired_asm_comp=f[18],
                     ftp_path=f[19],
                 )
                 hit.score = self._assembly_score(hit)
                 self.assemblies_by_species[sp_key].append(hit)
+                self.assemblies_by_accession[hit.assembly_accession] = hit
 
     def _assembly_score(self, h: AssemblyHit) -> int:
         s = 0
@@ -679,11 +686,15 @@ class ReferenceFinder:
                 hit.has_chrM = "no"
             with self._cache_lock:
                 self.assembly_report_cache[hit.assembly_accession] = AssemblyHit(**asdict(hit))
+            with self._results_lock:
+                self.checked_assembly_hits.append(AssemblyHit(**asdict(hit)))
         except Exception as e:
             hit.has_chrM = "assembly_report_unavailable"
             warn(f"Failed to check assembly report for {hit.assembly_accession}: {e}")
             with self._cache_lock:
                 self.assembly_report_cache[hit.assembly_accession] = None
+            with self._results_lock:
+                self.checked_assembly_hits.append(AssemblyHit(**asdict(hit)))
         return hit
 
     def _parse_assembly_report_for_chrM(self, path: str) -> Optional[Dict[str, str]]:
@@ -741,11 +752,44 @@ class ReferenceFinder:
             return s
         return sorted(pool, key=score, reverse=True)[0]
 
+    def paired_assembly_hit(self, hit: AssemblyHit) -> Optional[AssemblyHit]:
+        """Return the NCBI GCA/GCF paired assembly for a hit when it is indexed."""
+        paired = clean_field(hit.gbrs_paired_asm)
+        if not paired or paired == hit.assembly_accession:
+            return None
+        partner = self.assemblies_by_accession.get(paired)
+        if not partner:
+            return None
+        partner_copy = AssemblyHit(**asdict(partner))
+        partner_copy.query_species = hit.query_species
+        partner_copy.matched_species = hit.matched_species
+        return partner_copy
+
+    def expand_hits_with_gca_gcf_partners(self, hits: List[AssemblyHit]) -> List[AssemblyHit]:
+        """Include paired GCA/GCF assemblies so discovery validates the actual chrM-bearing partner."""
+        expanded = []
+        seen = set()
+        for h in hits:
+            for candidate in (h, self.paired_assembly_hit(h)):
+                if candidate is None or candidate.assembly_accession in seen:
+                    continue
+                expanded.append(candidate)
+                seen.add(candidate.assembly_accession)
+        return expanded
+
     def find_wg_with_chrM_among_hits(self, hits: List[AssemblyHit]) -> Optional[AssemblyHit]:
         checked = []
-        for h in hits:
+        for h in self.expand_hits_with_gca_gcf_partners(hits):
             hc = self.check_assembly_chrM(h)
             checked.append(hc)
+        if checked:
+            log(
+                "WG chrM check: "
+                + "; ".join(
+                    f"{h.assembly_accession}:{h.has_chrM}:{h.chrM_contig_name}:{h.chrM_length}"
+                    for h in checked
+                )
+            )
         # Which source has chrM? Prefer RefSeq with chrM, then GenBank with chrM.
         with_chrM = [h for h in checked if h.has_chrM == "yes"]
         if not with_chrM:
@@ -1222,10 +1266,13 @@ class ReferenceFinder:
             "same_species_wg_assembly_level": same_wg_best.assembly_level if same_wg_best else "",
             "same_species_wg_organism_name": same_wg_best.organism_name if same_wg_best else "",
             "same_species_wg_ftp_path": same_wg_best.ftp_path if same_wg_best else "",
+            "same_species_wg_paired_assembly_accession": same_wg_best.gbrs_paired_asm if same_wg_best else "",
+            "same_species_wg_paired_assembly_comparison": same_wg_best.paired_asm_comp if same_wg_best else "",
             "same_species_wg_has_chrM": "yes" if same_wg_chrM else ("no" if same_wg_best else ""),
             "same_species_wg_chrM_status": same_wg_chrM.has_chrM if same_wg_chrM else (same_wg_best.has_chrM if same_wg_best else ""),
             "same_species_wg_chrM_assembly_source": same_wg_chrM.source if same_wg_chrM else "",
             "same_species_wg_chrM_assembly_accession": same_wg_chrM.assembly_accession if same_wg_chrM else "",
+            "same_species_wg_chrM_paired_assembly_accession": same_wg_chrM.gbrs_paired_asm if same_wg_chrM else "",
             "same_species_wg_chrM_contig_name": same_wg_chrM.chrM_contig_name if same_wg_chrM else "",
             "same_species_wg_chrM_genbank_accn": same_wg_chrM.chrM_genbank_accn if same_wg_chrM else "",
             "same_species_wg_chrM_refseq_accn": same_wg_chrM.chrM_refseq_accn if same_wg_chrM else "",
@@ -1414,6 +1461,9 @@ def main():
     cand_rows = [asdict(h) for h in finder.all_candidate_hits]
     if cand_rows:
         write_tsv(os.path.join(args.outdir, "all_candidate_wg_refs.tsv"), cand_rows)
+    checked_rows = [asdict(h) for h in finder.checked_assembly_hits]
+    if checked_rows:
+        write_tsv(os.path.join(args.outdir, "assembly_chrM_diagnostics.tsv"), checked_rows)
 
     # Nuccore hits.
     nuc_rows = [asdict(h) for h in finder.nuccore_hits]
