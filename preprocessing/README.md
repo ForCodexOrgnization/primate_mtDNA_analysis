@@ -103,7 +103,7 @@ For faster discovery on HPC, set `reference_discovery_threads` in `config/prepro
 
 `preprocessing/scripts/build_reference_materialization_manifest.R` reads the reviewed discovery manifest and writes `reference_materialization_manifest.tsv` to both `results/preprocessing/reference_materialization/` and `references/manifests/`. It classifies chrM as `embedded_in_wg_ref`, `independent_chrM_ref`, or `missing_chrM_ref` and constructs expected local FASTA paths.
 
-`preprocessing/scripts/materialize_references.sh` downloads WG FASTA files, stores NCBI `genomic.fna.gz` downloads as decompressed `.genome.fa` files so `samtools faidx` can index them, extracts embedded chrM records from the matching WG FASTA, downloads or extracts independent chrM FASTA files, and writes `references/manifests/in_house_score_reference_inputs.tsv`.
+`preprocessing/scripts/materialize_references.sh` downloads WG FASTA files, stores NCBI `genomic.fna.gz` downloads as decompressed `.genome.fa` files so `samtools faidx` can index them, extracts embedded chrM records from the matching WG FASTA, falls back from a non-chrM-bearing GCA/GCF assembly to its paired NCBI assembly before retrying embedded extraction, downloads or extracts independent chrM FASTA files, and writes `references/manifests/in_house_score_reference_inputs.tsv`.
 
 ## Step 2. In-house score and minimal NUMT mask selection
 
