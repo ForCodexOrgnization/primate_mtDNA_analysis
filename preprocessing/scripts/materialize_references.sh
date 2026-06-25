@@ -4,7 +4,7 @@ MANIFEST=${1:-references/manifests/reference_materialization_manifest.tsv}
 OUTDIR=${OUTDIR:-results/preprocessing/reference_materialization}
 LOCAL_MITO_FASTA=${LOCAL_MITO_FASTA:-}
 mkdir -p "$OUTDIR" references/wg references/chrM/embedded_from_wg references/chrM/independent references/manifests
-DL="$OUTDIR/reference_download_manifest.tsv"; EX="$OUTDIR/chrM_extraction_manifest.tsv"; IH="$OUTDIR/in_house_score_reference_inputs.tsv"
+DL="$OUTDIR/reference_download_manifest.tsv"; EX="$OUTDIR/chrM_extraction_manifest.tsv"; IH="$OUTDIR/in_house_score_reference_inputs.tsv"; CC="$OUTDIR/chrM_candidate_check.tsv"
 PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
 WGET_COMMAND=${WGET_COMMAND:-wget}
 SAMTOOLS_COMMAND=${SAMTOOLS_COMMAND:-samtools}
@@ -13,9 +13,10 @@ EFETCH_COMMAND=${EFETCH_COMMAND:-efetch}
 export WGET_COMMAND SAMTOOLS_COMMAND CURL_COMMAND EFETCH_COMMAND
 echo -e "target_species\tassembly_accession\tstatus\twg_fasta_path\twg_fai_path\twg_assembly_report_path\tmessage" > "$DL"
 echo -e "target_species\tchrM_reference_context\tstatus\tchrM_fasta_path\tchrM_fai_path\tmessage" > "$EX"
-"$PYTHON_COMMAND" - "$MANIFEST" "$DL" "$EX" <<'PY'
+echo -e "target_species\tattempted_assembly_accession\tattempt_type\twg_fasta_path\tassembly_report_path\tcandidate_names\tcandidates_found_in_fai\tcandidates_missing_from_fai\tstatus\tfallback_action" > "$CC"
+"$PYTHON_COMMAND" - "$MANIFEST" "$DL" "$EX" "$CC" <<'PY'
 import csv, gzip, os, shutil, subprocess, sys
-man, dl, ex = sys.argv[1:]
+man, dl, ex, cc = sys.argv[1:]
 
 
 def run(cmd):
@@ -153,6 +154,118 @@ def parse_assembly_report_chrM_candidates(report_path):
     return [c for c in dict.fromkeys(candidates) if c and c not in ("na", "-")]
 
 
+
+def swap_gca_gcf_accession(accession):
+    if accession.startswith("GCF_"):
+        return "GCA_" + accession[4:]
+    if accession.startswith("GCA_"):
+        return "GCF_" + accession[4:]
+    return ""
+
+
+def find_swapped_gca_gcf_row(accession):
+    swapped = swap_gca_gcf_accession(accession)
+    if not swapped:
+        return None
+    return find_ncbi_assembly_row(swapped)
+
+
+def fasta_index_names(wg_path):
+    fai = wg_path + ".fai" if wg_path else ""
+    if not fai or not os.path.exists(fai):
+        return set()
+    names = set()
+    with open(fai, newline="") as handle:
+        for line in handle:
+            if line.strip():
+                names.add(line.split("\t", 1)[0])
+    return names
+
+
+def candidate_presence(candidates, wg_path):
+    names = fasta_index_names(wg_path)
+    found = []
+    missing = []
+    for cand in [c for c in dict.fromkeys(candidates) if c]:
+        cand_found = cand in names or any(n.startswith(cand + ".") for n in names)
+        (found if cand_found else missing).append(cand)
+    return found, missing
+
+
+def append_candidate_check(target, attempted_assembly, attempt_type, wg_path, report_path, candidates, status, fallback_action):
+    found, missing = candidate_presence(candidates, wg_path)
+    with open(cc, "a", newline="") as handle:
+        handle.write("\t".join([
+            target,
+            attempted_assembly,
+            attempt_type,
+            wg_path or "",
+            report_path or "",
+            ",".join(candidates),
+            ",".join(found),
+            ",".join(missing),
+            status,
+            fallback_action,
+        ]) + "\n")
+    return found, missing
+
+
+def append_manual_reason(row, reason):
+    current = row.get("manual_review_reason", "")
+    parts = [p for p in current.split(";") if p] + [p for p in reason.split(";") if p]
+    row["manual_review_reason"] = ";".join(dict.fromkeys(parts))
+
+
+def manifest_assembly_accessions(row):
+    vals = [row.get(k, "") for k in [
+        "chrM_source_assembly_accession",
+        "final_chrM_assembly_accession",
+        "final_chrM_accession",
+    ]]
+    return [v for v in dict.fromkeys(vals) if v.startswith(("GCA_", "GCF_"))]
+
+
+def independent_chrM_accessions(row):
+    vals = [row.get(k, "") for k in [
+        "final_chrM_accession",
+        "final_chrM_refseq_accn",
+        "final_chrM_genbank_accn",
+        "chrM_source_accession",
+    ]]
+    return [v for v in dict.fromkeys(vals) if v and v not in ("na", "-")]
+
+
+def try_embedded_assembly_chrM(row, target, accession, attempt_type, candidate_sets):
+    rowinfo = find_ncbi_assembly_row(accession)
+    if not rowinfo:
+        return None, f"{attempt_type}_{accession}_not_found_in_ncbi_summary"
+    asm2 = rowinfo.get("assembly_accession", accession)
+    chrout2 = os.path.join("references", "chrM", "embedded_from_wg", f"{asm2}.chrM.fa")
+    try:
+        asm2, wg2, report2 = materialize_wg_from_row(rowinfo)
+        report_cands = parse_assembly_report_chrM_candidates(report2)
+        all_cands = []
+        for cset in [report_cands] + candidate_sets:
+            all_cands.extend(cset)
+        run_with_output(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg2, chrout2] + all_cands)
+        append_candidate_check(target, asm2, attempt_type, wg2, report2, all_cands, "success", "extracted_embedded_chrM")
+        return (asm2, wg2, report2, chrout2), "success"
+    except Exception as err:
+        clean_path(chrout2)
+        append_candidate_check(target, asm2, attempt_type, locals().get("wg2", ""), locals().get("report2", ""), locals().get("all_cands", []), "failure", str(err).replace("\t", " "))
+        return None, str(err).replace("\t", " ")
+
+
+def try_independent_chrM(row, chrout):
+    errors = []
+    for acc in independent_chrM_accessions(row):
+        try:
+            subprocess.check_call(["bash", "preprocessing/scripts/download_independent_chrM.sh", acc, chrout, os.environ.get("LOCAL_MITO_FASTA", "")])
+            return acc, "success"
+        except Exception as e:
+            errors.append(f"{acc}:{str(e).replace(chr(9), ' ')}")
+    return "", "; ".join(errors) if errors else "no_independent_chrM_accession"
+
 def materialize_wg_from_row(row):
     asm = row.get("assembly_accession", "")
     ftp = row.get("ftp_path", "")
@@ -201,49 +314,81 @@ for r in rows:
     emsg = "missing_chrM_ref"
     if chrout and ctx == "embedded_in_wg_ref" and wg:
         cands = [r.get(k, "") for k in ["final_chrM_contig_name", "final_chrM_refseq_accn", "final_chrM_genbank_accn", "final_chrM_accession", "final_chrM_ucsc_name"]]
+        report_cands = parse_assembly_report_chrM_candidates(report)
+        current_cands = cands + report_cands
         try:
-            run_with_output(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg, chrout] + cands)
+            run_with_output(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg, chrout] + current_cands)
             estatus = "success"
             emsg = "extracted_from_wg"
+            append_candidate_check(target, asm, "current_final_wg", wg, report, current_cands, "success", "none")
         except Exception as e:
             first_error = str(e).replace("\t", " ")
-            partner_row = None
-            try:
-                partner_row = find_gca_gcf_partner(asm)
-            except Exception as partner_lookup_error:
-                first_error += f"; paired_assembly_lookup_failed:{str(partner_lookup_error).replace(chr(9), ' ')}"
-            if partner_row:
-                partner_asm = partner_row.get("assembly_accession", "")
-                partner_chrout = os.path.join("references", "chrM", "embedded_from_wg", f"{partner_asm}.chrM.fa")
-                clean_path(chrout)
-                clean_wg_materialization(asm)
+            found, missing = append_candidate_check(target, asm, "current_final_wg", wg, report, report_cands, "failure", "evaluate_report_mismatch")
+            report_mismatch = bool(report_cands) and not found
+            fallback_notes = []
+            recovered = False
+            if report_mismatch:
+                fallback_notes.append("wg_fasta_report_chrM_mismatch")
+                paired_row = None
+                paired_lookup_error = ""
                 try:
-                    partner_asm, wg, report = materialize_wg_from_row(partner_row)
-                    chrout = partner_chrout
-                    asm = partner_asm
-                    partner_cands = parse_assembly_report_chrM_candidates(report)
-                    run_with_output(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg, chrout] + partner_cands + cands)
-                    r["final_wg_assembly_accession"] = partner_asm
-                    r["final_wg_ftp_path"] = partner_row.get("ftp_path", "")
-                    r["final_chrM_assembly_accession"] = partner_asm
-                    r["chrM_source_assembly_accession"] = partner_asm
-                    r["wg_expected_output_fasta"] = wg
-                    r["chrM_expected_output_fasta"] = chrout
-                    status = "success"
-                    msg = "downloaded_gca_gcf_partner_after_chrM_missing"
-                    estatus = "success"
-                    emsg = f"extracted_from_gca_gcf_partner_after_initial_failure:{first_error}"
-                except Exception as partner_error:
-                    clean_path(partner_chrout)
-                    clean_wg_materialization(partner_asm)
-                    estatus = "failure"
-                    emsg = (
-                        f"{first_error}; paired_assembly_{partner_asm}_chrM_extraction_failed:"
-                        f"{str(partner_error).replace(chr(9), ' ')}"
+                    paired_row = find_swapped_gca_gcf_row(asm)
+                except Exception as err:
+                    paired_lookup_error = str(err).replace("\t", " ")
+                if paired_row:
+                    paired_asm = paired_row.get("assembly_accession", "")
+                    result, perr = try_embedded_assembly_chrM(
+                        r, target, paired_asm, "paired_gca_gcf_after_report_mismatch", [cands, report_cands]
                     )
-            else:
-                estatus = "failure"
-                emsg = first_error + "; no_gca_gcf_partner_found"
+                    if result:
+                        paired_asm, paired_wg, paired_report, paired_chrout = result
+                        r["chrM_reference_context"] = "embedded_in_paired_wg_ref"
+                        r["chrM_extraction_strategy"] = "extracted_from_paired_gca_gcf_after_report_mismatch"
+                        r["chrM_source_assembly_accession"] = paired_asm
+                        r["final_chrM_assembly_accession"] = paired_asm
+                        r["chrM_expected_output_fasta"] = paired_chrout
+                        ctx = r["chrM_reference_context"]
+                        chrout = paired_chrout
+                        estatus = "success"
+                        emsg = f"wg_fasta_report_chrM_mismatch; recovered_with_paired_gca_gcf:{paired_asm}"
+                        recovered = True
+                    else:
+                        fallback_notes.append(f"paired_gca_gcf_chrM_failed:{paired_asm}:{perr}")
+                else:
+                    fallback_notes.append("no_swapped_gca_gcf_partner_found" + (f":{paired_lookup_error}" if paired_lookup_error else ""))
+
+            if not recovered:
+                for src_asm in manifest_assembly_accessions(r):
+                    if src_asm == asm or src_asm == swap_gca_gcf_accession(asm):
+                        continue
+                    result, merr = try_embedded_assembly_chrM(r, target, src_asm, "manifest_defined_chrM_assembly", [cands, report_cands])
+                    if result:
+                        src_asm, src_wg, src_report, src_chrout = result
+                        r["chrM_reference_context"] = "embedded_in_wg_ref"
+                        r["chrM_extraction_strategy"] = "extracted_from_manifest_chrM_assembly_after_report_mismatch" if report_mismatch else "extracted_from_manifest_chrM_assembly_after_initial_failure"
+                        r["chrM_source_assembly_accession"] = src_asm
+                        r["final_chrM_assembly_accession"] = src_asm
+                        r["chrM_expected_output_fasta"] = src_chrout
+                        chrout = src_chrout
+                        estatus = "success"
+                        emsg = "; ".join(fallback_notes + [f"recovered_with_manifest_assembly:{src_asm}"])
+                        recovered = True
+                        break
+                    fallback_notes.append(f"manifest_assembly_chrM_failed:{src_asm}:{merr}")
+
+            if not recovered:
+                acc, ierr = try_independent_chrM(r, chrout)
+                if acc:
+                    r["chrM_reference_context"] = "independent_chrM_ref"
+                    r["chrM_extraction_strategy"] = "paired_gca_gcf_failed_use_independent_chrM"
+                    ctx = r["chrM_reference_context"]
+                    estatus = "success"
+                    emsg = "; ".join(fallback_notes + [f"used_independent_chrM:{acc}"])
+                    if report_mismatch:
+                        append_manual_reason(r, "wg_fasta_report_chrM_mismatch;paired_gca_gcf_chrM_failed;used_independent_chrM")
+                else:
+                    estatus = "failure"
+                    emsg = "; ".join(fallback_notes + [first_error, ierr])
     elif chrout and ctx == "independent_chrM_ref":
         acc = r.get("final_chrM_accession", "")
         try:
@@ -259,8 +404,12 @@ for r in rows:
         handle.write("\t".join([target, ctx, estatus, chrout, chrout + ".fai" if chrout else "", emsg]) + "\n")
 
 if rows:
+    fieldnames = list(rows[0].keys())
+    for extra_col in ["manual_review_reason", "chrM_reference_context", "chrM_extraction_strategy", "chrM_source_assembly_accession", "final_chrM_assembly_accession", "chrM_expected_output_fasta"]:
+        if extra_col not in fieldnames:
+            fieldnames.append(extra_col)
     with open(man, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()), delimiter="\t", extrasaction="ignore")
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     manifest_counterparts = [
