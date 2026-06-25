@@ -156,6 +156,9 @@ REFERENCE_MATERIALIZATION_MANIFEST=$(config_get reference_materialization_manife
 IN_HOUSE_SCORE_REFERENCE_INPUTS=$(config_get in_house_score_reference_inputs "references/manifests/in_house_score_reference_inputs.tsv")
 SAMPLE_METADATA=$(config_get sample_metadata "data/metadata/sample_metadata.tsv")
 MERGED_IN_HOUSE_SCORE=$(config_get merged_in_house_score "results/preprocessing/in_house_score/merged_in_house_score.tsv")
+NUMT_TARGET_CHRM_COV=$(config_get numt_target_chrm_cov "0.95")
+MASK_REF_TYPES=$(config_get mask_ref_types "#C-likely_comp,#C-Ambiguous")
+A_MASK_MODE=$(config_get a_mask_mode "diagnostic_only")
 VARIANT_CALLING_INPUT_TABLE=$(config_get variant_calling_input_table "results/preprocessing/variant_calling_inputs/variant_calling_input_table.tsv")
 
 ENVIRONMENT_SETUP_SCRIPT=$(config_get environment_setup_script "")
@@ -320,6 +323,9 @@ run_in_house_score() {
   REF_INPUTS="$IN_HOUSE_SCORE_REFERENCE_INPUTS" \
   OUTDIR="$score_outdir" \
   MERGED_IN_HOUSE_SCORE="$MERGED_IN_HOUSE_SCORE" \
+  NUMT_TARGET_CHRM_COV="$NUMT_TARGET_CHRM_COV" \
+  MASK_REF_TYPES="$MASK_REF_TYPES" \
+  A_MASK_MODE="$A_MASK_MODE" \
     bash preprocessing/scripts/run_in_house_score_array.sh
 }
 
