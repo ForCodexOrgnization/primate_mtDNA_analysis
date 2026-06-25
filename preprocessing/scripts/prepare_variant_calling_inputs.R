@@ -13,8 +13,10 @@ vc <- merge(samples, refs, by = "join_species", all.x = TRUE, suffixes = c("", "
 if (file.exists(score_file) && file.info(score_file)$size > 0) {
   scores <- read_tsv_flexible(score_file)
   if (!"numt_mask_path" %in% names(scores)) {
-    scores$numt_mask_path <- if ("MaskPriority" %in% names(scores) && "MinimalMaskBED" %in% names(scores) && "FullMaskBED" %in% names(scores)) {
-      ifelse(grepl("full_mask", scores$MaskPriority) & "FullMaskBED" %in% names(scores), scores$FullMaskBED, scores$MinimalMaskBED)
+    scores$numt_mask_path <- if ("REF_TYPE" %in% names(scores) && "MinimalMaskBED" %in% names(scores)) {
+      eligible <- scores$REF_TYPE %in% c("#C-likely_comp", "#C-Ambiguous")
+      has_final <- if ("MaskPriority" %in% names(scores)) grepl("FINAL_minimal_mask", scores$MaskPriority) else rep(FALSE, nrow(scores))
+      ifelse(eligible & has_final, scores$MinimalMaskBED, "")
     } else {
       ""
     }
