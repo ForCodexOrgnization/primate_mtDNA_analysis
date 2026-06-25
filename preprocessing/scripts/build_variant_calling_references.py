@@ -48,8 +48,9 @@ MANIFEST_COLUMNS = [
     "whole_fasta", "whole_fai", "whole_dict", "chrM_fasta", "chrM_fai", "chrM_dict",
     "chrM_shift_fasta", "chrM_shift_fai", "chrM_shift_dict", "non_control_interval",
     "control_region_shifted_interval", "shift_back_chain", "wg_fasta_source", "chrM_fasta_source",
-    "chrM_reference_context", "reference_pairing_status", "final_reference_strategy", "build_status",
-    "build_message",
+    "chrM_reference_context", "reference_pairing_status", "final_reference_strategy",
+    "final_wg_ref_species", "final_wg_assembly_accession", "final_chrM_species", "final_chrM_accession",
+    "build_status", "build_message",
 ]
 
 
@@ -68,6 +69,12 @@ def resolve_path(value: str) -> Path:
 
 
 def safe_species_id(value: str) -> str:
+    """Return a file-safe ID derived from target_species only.
+
+    target_species is the analysis/sample species.  It may differ from the WG or
+    chrM source species for cross-species references, but final package basenames
+    must remain anchored to the target species.
+    """
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", (value or "unknown").strip()).strip("_")
     return safe or "unknown"
 
@@ -356,6 +363,10 @@ def build(args: argparse.Namespace) -> Path:
             "ValidAnnotatedMitoContig": score.get("ValidAnnotatedMitoContig", ""), "HasValidAnnotatedMito": score.get("HasValidAnnotatedMito", ""),
             "MaskPriority": score.get("MaskPriority", ""), "chrM_reference_context": ref.get("chrM_reference_context", ""),
             "reference_pairing_status": ref.get("reference_pairing_status", ""), "final_reference_strategy": ref.get("final_reference_strategy", ""),
+            "final_wg_ref_species": ref.get("final_wg_ref_species", ""),
+            "final_wg_assembly_accession": ref.get("final_wg_assembly_accession", ""),
+            "final_chrM_species": ref.get("final_chrM_species", ""),
+            "final_chrM_accession": ref.get("final_chrM_accession", ""),
         })
         messages: List[str] = []
         try:
@@ -365,9 +376,9 @@ def build(args: argparse.Namespace) -> Path:
             if not wg.exists():
                 raise FileNotFoundError("missing_wg_fasta")
             chrm_seq, chrm_warn = select_chrm_sequence(chrm_src); messages.extend(chrm_warn)
-            chrm_fa = dirs["Ref_chrM"] / f"{sid}.chrM.fa"
-            shift_fa = dirs["Ref_chrM_shift"] / f"{sid}.chrM_shift.fa"
-            whole_fa = dirs["Ref_whole"] / f"{sid}.whole.fa"
+            chrm_fa = dirs["Ref_chrM"] / f"{sid}.fa"
+            shift_fa = dirs["Ref_chrM_shift"] / f"{sid}.fa"
+            whole_fa = dirs["Ref_whole"] / f"{sid}.fa"
             write_fasta(chrm_fa, [("chrM", chrm_seq)])
             S = args.shift % len(chrm_seq)
             write_fasta(shift_fa, [("chrM", chrm_seq[S:] + chrm_seq[:S])])
