@@ -4,7 +4,7 @@ MANIFEST=${1:-references/manifests/reference_materialization_manifest.tsv}
 OUTDIR=${OUTDIR:-results/preprocessing/reference_materialization}
 LOCAL_MITO_FASTA=${LOCAL_MITO_FASTA:-}
 mkdir -p "$OUTDIR" references/wg references/chrM/embedded_from_wg references/chrM/independent references/manifests
-DL="$OUTDIR/reference_download_manifest.tsv"; EX="$OUTDIR/chrM_extraction_manifest.tsv"; IH="$OUTDIR/in_house_score_reference_inputs.tsv"; CC="$OUTDIR/chrM_candidate_check.tsv"
+DL="$OUTDIR/reference_download_manifest.tsv"; EX="$OUTDIR/chrM_extraction_manifest.tsv"; IH="$OUTDIR/in_house_score_reference_inputs.tsv"; CC="$OUTDIR/chrM_candidate_check.tsv"; RESOLVED_RESULTS="$OUTDIR/reference_materialization_manifest.resolved.tsv"; RESOLVED_REFS="references/manifests/reference_materialization_manifest.resolved.tsv"
 PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
 WGET_COMMAND=${WGET_COMMAND:-wget}
 SAMTOOLS_COMMAND=${SAMTOOLS_COMMAND:-samtools}
@@ -14,9 +14,9 @@ export WGET_COMMAND SAMTOOLS_COMMAND CURL_COMMAND EFETCH_COMMAND
 echo -e "target_species\tassembly_accession\tstatus\twg_fasta_path\twg_fai_path\twg_assembly_report_path\tmessage" > "$DL"
 echo -e "target_species\tchrM_reference_context\tstatus\tchrM_fasta_path\tchrM_fai_path\tmessage" > "$EX"
 echo -e "target_species\tattempted_assembly_accession\tattempt_type\twg_fasta_path\tassembly_report_path\tcandidate_names\tcandidates_found_in_fai\tcandidates_missing_from_fai\tstatus\tfallback_action" > "$CC"
-"$PYTHON_COMMAND" - "$MANIFEST" "$DL" "$EX" "$CC" <<'PY'
+"$PYTHON_COMMAND" - "$MANIFEST" "$DL" "$EX" "$CC" "$RESOLVED_RESULTS" "$RESOLVED_REFS" <<'PY'
 import csv, gzip, os, shutil, subprocess, sys
-man, dl, ex, cc = sys.argv[1:]
+man, dl, ex, cc, resolved_results, resolved_refs = sys.argv[1:]
 
 
 def run(cmd):
@@ -256,15 +256,17 @@ def try_embedded_assembly_chrM(row, target, accession, attempt_type, candidate_s
         return None, str(err).replace("\t", " ")
 
 
-def try_independent_chrM(row, chrout):
+def try_independent_chrM(row):
     errors = []
     for acc in independent_chrM_accessions(row):
+        chrout = os.path.join("references", "chrM", "independent", f"{acc}.fa")
         try:
             subprocess.check_call(["bash", "preprocessing/scripts/download_independent_chrM.sh", acc, chrout, os.environ.get("LOCAL_MITO_FASTA", "")])
-            return acc, "success"
+            return acc, chrout, "success"
         except Exception as e:
+            clean_path(chrout)
             errors.append(f"{acc}:{str(e).replace(chr(9), ' ')}")
-    return "", "; ".join(errors) if errors else "no_independent_chrM_accession"
+    return "", "", "; ".join(errors) if errors else "no_independent_chrM_accession"
 
 def materialize_wg_from_row(row):
     asm = row.get("assembly_accession", "")
@@ -377,11 +379,14 @@ for r in rows:
                     fallback_notes.append(f"manifest_assembly_chrM_failed:{src_asm}:{merr}")
 
             if not recovered:
-                acc, ierr = try_independent_chrM(r, chrout)
+                acc, independent_chrout, ierr = try_independent_chrM(r)
                 if acc:
                     r["chrM_reference_context"] = "independent_chrM_ref"
                     r["chrM_extraction_strategy"] = "paired_gca_gcf_failed_use_independent_chrM"
+                    r["chrM_source_accession"] = acc
+                    r["chrM_expected_output_fasta"] = independent_chrout
                     ctx = r["chrM_reference_context"]
+                    chrout = independent_chrout
                     estatus = "success"
                     emsg = "; ".join(fallback_notes + [f"used_independent_chrM:{acc}"])
                     if report_mismatch:
@@ -405,23 +410,17 @@ for r in rows:
 
 if rows:
     fieldnames = list(rows[0].keys())
-    for extra_col in ["manual_review_reason", "chrM_reference_context", "chrM_extraction_strategy", "chrM_source_assembly_accession", "final_chrM_assembly_accession", "chrM_expected_output_fasta"]:
+    for extra_col in ["manual_review_reason", "chrM_reference_context", "chrM_extraction_strategy", "chrM_source_assembly_accession", "chrM_source_accession", "final_chrM_assembly_accession", "chrM_expected_output_fasta"]:
         if extra_col not in fieldnames:
             fieldnames.append(extra_col)
-    with open(man, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-    manifest_counterparts = [
-        os.path.join("references", "manifests", "reference_materialization_manifest.tsv"),
-        os.path.join("results", "preprocessing", "reference_materialization", "reference_materialization_manifest.tsv"),
-    ]
-    for counterpart in manifest_counterparts:
-        if os.path.normpath(counterpart) != os.path.normpath(man):
-            os.makedirs(os.path.dirname(counterpart), exist_ok=True)
-            shutil.copyfile(man, counterpart)
+    for resolved_manifest in [resolved_results, resolved_refs]:
+        os.makedirs(os.path.dirname(resolved_manifest), exist_ok=True)
+        with open(resolved_manifest, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
 PY
-"$PYTHON_COMMAND" - "$MANIFEST" "$DL" "$EX" "$IH" <<'PY'
+"$PYTHON_COMMAND" - "$RESOLVED_RESULTS" "$DL" "$EX" "$IH" <<'PY'
 import csv, sys
 man,dl,ex,ih=sys.argv[1:]
 dlmap={r['target_species']:r for r in csv.DictReader(open(dl), delimiter='\t')}
