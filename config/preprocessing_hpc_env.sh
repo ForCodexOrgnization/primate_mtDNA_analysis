@@ -10,6 +10,7 @@
 #
 module load R/4.4.2
 module load SAMtools/1.21-GCC-13.3.0
+module load BLAST+/2.16.0-gompi-2024a
 module load BWA/0.7.18-GCCcore-13.3.0
 module load GATK/4.6.1.0-GCCcore-13.3.0-Java-17
 #
