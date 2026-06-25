@@ -20,14 +20,15 @@ environment_setup_script: "config/preprocessing_hpc_env.sh"
 # python_command: "python3"
 # wget_command: "wget"
 # samtools_command: "samtools"
+# bwa_command: "bwa"
+# gatk_command: "gatk"
 # curl_command: "curl"
 # efetch_command: "efetch"
 
 # Reviewed reference-discovery manifest used after manual review.
 species_reference_summary: "data/metadata/species_reference_chrM_summary.tsv"
 
-# Sample metadata and downstream manifests.
-sample_metadata: "data/metadata/sample_metadata.tsv"
+# Reviewed/reference-level manifests and variant-calling reference package output.
 reference_materialization_results_manifest: "results/preprocessing/reference_materialization/reference_materialization_manifest.tsv"
 reference_materialization_manifest: "references/manifests/reference_materialization_manifest.tsv"
 in_house_score_reference_inputs: "references/manifests/in_house_score_reference_inputs.tsv"
@@ -40,4 +41,4 @@ merged_in_house_score: "results/preprocessing/in_house_score/merged_in_house_sco
 numt_target_chrm_cov: 0.95
 mask_ref_types: "#C-likely_comp,#C-Ambiguous,#A"
 a_mask_mode: "mask_if_requested"
-variant_calling_input_table: "results/preprocessing/variant_calling_inputs/variant_calling_input_table.tsv"
+variant_calling_reference_out_root: "references/variant_calling"
