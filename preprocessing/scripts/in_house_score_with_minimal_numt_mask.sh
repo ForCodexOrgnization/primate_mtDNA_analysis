@@ -19,7 +19,7 @@ set -euo pipefail
 #      intervals per merged subject fragment, not min(qstart)~max(qend).
 #      This prevents one short fragment from falsely covering the whole chrM.
 #   3. Summary header uses Bash $'...' so tabs are real tabs, not literal \t.
-#   4. Mask BED/fragment TSV files are written only for #C-Ambiguous references.
+#   4. Mask BED/fragment TSV files are written for #C-Ambiguous and #C-likely_comp references.
 #
 # Recommended use:
 #   SUBMIT_ARRAY=1 bash preprocessing/scripts/in_house_score_with_minimal_numt_mask.sh
@@ -85,18 +85,18 @@ NUMT_MAX_EVALUE="1e-3"
 NUMT_MIN_BITSCORE="0"
 NUMT_TARGET_CHRM_COV="0.95"
 NUMT_PAD_BP="50"
+MASK_REF_TYPES="${MASK_REF_TYPES:-#C-likely_comp,#C-Ambiguous}"
+A_MASK_MODE="${A_MASK_MODE:-diagnostic_only}"
 
-# -------------------- Final mask-selection thresholds for #C-Ambiguous --------------------
-# Final rule requested:
-#   - low-burden #C-Ambiguous: use full high-confidence mask
-#   - all other #C-Ambiguous, including Pygathrix_nemaeus: use minimal chrM-covering mask
-FINAL_FULL_MASK_FRAGMENTS_MAX="25"
-FINAL_FULL_MASK_SUBJECT_LEN_MAX="40000"
+# -------------------- Final mask selection --------------------
+# #C-Ambiguous and #C-likely_comp references receive a minimal chrM-covering
+# FINAL NUMT mask. Other reference classes keep header-only final mask files.
 
 # -------------------- Summary header --------------------
 BASE_SUMMARY_HEADER=$'Species\tREF_TYPE\tMTLIKE_PATTERN\tValidAnnotatedMitoContig\tValidAnnotatedMitoLength\tHasValidAnnotatedMito\tTopContig\tTopLength\tMitoRefLength\tMaxHitRatio\tTotalHitRatio\tContigRatio\tScore\tM\t_dCplus\t_dCminus\t_dTplus\t_dTminus\tTopContigMergedLen\tTopContigMergedRatio\tLongestMergedHitLen\tCumulativeMergedHitLength\tMergedHitContigsN\tMergedHitIntervalsN\tNonTopLongestMergedHitLen\tNonTopCumulativeMergedHitLength\tNonTopMergedHitContigsN\tNonTopMergedHitIntervalsN'
 NUMT_SUMMARY_HEADER=$'AllHighConfFragmentsN\tAllHighConfContigsN\tAllHighConfSubjectLen\tAllHighConfLongestFragment\tAllHighConfChrMCoveredBp\tAllHighConfChrMCoverageRatio\tMinimalFragmentsN\tMinimalContigsN\tMinimalSubjectLen\tMinimalLongestFragment\tMinimalChrMCoveredBp\tMinimalChrMCoverageRatio\tMinimalTargetReached\tMinimalVsAllFragmentRatio\tMinimalVsAllSubjectLenRatio\tMaskPriority\tMinimalMaskBED\tFullMaskBED\tCandidateTSV'
-SUMMARY_HEADER="${BASE_SUMMARY_HEADER}"$'\t'"${NUMT_SUMMARY_HEADER}"
+A_NUMT_SUMMARY_HEADER=$'A_NonChrM_HighConfFragmentsN\tA_NonChrM_HighConfContigsN\tA_NonChrM_SubjectLen\tA_NonChrM_LongestFragment\tA_NonChrM_ChrMCoveredBp\tA_NonChrM_ChrMCoverageRatio\tA_NonChrM_MinimalFragmentsN\tA_NonChrM_MinimalContigsN\tA_NonChrM_MinimalSubjectLen\tA_NonChrM_MinimalChrMCoverageRatio\tA_NonChrM_MinimalTargetReached'
+SUMMARY_HEADER="${BASE_SUMMARY_HEADER}"$'\t'"${NUMT_SUMMARY_HEADER}"$'\t'"${A_NUMT_SUMMARY_HEADER}"
 
 # -------------------- Helpers --------------------
 ts() { date "+%F %T"; }
@@ -123,6 +123,26 @@ acquire_merge_lock() {
 release_merge_lock() {
   local lockdir="$1"
   rmdir "$lockdir" 2>/dev/null || true
+}
+
+
+write_failure_summary() {
+  local summary_file="$1" species="$2" ref_type="$3" pattern="$4" annotated_contig="$5" annotated_len="$6" has_annotated="$7" mito_len="$8" priority="$9"
+  "$PYTHON_COMMAND" - "$SUMMARY_HEADER" "$species" "$ref_type" "$pattern" "$annotated_contig" "$annotated_len" "$has_annotated" "$mito_len" "$priority" <<'PY_FAIL_SUMMARY'
+import sys
+header, species, ref_type, pattern, annot, annot_len, has_annot, mito_len, priority = sys.argv[1:]
+cols = header.split("\t")
+row = {c: "0" for c in cols}
+row.update({
+    "Species": species, "REF_TYPE": ref_type, "MTLIKE_PATTERN": pattern,
+    "ValidAnnotatedMitoContig": annot, "ValidAnnotatedMitoLength": annot_len,
+    "HasValidAnnotatedMito": has_annot, "TopContig": "NA", "TopLength": "0",
+    "MitoRefLength": mito_len, "MinimalTargetReached": "no", "MaskPriority": priority,
+    "MinimalMaskBED": "NA", "FullMaskBED": "NA", "CandidateTSV": "NA",
+    "A_NonChrM_MinimalTargetReached": "no",
+})
+print("\t".join(row.get(c, "0") for c in cols))
+PY_FAIL_SUMMARY
 }
 
 append_valid_summary_body() {
@@ -343,8 +363,8 @@ PY
 # ---- reference-level NUMT candidate generation and minimal set cover ----
 # Output one TSV summary line plus writes:
 #   candidate TSV: all high-confidence merged reference-level mt-like fragments
-#   full TSV/BED: all high-confidence fragments, but populated only when REF_TYPE == #C-Ambiguous
-#   minimal TSV/BED: greedy minimal chrM-covering selected fragments, only when REF_TYPE == #C-Ambiguous
+#   full TSV/BED: all high-confidence fragments for mask-eligible REF_TYPE values
+#   minimal TSV/BED: greedy minimal chrM-covering selected fragments for mask-eligible REF_TYPE values
 numt_mask_summary_py() {
   local species="$1"
   local blast_file="$2"
@@ -362,8 +382,7 @@ numt_mask_summary_py() {
   "$PYTHON_COMMAND" - "$species" "$blast_file" "$mito_len" "$ref_type" \
     "$candidate_tsv" "$full_tsv" "$minimal_tsv" "$full_bed" "$minimal_bed" "$final_tsv" "$final_bed" \
     "$NUMT_MIN_PIDENT" "$NUMT_MIN_ALN_LEN" "$NUMT_MAX_EVALUE" "$NUMT_MIN_BITSCORE" \
-    "$NUMT_TARGET_CHRM_COV" "$NUMT_PAD_BP" \
-    "$FINAL_FULL_MASK_FRAGMENTS_MAX" "$FINAL_FULL_MASK_SUBJECT_LEN_MAX" <<'PY'
+    "$NUMT_TARGET_CHRM_COV" "$NUMT_PAD_BP" "$ANNOTATED_CONTIG_FOR_NUMT" "$MASK_REF_TYPES" "$A_MASK_MODE" <<'PY'
 import sys, math
 from collections import defaultdict
 
@@ -372,10 +391,14 @@ candidate_tsv, full_tsv, minimal_tsv, full_bed, minimal_bed, final_tsv, final_be
 min_pident = float(sys.argv[12]); min_aln_len = int(float(sys.argv[13]))
 max_evalue = float(sys.argv[14]); min_bitscore = float(sys.argv[15])
 target_cov = float(sys.argv[16]); pad_bp = int(float(sys.argv[17]))
-final_full_frag_max = int(float(sys.argv[18]))
-final_full_len_max = int(float(sys.argv[19]))
+annotated_mito_contig = sys.argv[18]
+mask_ref_types = {x.strip() for x in sys.argv[19].split(",") if x.strip()}
+a_mask_mode = sys.argv[20]
+if a_mask_mode not in ("diagnostic_only", "mask_if_requested"):
+    raise SystemExit(f"Unsupported A_MASK_MODE={a_mask_mode!r}; expected diagnostic_only or mask_if_requested")
 mito_len = int(float(mito_len_s)) if mito_len_s not in ("", "NA") else 0
-is_c_ambig = (ref_type == "#C-Ambiguous")
+mask_requested = ref_type in mask_ref_types
+should_final_mask = mask_requested and (ref_type != "#A" or a_mask_mode == "mask_if_requested")
 
 cand_header = "Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN"
 bed_header = "#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max"
@@ -416,6 +439,8 @@ for line in fh:
     if aln_len < min_aln_len or pident < min_pident or evalue > max_evalue or bitscore < min_bitscore:
         continue
     contig = f[1]
+    if ref_type == "#A" and annotated_mito_contig not in ("", "NA") and contig == annotated_mito_contig:
+        continue
     sa, sb = sorted((sstart, send))
     qa, qb = sorted((qstart, qend))
     # Clamp query coordinates to chrM length.
@@ -567,46 +592,63 @@ len_ratio = min_subject_len / all_subject_len if all_subject_len > 0 else "NA"
 frag_ratio_s = f"{frag_ratio:.6g}" if frag_ratio != "NA" else "NA"
 len_ratio_s = f"{len_ratio:.6g}" if len_ratio != "NA" else "NA"
 
-# Write mask files only for #C-Ambiguous.
-# Final requested rule:
-#   low-burden #C-Ambiguous -> full high-confidence mask
-#   otherwise -> minimal chrM-covering mask, including Pygathrix_nemaeus
-final_strategy = "not_C_Ambiguous_no_mask_output"
+# Write full/minimal diagnostics for every REF_TYPE. FINAL is populated only when policy allows it.
+full_sorted = sorted(candidates, key=lambda x: (x["contig"], x["start0"], x["end0"]))
+minimal_sorted = selected[:]
+with open(full_tsv, "a") as out_tsv, open(full_bed, "a") as out_bed:
+    for c in full_sorted:
+        write_candidate(out_tsv, c)
+        write_bed(out_bed, c)
+with open(minimal_tsv, "a") as out_tsv, open(minimal_bed, "a") as out_bed:
+    for c in minimal_sorted:
+        write_candidate(out_tsv, c)
+        write_bed(out_bed, c)
+
 final_selected = []
-if is_c_ambig:
-    full_sorted = sorted(candidates, key=lambda x: (x["contig"], x["start0"], x["end0"]))
-    minimal_sorted = selected[:]
-
-    with open(full_tsv, "a") as out_tsv, open(full_bed, "a") as out_bed:
-        for c in full_sorted:
-            write_candidate(out_tsv, c)
-            write_bed(out_bed, c)
-    with open(minimal_tsv, "a") as out_tsv, open(minimal_bed, "a") as out_bed:
-        for c in minimal_sorted:
-            write_candidate(out_tsv, c)
-            write_bed(out_bed, c)
-
+if ref_type == "#A":
+    if should_final_mask and all_frag_n > 0:
+        final_selected = minimal_sorted
+        final_strategy = "A_FINAL_minimal_non_chrM_mask" if min_target_reached == "yes" else "A_FINAL_minimal_non_chrM_mask_target_not_reached"
+    else:
+        final_strategy = "A_diagnostic_non_chrM_numt_candidates_only"
+elif ref_type == "#C-likely_incomp":
+    final_strategy = "no_mask_likely_incomplete_reference"
+elif ref_type == "#C-likely_comp":
+    if all_frag_n == 0:
+        final_strategy = "C_likely_comp_no_highconf_candidates_check_thresholds"
+    elif should_final_mask:
+        final_selected = minimal_sorted
+        final_strategy = "C_likely_comp_FINAL_minimal_mask" if min_target_reached == "yes" else "C_likely_comp_FINAL_minimal_mask_target_not_reached"
+    else:
+        final_strategy = "C_likely_comp_diagnostic_only_mask_not_requested"
+elif ref_type == "#C-Ambiguous":
     if all_frag_n == 0:
         final_strategy = "C_Ambiguous_no_highconf_candidates_check_thresholds"
-        final_selected = []
-    elif all_frag_n <= final_full_frag_max and all_subject_len <= final_full_len_max:
-        final_strategy = "C_Ambiguous_FINAL_full_mask_low_burden"
-        final_selected = full_sorted
-    else:
-        final_strategy = "C_Ambiguous_FINAL_minimal_mask"
+    elif should_final_mask:
         final_selected = minimal_sorted
+        final_strategy = "C_Ambiguous_FINAL_minimal_mask" if min_target_reached == "yes" else "C_Ambiguous_FINAL_minimal_mask_target_not_reached"
+    else:
+        final_strategy = "C_Ambiguous_diagnostic_only_mask_not_requested"
+else:
+    final_strategy = "no_mask_noneligible_reference"
 
-    with open(final_tsv, "a") as out_tsv, open(final_bed, "a") as out_bed:
-        for c in final_selected:
-            write_candidate(out_tsv, c)
-            write_bed(out_bed, c)
+with open(final_tsv, "a") as out_tsv, open(final_bed, "a") as out_bed:
+    for c in final_selected:
+        write_candidate(out_tsv, c)
+        write_bed(out_bed, c)
 
 priority = final_strategy
+if ref_type == "#A":
+    a_diag = [all_frag_n, all_contigs_n, all_subject_len, all_longest, all_q_cov_bp, f"{all_q_cov_ratio:.6g}",
+              min_frag_n, min_contigs_n, min_subject_len, f"{min_q_cov_ratio:.6g}", min_target_reached]
+else:
+    a_diag = [0,0,0,0,0,"0",0,0,0,"0","no"]
 
-print("\t".join(map(str, [
+print("	".join(map(str, [
     all_frag_n, all_contigs_n, all_subject_len, all_longest, all_q_cov_bp, f"{all_q_cov_ratio:.6g}",
     min_frag_n, min_contigs_n, min_subject_len, min_longest, min_q_cov_bp, f"{min_q_cov_ratio:.6g}",
-    min_target_reached, frag_ratio_s, len_ratio_s, priority, minimal_bed, full_bed, candidate_tsv
+    min_target_reached, frag_ratio_s, len_ratio_s, priority, minimal_bed, full_bed, candidate_tsv,
+    *a_diag
 ])))
 PY
 }
@@ -615,12 +657,16 @@ PY
 merge_all_summaries() {
   local merged="${OUTDIR}/all_species.in_house_summary.with_numt_mask.tsv"
   local missing="${OUTDIR}/all_species.missing_summary.txt"
-  local c_ambig_min="${OUTDIR}/C_Ambiguous.minimal_chrMcover.fragments.tsv"
-  local c_ambig_full="${OUTDIR}/C_Ambiguous.full_highconf.fragments.tsv"
-  local c_ambig_min_bed="${OUTDIR}/C_Ambiguous.minimal_chrMcover.bed"
-  local c_ambig_full_bed="${OUTDIR}/C_Ambiguous.full_highconf.bed"
-  local c_ambig_final="${OUTDIR}/C_Ambiguous.FINAL_numt_mask.fragments.tsv"
-  local c_ambig_final_bed="${OUTDIR}/C_Ambiguous.FINAL_numt_mask.bed"
+  local masked_min="${OUTDIR}/masked_refs.minimal_chrMcover.fragments.tsv"
+  local masked_full="${OUTDIR}/masked_refs.full_highconf.fragments.tsv"
+  local masked_min_bed="${OUTDIR}/masked_refs.minimal_chrMcover.bed"
+  local masked_full_bed="${OUTDIR}/masked_refs.full_highconf.bed"
+  local masked_final="${OUTDIR}/masked_refs.FINAL_numt_mask.fragments.tsv"
+  local masked_final_bed="${OUTDIR}/masked_refs.FINAL_numt_mask.bed"
+  local a_candidates="${OUTDIR}/A.non_chrM_numt_candidates.fragments.tsv"
+  local a_candidates_bed="${OUTDIR}/A.non_chrM_numt_candidates.bed"
+  local a_min="${OUTDIR}/A.non_chrM_minimal_chrMcover.fragments.tsv"
+  local a_min_bed="${OUTDIR}/A.non_chrM_minimal_chrMcover.bed"
   local lockdir="${OUTDIR}/.merge_all_summaries.lock"
   local tmp_prefix
   tmp_prefix="$(mktemp -d "${OUTDIR}/.merge_tmp.XXXXXX")"
@@ -649,41 +695,55 @@ merge_all_summaries() {
   mv -f "${tmp_prefix}/merged" "$merged"
   mv -f "${tmp_prefix}/missing" "$missing"
 
-  # Merge #C-Ambiguous fragment lists. Keep one header.
-  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "${tmp_prefix}/c_ambig_min"
-  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "${tmp_prefix}/c_ambig_full"
-  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "${tmp_prefix}/c_ambig_min_bed"
-  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "${tmp_prefix}/c_ambig_full_bed"
-  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "${tmp_prefix}/c_ambig_final"
-  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "${tmp_prefix}/c_ambig_final_bed"
+  # Merge mask-eligible (#C-Ambiguous and #C-likely_comp) fragment lists. Keep one header.
+  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "${tmp_prefix}/masked_min"
+  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "${tmp_prefix}/masked_full"
+  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "${tmp_prefix}/masked_min_bed"
+  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "${tmp_prefix}/masked_full_bed"
+  printf "%s\n" $'Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN' > "${tmp_prefix}/masked_final"
+  printf "%s\n" $'#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max' > "${tmp_prefix}/masked_final_bed"
 
   for idx in "${!ALL_SPECIES[@]}"; do
     sp="${ALL_SPECIES[$idx]}"
     sp_id="${SUMMARY_IDS[$idx]}"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" >> "${tmp_prefix}/c_ambig_min"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.tsv" >> "${tmp_prefix}/c_ambig_full"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" >> "${tmp_prefix}/c_ambig_min_bed"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" >> "${tmp_prefix}/c_ambig_full_bed"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.tsv" >> "${tmp_prefix}/c_ambig_final"
-    [[ -s "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.bed" >> "${tmp_prefix}/c_ambig_final_bed"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" >> "${tmp_prefix}/masked_min"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.tsv" >> "${tmp_prefix}/masked_full"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" >> "${tmp_prefix}/masked_min_bed"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" >> "${tmp_prefix}/masked_full_bed"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.tsv" >> "${tmp_prefix}/masked_final"
+    [[ -s "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.FINAL_numt_mask.bed" >> "${tmp_prefix}/masked_final_bed"
+    if [[ -s "${OUTDIR}/${sp_id}.summary.tsv" ]] && awk -F'	' 'NR==2 && $2=="#A" {found=1} END{exit !found}' "${OUTDIR}/${sp_id}.summary.tsv"; then
+      [[ -s "${OUTDIR}/numt_candidates/${sp_id}.highconf_reference_mtlike_candidates.tsv" ]] && tail -n +2 "${OUTDIR}/numt_candidates/${sp_id}.highconf_reference_mtlike_candidates.tsv" >> "${tmp_prefix}/a_candidates"
+      [[ -s "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.full_highconf.bed" >> "${tmp_prefix}/a_candidates_bed"
+      [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.tsv" >> "${tmp_prefix}/a_min"
+      [[ -s "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" ]] && tail -n +2 "${OUTDIR}/numt_beds/${sp_id}.minimal_chrMcover.bed" >> "${tmp_prefix}/a_min_bed"
+    fi
   done
 
 
-  mv -f "${tmp_prefix}/c_ambig_min" "$c_ambig_min"
-  mv -f "${tmp_prefix}/c_ambig_full" "$c_ambig_full"
-  mv -f "${tmp_prefix}/c_ambig_min_bed" "$c_ambig_min_bed"
-  mv -f "${tmp_prefix}/c_ambig_full_bed" "$c_ambig_full_bed"
-  mv -f "${tmp_prefix}/c_ambig_final" "$c_ambig_final"
-  mv -f "${tmp_prefix}/c_ambig_final_bed" "$c_ambig_final_bed"
+  mv -f "${tmp_prefix}/masked_min" "$masked_min"
+  mv -f "${tmp_prefix}/masked_full" "$masked_full"
+  mv -f "${tmp_prefix}/masked_min_bed" "$masked_min_bed"
+  mv -f "${tmp_prefix}/masked_full_bed" "$masked_full_bed"
+  mv -f "${tmp_prefix}/masked_final" "$masked_final"
+  mv -f "${tmp_prefix}/masked_final_bed" "$masked_final_bed"
+  mv -f "${tmp_prefix}/a_candidates" "$a_candidates"
+  mv -f "${tmp_prefix}/a_candidates_bed" "$a_candidates_bed"
+  mv -f "${tmp_prefix}/a_min" "$a_min"
+  mv -f "${tmp_prefix}/a_min_bed" "$a_min_bed"
 
   local n_total n_merged n_missing
   n_total="${#ALL_SPECIES[@]}"
   n_merged=$(($(wc -l < "$merged") - 1))
   n_missing=$(wc -l < "$missing")
   log "Merge complete: ${n_merged}/${n_total} summaries merged; ${n_missing} missing."
-  log "Merged #C-Ambiguous minimal fragments: ${c_ambig_min}"
-  log "Merged #C-Ambiguous full fragments: ${c_ambig_full}"
-  log "Merged #C-Ambiguous FINAL mask fragments: ${c_ambig_final}"
+  log "Merged mask-eligible minimal fragments: ${masked_min}"
+  log "Merged mask-eligible full fragments: ${masked_full}"
+  log "Merged mask-eligible FINAL mask fragments: ${masked_final}"
+  log "Merged #A non-chrM diagnostic candidates: ${a_candidates}"
+  log "REF_TYPE vs MaskPriority summary:"
+  awk -F'	' 'NR==1{for(i=1;i<=NF;i++){if($i=="REF_TYPE") r=i; if($i=="MaskPriority") m=i} next} {k=$r"	"$m; c[k]++} END{for(k in c) print "  " k "	" c[k]}' "$merged" >&2
+  awk -F'	' 'NR==1{for(i=1;i<=NF;i++){if($i=="REF_TYPE") r=i; if($i=="MaskPriority") m=i} next} $r=="#C-likely_comp" || $r=="#C-Ambiguous" {eligible++} $m ~ /FINAL_.*mask/ {applied++} END{print "[INFO] final mask applied count: " applied+0 "; default eligible rows: " eligible+0 > "/dev/stderr"}' "$merged"
   if [[ "$n_missing" -gt 0 ]]; then
     warn "Missing summary list: ${missing}"
   fi
@@ -798,13 +858,14 @@ PY
       "$SCORE" "$MAX_HIT_RATIO" "$TOTAL_HIT_RATIO" "$CONTIG_RATIO")
   fi
 
-  read -r ALL_FRAG_N ALL_CONTIG_N ALL_SUBJECT_LEN ALL_LONGEST ALL_Q_BP ALL_Q_RATIO MIN_FRAG_N MIN_CONTIG_N MIN_SUBJECT_LEN MIN_LONGEST MIN_Q_BP MIN_Q_RATIO MIN_TARGET FRAG_RATIO LEN_RATIO MASK_PRIORITY MIN_BED FULL_BED CAND_TSV < <(
+  ANNOTATED_CONTIG_FOR_NUMT="$ANNOTATED_CONTIG"
+  read -r ALL_FRAG_N ALL_CONTIG_N ALL_SUBJECT_LEN ALL_LONGEST ALL_Q_BP ALL_Q_RATIO MIN_FRAG_N MIN_CONTIG_N MIN_SUBJECT_LEN MIN_LONGEST MIN_Q_BP MIN_Q_RATIO MIN_TARGET FRAG_RATIO LEN_RATIO MASK_PRIORITY MIN_BED FULL_BED CAND_TSV A_NONCHRM_FRAG_N A_NONCHRM_CONTIG_N A_NONCHRM_SUBJECT_LEN A_NONCHRM_LONGEST A_NONCHRM_Q_BP A_NONCHRM_Q_RATIO A_NONCHRM_MIN_FRAG_N A_NONCHRM_MIN_CONTIG_N A_NONCHRM_MIN_SUBJECT_LEN A_NONCHRM_MIN_Q_RATIO A_NONCHRM_MIN_TARGET < <(
     numt_mask_summary_py "$species" "$BLAST_TEMP" "$MITO_LEN" "$REF_TYPE" "$SPECIES_ID"
   )
 
   {
     printf "%s\n" "$SUMMARY_HEADER"
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
       "$species" "$REF_TYPE" "$MTLIKE_PATTERN" "$ANNOTATED_CONTIG" "$ANNOTATED_CONTIG_LEN" "$HAS_VALID_ANNOTATED_MITO" \
       "${TOP_CONTIG:-NA}" "${TOP_CONTIG_LEN:-0}" "$MITO_LEN" \
       "${MAX_HIT_RATIO:-0}" "${TOTAL_HIT_RATIO:-0}" "${CONTIG_RATIO:-0}" \
@@ -814,7 +875,9 @@ PY
       "${NONTOP_LONGEST_MERGED:-0}" "${NONTOP_CUM_MERGED:-0}" "${NONTOP_CONTIGS_N:-0}" "${NONTOP_INTERVALS_N:-0}" \
       "$ALL_FRAG_N" "$ALL_CONTIG_N" "$ALL_SUBJECT_LEN" "$ALL_LONGEST" "$ALL_Q_BP" "$ALL_Q_RATIO" \
       "$MIN_FRAG_N" "$MIN_CONTIG_N" "$MIN_SUBJECT_LEN" "$MIN_LONGEST" "$MIN_Q_BP" "$MIN_Q_RATIO" "$MIN_TARGET" \
-      "$FRAG_RATIO" "$LEN_RATIO" "$MASK_PRIORITY" "$MIN_BED" "$FULL_BED" "$CAND_TSV"
+      "$FRAG_RATIO" "$LEN_RATIO" "$MASK_PRIORITY" "$MIN_BED" "$FULL_BED" "$CAND_TSV" \
+      "$A_NONCHRM_FRAG_N" "$A_NONCHRM_CONTIG_N" "$A_NONCHRM_SUBJECT_LEN" "$A_NONCHRM_LONGEST" "$A_NONCHRM_Q_BP" "$A_NONCHRM_Q_RATIO" \
+      "$A_NONCHRM_MIN_FRAG_N" "$A_NONCHRM_MIN_CONTIG_N" "$A_NONCHRM_MIN_SUBJECT_LEN" "$A_NONCHRM_MIN_Q_RATIO" "$A_NONCHRM_MIN_TARGET"
   } > "$SUMMARY_FILE"
 
   rm -f "$TEMP_MITO" "$TOP_BLAST_OUT" 2>/dev/null || true
