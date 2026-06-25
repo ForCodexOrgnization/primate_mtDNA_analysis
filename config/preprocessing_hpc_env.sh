@@ -10,6 +10,8 @@
 #
 module load R/4.4.2
 module load SAMtools/1.21-GCC-13.3.0
+module load BWA/0.7.18-GCCcore-13.3.0
+module load GATK/4.6.1.0-GCCcore-13.3.0-Java-17
 #
 # Or activate a conda/mamba environment:
 # source /path/to/miniconda3/etc/profile.d/conda.sh
