@@ -22,6 +22,14 @@ def run(cmd):
     subprocess.check_call(cmd)
 
 
+def run_with_output(cmd):
+    try:
+        return subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+    except subprocess.CalledProcessError as e:
+        output = (e.output or "").strip().replace("\t", " ").replace("\n", " | ")
+        raise RuntimeError(f"{' '.join(cmd)} failed with exit {e.returncode}: {output}") from e
+
+
 def download_file(url, out_path):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     tmp = out_path + ".download"
@@ -194,7 +202,7 @@ for r in rows:
     if chrout and ctx == "embedded_in_wg_ref" and wg:
         cands = [r.get(k, "") for k in ["final_chrM_contig_name", "final_chrM_refseq_accn", "final_chrM_genbank_accn", "final_chrM_accession", "final_chrM_ucsc_name"]]
         try:
-            subprocess.check_call(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg, chrout] + cands)
+            run_with_output(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg, chrout] + cands)
             estatus = "success"
             emsg = "extracted_from_wg"
         except Exception as e:
@@ -214,7 +222,7 @@ for r in rows:
                     chrout = partner_chrout
                     asm = partner_asm
                     partner_cands = parse_assembly_report_chrM_candidates(report)
-                    subprocess.check_call(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg, chrout] + partner_cands + cands)
+                    run_with_output(["bash", "preprocessing/scripts/extract_chrM_from_wg.sh", wg, chrout] + partner_cands + cands)
                     r["final_wg_assembly_accession"] = partner_asm
                     r["final_wg_ftp_path"] = partner_row.get("ftp_path", "")
                     r["final_chrM_assembly_accession"] = partner_asm
