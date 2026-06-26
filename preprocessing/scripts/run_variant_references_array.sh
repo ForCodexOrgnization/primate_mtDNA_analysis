@@ -72,6 +72,7 @@ fi
 mkdir -p "$OUT_ROOT" "$SHARD_DIR" "$VARIANT_REFERENCE_LOG_DIR"
 
 run_one() {
+  echo "[variant_refs] MASK_REF_TYPES=${MASK_REF_TYPES}" >&2
   local idx="$1"
   local shard
   shard=$(printf "%s/%06d.tsv" "$SHARD_DIR" "$idx")
@@ -94,6 +95,9 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
 fi
 
 if [[ "${RUN_LOCAL:-0}" != "1" ]] && command -v sbatch >/dev/null 2>&1; then
+  # MASK_REF_TYPES may contain commas; exporting it separately avoids Slurm
+  # splitting the value inside the comma-delimited --export list.
+  export MASK_REF_TYPES
   jid=$(sbatch --parsable \
     --job-name="variant_refs" \
     --output="${VARIANT_REFERENCE_LOG_DIR}/variant_refs_%A_%a.out" \
@@ -102,7 +106,7 @@ if [[ "${RUN_LOCAL:-0}" != "1" ]] && command -v sbatch >/dev/null 2>&1; then
     --cpus-per-task="$VARIANT_REFERENCE_SLURM_CPUS" \
     --mem="$VARIANT_REFERENCE_SLURM_MEM" \
     --array="1-${N}%${MAX_CONCURRENT}" \
-    --export=ALL,REF_INPUTS="$REF_INPUTS",SCORE="$SCORE",OUT_ROOT="$OUT_ROOT",MASK_REF_TYPES="$MASK_REF_TYPES",PYTHON_COMMAND="$PYTHON_COMMAND",SAMTOOLS_COMMAND="$SAMTOOLS_COMMAND",BWA_COMMAND="$BWA_COMMAND",GATK_COMMAND="$GATK_COMMAND",VARIANT_REFERENCE_LOG_DIR="$VARIANT_REFERENCE_LOG_DIR",BUILD_SCRIPT="$BUILD_SCRIPT",VARIANT_REFERENCE_SLURM_TIME="$VARIANT_REFERENCE_SLURM_TIME",VARIANT_REFERENCE_SLURM_CPUS="$VARIANT_REFERENCE_SLURM_CPUS",VARIANT_REFERENCE_SLURM_MEM="$VARIANT_REFERENCE_SLURM_MEM" \
+    --export=ALL,REF_INPUTS="$REF_INPUTS",SCORE="$SCORE",OUT_ROOT="$OUT_ROOT",PYTHON_COMMAND="$PYTHON_COMMAND",SAMTOOLS_COMMAND="$SAMTOOLS_COMMAND",BWA_COMMAND="$BWA_COMMAND",GATK_COMMAND="$GATK_COMMAND",VARIANT_REFERENCE_LOG_DIR="$VARIANT_REFERENCE_LOG_DIR",BUILD_SCRIPT="$BUILD_SCRIPT",VARIANT_REFERENCE_SLURM_TIME="$VARIANT_REFERENCE_SLURM_TIME",VARIANT_REFERENCE_SLURM_CPUS="$VARIANT_REFERENCE_SLURM_CPUS",VARIANT_REFERENCE_SLURM_MEM="$VARIANT_REFERENCE_SLURM_MEM" \
     "$0")
   echo "Submitted variant-reference array job ${jid} for ${N} reference packages (max concurrent ${MAX_CONCURRENT})." >&2
   merge_jid=$(sbatch --parsable \
