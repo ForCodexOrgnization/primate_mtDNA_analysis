@@ -1137,7 +1137,7 @@ process RUN_WDL_VARIANT_CALLING {
     cat > cromwell_options.json <<EOFOPT
 {
   "final_workflow_outputs_dir": ".",
-  "final_workflow_log_dir": ".",
+  "final_workflow_log_dir": "logs/cromwell",
   "default_runtime_attributes": {
     "queue": "${params.cromwell_options.queue ?: ''}",
     "cpus": ${params.cromwell_options.cpus},

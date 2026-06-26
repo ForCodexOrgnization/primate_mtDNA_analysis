@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=index_fasta
-#SBATCH --output=log/preprocessing/index_fasta_%A_%a.out
-#SBATCH --error=log/preprocessing/index_fasta_%A_%a.err
+#SBATCH --output=logs/preprocessing/index_fasta/index_fasta_%A_%a.out
+#SBATCH --error=logs/preprocessing/index_fasta/index_fasta_%A_%a.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
@@ -17,7 +17,7 @@ SAMTOOLS_COMMAND="${SAMTOOLS_COMMAND:-samtools}"
 BWA_COMMAND="${BWA_COMMAND:-bwa}"
 GATK_COMMAND="${GATK_COMMAND:-gatk}"
 ARRAY_CONCURRENCY="${ARRAY_CONCURRENCY:-50}"
-mkdir -p log/preprocessing
+mkdir -p logs/preprocessing/index_fasta
 
 mapfile -t FASTAS < <(find "$FASTA_DIR" -maxdepth 1 -type f \( -name '*.fa' -o -name '*.fasta' \) | sort)
 N=${#FASTAS[@]}

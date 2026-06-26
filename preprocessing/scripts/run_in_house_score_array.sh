@@ -7,7 +7,7 @@ MERGED_IN_HOUSE_SCORE=${MERGED_IN_HOUSE_SCORE:-${OUTDIR}/merged_in_house_score.t
 IN_HOUSE_SCORE_SCRIPT=${IN_HOUSE_SCORE_SCRIPT:-preprocessing/scripts/in_house_score_with_minimal_numt_mask.sh}
 PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
 MAX_CONCURRENT=${MAX_CONCURRENT:-50}
-IN_HOUSE_SCORE_LOG_DIR=${IN_HOUSE_SCORE_LOG_DIR:-log/preprocessing}
+IN_HOUSE_SCORE_LOG_DIR=${IN_HOUSE_SCORE_LOG_DIR:-logs/preprocessing/in_house_score}
 
 if [[ ! -s "$REF_INPUTS" ]]; then
   echo "ERROR: missing or empty in-house score reference inputs: ${REF_INPUTS}" >&2
