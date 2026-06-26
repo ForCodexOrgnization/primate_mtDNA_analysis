@@ -1,0 +1,382 @@
+---
+title: "Variant reference build status report"
+subtitle: "Preprocessing variant_references first-pass diagnostics"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(DT)
+
+repo_root <- tryCatch(
+  system2("git", c("rev-parse", "--show-toplevel"), stdout = TRUE, stderr = FALSE),
+  error = function(e) NA_character_
+)
+repo_root <- repo_root[1]
+if (is.na(repo_root) || repo_root == "" || !dir.exists(repo_root)) {
+  repo_root <- normalizePath(file.path(getwd(), "../.."), mustWork = TRUE)
+}
+repo_root <- normalizePath(repo_root, mustWork = TRUE)
+knitr::opts_knit$set(root.dir = repo_root)
+
+resolve_path <- function(path) {
+  path <- as.character(path)
+  if (length(path) == 0 || is.na(path) || path == "") return(NA_character_)
+  if (grepl("^/", path)) return(path)
+  file.path(repo_root, path)
+}
+
+file_exists_nonempty <- function(path) {
+  full_path <- resolve_path(path)
+  !is.na(full_path) &&
+    file.exists(full_path) &&
+    !is.na(file.info(full_path)$size) &&
+    file.info(full_path)$size > 0
+}
+
+final_manifest <- "references/variant_calling/variant_calling_reference_manifest.tsv"
+shard_dir <- "references/variant_calling/manifest_shards"
+
+variant_inputs_status <- tibble(
+  input_name = c("final_manifest", "manifest_shard_dir"),
+  relative_path = c(final_manifest, shard_dir),
+  resolved_path = map_chr(relative_path, resolve_path),
+  found = file.exists(resolved_path),
+  size_bytes = if_else(found & !is.na(file.info(resolved_path)$size), as.numeric(file.info(resolved_path)$size), NA_real_)
+)
+
+cat("Current getwd():", getwd(), "\n")
+cat("Resolved repo_root:", repo_root, "\n")
+cat("Key input path resolution:\n")
+print(variant_inputs_status)
+
+read_manifest_safely <- function(path) {
+  full_path <- resolve_path(path)
+  readr::read_tsv(full_path, show_col_types = FALSE, col_types = readr::cols(.default = readr::col_character()))
+}
+
+empty_manifest <- function() {
+  tibble(
+    target_species = character(),
+    REF_TYPE = character(),
+    MaskPriority = character(),
+    wg_fasta_source = character(),
+    chrM_fasta_source = character(),
+    numt_mask_bed = character(),
+    numt_mask_applied_to_whole_ref = character(),
+    whole_fasta = character(),
+    chrM_fasta = character(),
+    chrM_shift_fasta = character(),
+    build_status = character(),
+    build_message = character()
+  )
+}
+
+ensure_columns <- function(x, cols) {
+  for (nm in cols) {
+    if (!nm %in% names(x)) x[[nm]] <- NA_character_
+  }
+  x
+}
+
+required_report_cols <- names(empty_manifest())
+
+load_variant_manifest <- function() {
+  if (file_exists_nonempty(final_manifest)) {
+    dat <- read_manifest_safely(final_manifest) %>% ensure_columns(required_report_cols)
+    return(list(
+      manifest = dat,
+      source = "final_manifest",
+      source_paths = final_manifest,
+      shard_files_seen = NA_integer_,
+      shard_files_read = NA_integer_,
+      shard_empty_files = NA_integer_,
+      shard_missing_files = NA_integer_
+    ))
+  }
+
+  shard_dir_resolved <- resolve_path(shard_dir)
+  shard_files <- if (!is.na(shard_dir_resolved) && dir.exists(shard_dir_resolved)) {
+    list.files(shard_dir_resolved, pattern = "\\.tsv$", full.names = TRUE)
+  } else {
+    character()
+  }
+
+  if (length(shard_files) == 0) {
+    stop(
+      "No variant reference manifest was found. Expected either '", final_manifest,
+      "' or one or more TSV shards under '", shard_dir, "'.",
+      call. = FALSE
+    )
+  }
+
+  shard_info <- tibble(
+    path = shard_files,
+    size = file.info(shard_files)$size,
+    shard_id = stringr::str_extract(basename(path), "\\d+") %>% as.integer()
+  )
+
+  readable_shards <- shard_info %>% filter(!is.na(size), size > 0)
+  if (nrow(readable_shards) == 0) {
+    stop("Manifest shard files were found, but all were empty under '", shard_dir, "'.", call. = FALSE)
+  }
+
+  dat <- purrr::map_dfr(
+    readable_shards$path,
+    ~ read_manifest_safely(.x) %>% mutate(.source_shard = .x)
+  ) %>% ensure_columns(c(required_report_cols, ".source_shard"))
+
+  shard_ids <- shard_info$shard_id[!is.na(shard_info$shard_id)]
+  missing_shards <- if (length(shard_ids) > 1) {
+    length(setdiff(seq(min(shard_ids), max(shard_ids)), shard_ids))
+  } else {
+    NA_integer_
+  }
+
+  list(
+    manifest = dat,
+    source = "manifest_shards",
+    source_paths = readable_shards$path,
+    shard_files_seen = nrow(shard_info),
+    shard_files_read = nrow(readable_shards),
+    shard_empty_files = sum(is.na(shard_info$size) | shard_info$size == 0),
+    shard_missing_files = missing_shards
+  )
+}
+
+manifest_bundle <- load_variant_manifest()
+manifest_raw <- manifest_bundle$manifest
+
+manifest <- manifest_raw %>%
+  mutate(
+    across(all_of(required_report_cols), ~ replace_na(as.character(.x), "")),
+    build_status_norm = if_else(str_to_lower(build_status) == "success", "success", "failed"),
+    numt_mask_applied_to_whole_ref = if_else(numt_mask_applied_to_whole_ref == "", "unknown", numt_mask_applied_to_whole_ref),
+    failure_category = case_when(
+      build_status_norm == "success" ~ "success",
+      str_detect(build_message, fixed("SIGKILL", ignore_case = TRUE)) ~ "bwa_SIGKILL",
+      str_detect(build_message, fixed("Is a directory", ignore_case = TRUE)) ~ "path_is_directory",
+      str_detect(build_message, fixed("missing_wg_fasta", ignore_case = TRUE)) ~ "missing_wg_fasta",
+      str_detect(build_message, fixed("missing_chrM_fasta", ignore_case = TRUE)) ~ "missing_chrM_fasta",
+      TRUE ~ "other_failed"
+    )
+  )
+
+success_rows <- manifest %>% filter(build_status_norm == "success")
+failed_rows <- manifest %>% filter(build_status_norm != "success")
+```
+
+# Overview
+
+```{r overview}
+overview_tbl <- tibble(
+  metric = c(
+    "manifest_source",
+    "source_paths_read",
+    "total_rows_observed",
+    "success_rows",
+    "failed_rows",
+    "shard_files_seen",
+    "shard_files_read",
+    "empty_shard_files_detected",
+    "missing_shard_files_detected"
+  ),
+  value = c(
+    manifest_bundle$source,
+    paste(manifest_bundle$source_paths, collapse = "; "),
+    nrow(manifest),
+    nrow(success_rows),
+    nrow(failed_rows),
+    manifest_bundle$shard_files_seen,
+    manifest_bundle$shard_files_read,
+    manifest_bundle$shard_empty_files,
+    manifest_bundle$shard_missing_files
+  )
+)
+knitr::kable(overview_tbl)
+```
+
+# Build status summary
+
+```{r build-status-tables}
+build_status_counts <- manifest %>% count(build_status, sort = TRUE, name = "n")
+knitr::kable(build_status_counts)
+
+ref_type_by_status <- manifest %>% count(REF_TYPE, build_status, sort = TRUE, name = "n")
+knitr::kable(ref_type_by_status)
+```
+
+```{r build-status-plot, fig.width=9, fig.height=5}
+ggplot(manifest, aes(x = REF_TYPE, fill = build_status)) +
+  geom_bar() +
+  labs(x = "REF_TYPE", y = "Reference count", fill = "build_status") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1))
+```
+
+# Failure diagnostics
+
+```{r failure-diagnostics}
+failure_category_counts <- manifest %>% count(failure_category, sort = TRUE, name = "n")
+knitr::kable(failure_category_counts)
+
+failed_detail <- failed_rows %>%
+  select(target_species, REF_TYPE, MaskPriority, wg_fasta_source, chrM_fasta_source, build_message)
+
+DT::datatable(
+  failed_detail,
+  filter = "top",
+  options = list(pageLength = 25, scrollX = TRUE),
+  rownames = FALSE
+)
+```
+
+# Masking summary
+
+```{r masking-summary}
+masking_all <- manifest %>%
+  count(REF_TYPE, MaskPriority, numt_mask_applied_to_whole_ref, name = "n") %>%
+  arrange(REF_TYPE, MaskPriority, numt_mask_applied_to_whole_ref)
+knitr::kable(masking_all)
+
+masking_success <- success_rows %>%
+  count(REF_TYPE, numt_mask_applied_to_whole_ref, name = "n") %>%
+  arrange(REF_TYPE, numt_mask_applied_to_whole_ref)
+knitr::kable(masking_success)
+```
+
+```{r masking-plot, fig.width=9, fig.height=5}
+ggplot(success_rows, aes(x = REF_TYPE, fill = numt_mask_applied_to_whole_ref)) +
+  geom_bar() +
+  labs(x = "REF_TYPE", y = "Successful reference count", fill = "NUMT mask applied") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1))
+```
+
+# `#A` masking diagnostic
+
+```{r a-diagnostic}
+resolve_repo_path <- resolve_path
+
+count_bed_intervals <- function(path) {
+  resolved <- resolve_path(path)
+  if (is.na(resolved) || !file.exists(resolved) || file.info(resolved)$size == 0) return(0L)
+  lines <- readLines(resolved, warn = FALSE)
+  sum(lines != "" & !str_starts(lines, "#"))
+}
+
+bed_size <- function(path) {
+  resolved <- resolve_path(path)
+  if (is.na(resolved) || !file.exists(resolved)) return(NA_real_)
+  as.numeric(file.info(resolved)$size)
+}
+
+a_rows <- manifest %>%
+  filter(REF_TYPE == "#A") %>%
+  mutate(
+    bed_path_nonempty = numt_mask_bed != "",
+    bed_exists = map_lgl(numt_mask_bed, ~ {
+      resolved <- resolve_path(.x)
+      !is.na(resolved) && file.exists(resolved)
+    }),
+    bed_size_bytes = map_dbl(numt_mask_bed, bed_size),
+    bed_n_intervals = map_int(numt_mask_bed, count_bed_intervals)
+  )
+
+a_display <- a_rows %>%
+  select(
+    target_species, MaskPriority, numt_mask_bed, numt_mask_applied_to_whole_ref,
+    build_status, build_message, bed_exists, bed_size_bytes, bed_n_intervals
+  )
+
+DT::datatable(
+  a_display,
+  filter = "top",
+  options = list(pageLength = 25, scrollX = TRUE),
+  rownames = FALSE
+)
+
+a_summary <- tibble(
+  metric = c(
+    "#A total",
+    "#A success",
+    "#A failed",
+    "#A success with mask yes",
+    "#A success with mask no and non-empty BED",
+    "#A success with mask no and empty/missing BED"
+  ),
+  value = c(
+    nrow(a_rows),
+    sum(a_rows$build_status_norm == "success"),
+    sum(a_rows$build_status_norm != "success"),
+    sum(a_rows$build_status_norm == "success" & a_rows$numt_mask_applied_to_whole_ref == "yes"),
+    sum(a_rows$build_status_norm == "success" & a_rows$numt_mask_applied_to_whole_ref == "no" & a_rows$bed_n_intervals > 0),
+    sum(a_rows$build_status_norm == "success" & a_rows$numt_mask_applied_to_whole_ref == "no" & (a_rows$bed_n_intervals == 0 | !a_rows$bed_exists))
+  )
+)
+knitr::kable(a_summary)
+
+problem_a <- a_rows %>%
+  filter(build_status_norm == "success", numt_mask_applied_to_whole_ref == "no", bed_n_intervals > 0)
+
+if (nrow(problem_a) > 0) {
+  cat(
+    "\n::: {.callout-warning}\n",
+    "## Possible #A NUMT masking propagation issue\n\n",
+    "There are ", nrow(problem_a),
+    " successful #A rows with a non-empty BED file but `numt_mask_applied_to_whole_ref == \"no\"`. ",
+    "This suggests `mask_ref_types` was not propagated correctly or the build logic did not apply the BED.\n",
+    ":::\n",
+    sep = ""
+  )
+}
+```
+
+# Recommended test references
+
+```{r recommended-test-references}
+pick_references <- function(data, ref_type, n = 5, mask_yes = NULL, priority_regex = NULL) {
+  x <- data %>% filter(REF_TYPE == ref_type)
+  if (!is.null(mask_yes)) x <- x %>% filter(numt_mask_applied_to_whole_ref == mask_yes)
+  x %>%
+    mutate(
+      priority_rank = if (!is.null(priority_regex)) if_else(str_detect(MaskPriority, priority_regex), 0L, 1L) else 1L,
+      bed_rank = if_else(numt_mask_bed != "", 0L, 1L)
+    ) %>%
+    arrange(priority_rank, bed_rank, target_species) %>%
+    slice_head(n = n)
+}
+
+recommended <- bind_rows(
+  pick_references(success_rows, "#A", n = 6, priority_regex = "A_FINAL_minimal_non_chrM_mask"),
+  pick_references(success_rows, "#C-likely_comp", n = 6, mask_yes = "yes"),
+  pick_references(success_rows, "#C-Ambiguous", n = 6)
+) %>%
+  distinct(target_species, REF_TYPE, .keep_all = TRUE) %>%
+  select(target_species, REF_TYPE, MaskPriority, numt_mask_applied_to_whole_ref, whole_fasta, chrM_fasta, chrM_shift_fasta)
+
+DT::datatable(
+  recommended,
+  filter = "top",
+  options = list(pageLength = 20, scrollX = TRUE),
+  rownames = FALSE
+)
+```
+
+# Session info
+
+```{r session-info}
+sessionInfo()
+```
