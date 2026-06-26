@@ -135,12 +135,15 @@ fi
 config_get() {
   local key="$1" default="${2:-}"
   local value
-  value=$(awk -F: -v key="$key" '
-    $1 == key {
-      sub(/^[[:space:]]+/, "", $2)
-      sub(/[[:space:]]+$/, "", $2)
-      gsub(/^"|"$/, "", $2)
-      print $2
+  value=$(awk -v key="$key" '
+    $0 ~ "^[[:space:]]*" key "[[:space:]]*:" {
+      sub("^[[:space:]]*" key "[[:space:]]*:[[:space:]]*", "", $0)
+      sub(/[[:space:]]+#.*$/, "", $0)
+      sub(/^[[:space:]]+/, "", $0)
+      sub(/[[:space:]]+$/, "", $0)
+      gsub(/^"|"$/, "", $0)
+      gsub(/^'\''|'\''$/, "", $0)
+      print $0
       exit
     }
   ' "$CONFIG")
@@ -316,6 +319,11 @@ run_variant_references() {
   require_nonempty_file "$IN_HOUSE_SCORE_REFERENCE_INPUTS" "in-house score reference inputs"
   require_nonempty_file "$MERGED_IN_HOUSE_SCORE" "merged in-house score table"
   check_variant_references_environment
+  echo "[preprocessing] VARIANT_REFERENCE_THREADS=${VARIANT_REFERENCE_THREADS}" >&2
+  echo "[preprocessing] VARIANT_REFERENCE_SLURM_TIME=${VARIANT_REFERENCE_SLURM_TIME}" >&2
+  echo "[preprocessing] VARIANT_REFERENCE_SLURM_CPUS=${VARIANT_REFERENCE_SLURM_CPUS}" >&2
+  echo "[preprocessing] VARIANT_REFERENCE_SLURM_MEM=${VARIANT_REFERENCE_SLURM_MEM}" >&2
+  echo "[preprocessing] MASK_REF_TYPES=${MASK_REF_TYPES}" >&2
   REF_INPUTS="$IN_HOUSE_SCORE_REFERENCE_INPUTS" \
   SCORE="$MERGED_IN_HOUSE_SCORE" \
   OUT_ROOT="$VARIANT_CALLING_REFERENCE_OUT_ROOT" \

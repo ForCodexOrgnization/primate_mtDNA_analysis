@@ -13,6 +13,7 @@ MAX_CONCURRENT=${VARIANT_REFERENCE_THREADS:-${MAX_CONCURRENT:-1}}
 VARIANT_REFERENCE_SLURM_TIME=${VARIANT_REFERENCE_SLURM_TIME:-24:00:00}
 VARIANT_REFERENCE_SLURM_CPUS=${VARIANT_REFERENCE_SLURM_CPUS:-4}
 VARIANT_REFERENCE_SLURM_MEM=${VARIANT_REFERENCE_SLURM_MEM:-16G}
+VARIANT_REFERENCE_FORCE=${VARIANT_REFERENCE_FORCE:-${FORCE:-0}}
 VARIANT_REFERENCE_LOG_DIR=${VARIANT_REFERENCE_LOG_DIR:-logs/preprocessing}
 BUILD_SCRIPT=${BUILD_SCRIPT:-preprocessing/scripts/build_variant_calling_references.sh}
 SHARD_DIR="${OUT_ROOT}/manifest_shards"
@@ -70,10 +71,17 @@ if [[ "${MERGE_ONLY:-0}" == "1" ]]; then
 fi
 
 mkdir -p "$OUT_ROOT" "$SHARD_DIR" "$VARIANT_REFERENCE_LOG_DIR"
+export VARIANT_REFERENCE_FORCE
+export VARIANT_REFERENCE_THREADS
 
 run_one() {
   echo "[variant_refs] MASK_REF_TYPES=${MASK_REF_TYPES}" >&2
+  echo "[variant_refs] VARIANT_REFERENCE_THREADS=${VARIANT_REFERENCE_THREADS:-NA} MAX_CONCURRENT=${MAX_CONCURRENT}" >&2
   local idx="$1"
+  local force_args=()
+  if [[ "$VARIANT_REFERENCE_FORCE" == "1" ]]; then
+    force_args+=(--force)
+  fi
   local shard
   shard=$(printf "%s/%06d.tsv" "$SHARD_DIR" "$idx")
   PYTHON_COMMAND="$PYTHON_COMMAND" \
@@ -85,6 +93,7 @@ run_one() {
       --score "$SCORE" \
       --out-root "$OUT_ROOT" \
       --mask-ref-types "$MASK_REF_TYPES" \
+      "${force_args[@]}" \
       --job-index "$idx" \
       --manifest-output "$shard"
 }
@@ -98,6 +107,8 @@ if [[ "${RUN_LOCAL:-0}" != "1" ]] && command -v sbatch >/dev/null 2>&1; then
   # MASK_REF_TYPES may contain commas; exporting it separately avoids Slurm
   # splitting the value inside the comma-delimited --export list.
   export MASK_REF_TYPES
+  echo "[variant_refs] submitting array 1-${N}%${MAX_CONCURRENT}" >&2
+  echo "[variant_refs] time=${VARIANT_REFERENCE_SLURM_TIME} cpus=${VARIANT_REFERENCE_SLURM_CPUS} mem=${VARIANT_REFERENCE_SLURM_MEM}" >&2
   jid=$(sbatch --parsable \
     --job-name="variant_refs" \
     --output="${VARIANT_REFERENCE_LOG_DIR}/variant_refs_%A_%a.out" \
@@ -106,7 +117,7 @@ if [[ "${RUN_LOCAL:-0}" != "1" ]] && command -v sbatch >/dev/null 2>&1; then
     --cpus-per-task="$VARIANT_REFERENCE_SLURM_CPUS" \
     --mem="$VARIANT_REFERENCE_SLURM_MEM" \
     --array="1-${N}%${MAX_CONCURRENT}" \
-    --export=ALL,REF_INPUTS="$REF_INPUTS",SCORE="$SCORE",OUT_ROOT="$OUT_ROOT",PYTHON_COMMAND="$PYTHON_COMMAND",SAMTOOLS_COMMAND="$SAMTOOLS_COMMAND",BWA_COMMAND="$BWA_COMMAND",GATK_COMMAND="$GATK_COMMAND",VARIANT_REFERENCE_LOG_DIR="$VARIANT_REFERENCE_LOG_DIR",BUILD_SCRIPT="$BUILD_SCRIPT",VARIANT_REFERENCE_SLURM_TIME="$VARIANT_REFERENCE_SLURM_TIME",VARIANT_REFERENCE_SLURM_CPUS="$VARIANT_REFERENCE_SLURM_CPUS",VARIANT_REFERENCE_SLURM_MEM="$VARIANT_REFERENCE_SLURM_MEM" \
+    --export=ALL,REF_INPUTS="$REF_INPUTS",SCORE="$SCORE",OUT_ROOT="$OUT_ROOT",PYTHON_COMMAND="$PYTHON_COMMAND",SAMTOOLS_COMMAND="$SAMTOOLS_COMMAND",BWA_COMMAND="$BWA_COMMAND",GATK_COMMAND="$GATK_COMMAND",VARIANT_REFERENCE_LOG_DIR="$VARIANT_REFERENCE_LOG_DIR",BUILD_SCRIPT="$BUILD_SCRIPT",VARIANT_REFERENCE_SLURM_TIME="$VARIANT_REFERENCE_SLURM_TIME",VARIANT_REFERENCE_SLURM_CPUS="$VARIANT_REFERENCE_SLURM_CPUS",VARIANT_REFERENCE_SLURM_MEM="$VARIANT_REFERENCE_SLURM_MEM",VARIANT_REFERENCE_THREADS="$VARIANT_REFERENCE_THREADS",VARIANT_REFERENCE_FORCE="$VARIANT_REFERENCE_FORCE" \
     "$0")
   echo "Submitted variant-reference array job ${jid} for ${N} reference packages (max concurrent ${MAX_CONCURRENT})." >&2
   merge_jid=$(sbatch --parsable \
@@ -117,7 +128,7 @@ if [[ "${RUN_LOCAL:-0}" != "1" ]] && command -v sbatch >/dev/null 2>&1; then
     --cpus-per-task="1" \
     --mem="8G" \
     --dependency="afterok:${jid}" \
-    --export=ALL,REF_INPUTS="$REF_INPUTS",SCORE="$SCORE",OUT_ROOT="$OUT_ROOT",PYTHON_COMMAND="$PYTHON_COMMAND",VARIANT_REFERENCE_LOG_DIR="$VARIANT_REFERENCE_LOG_DIR",MERGE_ONLY=1 \
+    --export=ALL,REF_INPUTS="$REF_INPUTS",SCORE="$SCORE",OUT_ROOT="$OUT_ROOT",PYTHON_COMMAND="$PYTHON_COMMAND",VARIANT_REFERENCE_LOG_DIR="$VARIANT_REFERENCE_LOG_DIR",MERGE_ONLY=1,VARIANT_REFERENCE_FORCE="$VARIANT_REFERENCE_FORCE" \
     "$0")
   echo "Submitted variant-reference manifest merge job ${merge_jid} after array ${jid}." >&2
 else
