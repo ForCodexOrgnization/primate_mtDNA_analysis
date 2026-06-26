@@ -37,6 +37,8 @@ HPC environment config keys:
   samtools_command          samtools executable name/path (default: samtools).
   bwa_command              bwa executable name/path (default: bwa).
   gatk_command             gatk executable name/path (default: gatk).
+  variant_reference_threads
+                            Reference packages to build in parallel (default: 1).
   curl_command             curl executable name/path (default: curl).
   efetch_command           efetch executable name/path (default: efetch).
   reference_discovery_threads
@@ -158,9 +160,10 @@ REFERENCE_MATERIALIZATION_MANIFEST=$(config_get reference_materialization_manife
 IN_HOUSE_SCORE_REFERENCE_INPUTS=$(config_get in_house_score_reference_inputs "references/manifests/in_house_score_reference_inputs.tsv")
 MERGED_IN_HOUSE_SCORE=$(config_get merged_in_house_score "results/preprocessing/in_house_score/merged_in_house_score.tsv")
 NUMT_TARGET_CHRM_COV=$(config_get numt_target_chrm_cov "0.95")
-MASK_REF_TYPES=$(config_get mask_ref_types "#C-likely_comp,#C-Ambiguous")
-A_MASK_MODE=$(config_get a_mask_mode "diagnostic_only")
+MASK_REF_TYPES=$(config_get mask_ref_types "#C-likely_comp,#C-Ambiguous,#A")
+A_MASK_MODE=$(config_get a_mask_mode "mask_if_requested")
 VARIANT_CALLING_REFERENCE_OUT_ROOT=$(config_get variant_calling_reference_out_root "references/variant_calling")
+VARIANT_REFERENCE_THREADS=$(config_get variant_reference_threads "1")
 
 ENVIRONMENT_SETUP_SCRIPT=$(config_get environment_setup_script "")
 RSCRIPT_COMMAND=$(config_get rscript_command "Rscript")
@@ -304,15 +307,16 @@ run_variant_references() {
   require_nonempty_file "$IN_HOUSE_SCORE_REFERENCE_INPUTS" "in-house score reference inputs"
   require_nonempty_file "$MERGED_IN_HOUSE_SCORE" "merged in-house score table"
   check_variant_references_environment
+  REF_INPUTS="$IN_HOUSE_SCORE_REFERENCE_INPUTS" \
+  SCORE="$MERGED_IN_HOUSE_SCORE" \
+  OUT_ROOT="$VARIANT_CALLING_REFERENCE_OUT_ROOT" \
+  MASK_REF_TYPES="$MASK_REF_TYPES" \
+  VARIANT_REFERENCE_THREADS="$VARIANT_REFERENCE_THREADS" \
   PYTHON_COMMAND="$PYTHON_COMMAND" \
   SAMTOOLS_COMMAND="$SAMTOOLS_COMMAND" \
   BWA_COMMAND="$BWA_COMMAND" \
   GATK_COMMAND="$GATK_COMMAND" \
-    bash preprocessing/scripts/build_variant_calling_references.sh \
-      --ref-inputs "$IN_HOUSE_SCORE_REFERENCE_INPUTS" \
-      --score "$MERGED_IN_HOUSE_SCORE" \
-      --out-root "$VARIANT_CALLING_REFERENCE_OUT_ROOT" \
-      --mask-ref-types "$MASK_REF_TYPES"
+    bash preprocessing/scripts/run_variant_references_array.sh
 }
 
 run_reports() {

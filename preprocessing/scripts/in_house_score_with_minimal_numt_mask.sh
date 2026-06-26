@@ -85,8 +85,8 @@ NUMT_MAX_EVALUE="1e-3"
 NUMT_MIN_BITSCORE="0"
 NUMT_TARGET_CHRM_COV="${NUMT_TARGET_CHRM_COV:-0.95}"
 NUMT_PAD_BP="50"
-MASK_REF_TYPES="${MASK_REF_TYPES:-#C-likely_comp,#C-Ambiguous}"
-A_MASK_MODE="${A_MASK_MODE:-diagnostic_only}"
+MASK_REF_TYPES="${MASK_REF_TYPES:-#C-likely_comp,#C-Ambiguous,#A}"
+A_MASK_MODE="${A_MASK_MODE:-mask_if_requested}"
 
 # -------------------- Final mask selection --------------------
 # #C-Ambiguous and #C-likely_comp references receive a minimal chrM-covering

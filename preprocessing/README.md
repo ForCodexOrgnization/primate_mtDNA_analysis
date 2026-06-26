@@ -80,6 +80,7 @@ wget_command: "wget"
 samtools_command: "samtools"
 bwa_command: "bwa"
 gatk_command: "gatk"
+variant_reference_threads: 8
 curl_command: "curl"
 efetch_command: "efetch"
 ```
@@ -124,5 +125,7 @@ bash preprocessing/scripts/run_preprocessing.sh variant_references config/prepro
 ```
 
 This is still a reference-level step and does **not** require `data/metadata/sample_metadata.tsv` or any sample CRAM/CRAI paths. It consumes `references/manifests/in_house_score_reference_inputs.tsv` and `results/preprocessing/in_house_score/merged_in_house_score.tsv`, then writes per-reference FASTA packages and a manifest under `references/variant_calling/` by default. Configure the destination with `variant_calling_reference_out_root` in `config/preprocessing_paths.yaml`.
+
+When Slurm `sbatch` is available, `variant_references` submits one array task per species/reference package and uses `variant_reference_threads` as the `%N` array concurrency limit. For example, `variant_reference_threads: 100` submits up to 100 reference packages at the same time, followed by a dependent merge job that combines shard manifests into `variant_calling_reference_manifest.tsv`. If `sbatch` is unavailable or `RUN_LOCAL=1`, the same setting controls local background worker concurrency instead.
 
 The generated reference package includes the whole-genome FASTA with configured NUMT masking applied where eligible, the chrM FASTA, shifted chrM FASTA, FASTA indexes, sequence dictionaries, BWA indexes, interval files, shift-back chain files, and `variant_calling_reference_manifest.tsv`.
