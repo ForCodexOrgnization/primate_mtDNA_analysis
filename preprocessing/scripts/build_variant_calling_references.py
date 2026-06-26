@@ -24,7 +24,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 FASTA_WIDTH = 80
 LEFT_MARGIN = 575
 RIGHT_MARGIN = 545
-DEFAULT_PADDING = 150
 CHRM_KEYWORDS = re.compile(r"(^|[^A-Za-z0-9])(chrM|MT)([^A-Za-z0-9]|$)|mitochondr|mitochondria|mtdna", re.I)
 FINAL_MASK_PRIORITIES = {
     "C_likely_comp_FINAL_minimal_mask",
@@ -48,7 +47,9 @@ MANIFEST_COLUMNS = [
     "HasValidAnnotatedMito", "MaskPriority", "numt_mask_bed", "numt_mask_applied_to_whole_ref",
     "whole_fasta", "whole_fai", "whole_dict", "chrM_fasta", "chrM_fai", "chrM_dict",
     "chrM_shift_fasta", "chrM_shift_fai", "chrM_shift_dict", "non_control_interval",
-    "control_region_shifted_interval", "shift_back_chain", "wg_fasta_source", "chrM_fasta_source",
+    "control_region_shifted_interval", "interval_non_control_start", "interval_non_control_end",
+    "interval_control_shifted_start", "interval_control_shifted_end", "shift_back_chain",
+    "wg_fasta_source", "chrM_fasta_source",
     "chrM_reference_context", "reference_pairing_status", "final_reference_strategy",
     "final_wg_ref_species", "final_wg_assembly_accession", "final_chrM_species", "final_chrM_accession",
     "build_status", "build_message",
@@ -236,17 +237,19 @@ def md5_sequence(seq: str) -> str:
     return hashlib.md5(seq.encode("ascii")).hexdigest()
 
 
-def write_intervals(sid: str, chrm_fa: Path, shift_fa: Path, shift: int, interval_dir: Path) -> Tuple[Path, Path]:
+def write_intervals(sid: str, chrm_fa: Path, shift_fa: Path, shift: int, interval_dir: Path) -> Tuple[Path, Path, int, int, int, int]:
     seq = next(fasta_iter(chrm_fa))[2]
     shift_seq = next(fasta_iter(shift_fa))[2]
     L = len(seq)
     m5_by_fasta = {chrm_fa: md5_sequence(seq), shift_fa: md5_sequence(shift_seq)}
-    nc_start = max(1, LEFT_MARGIN + 1 - DEFAULT_PADDING)
-    nc_end = min(L, L - RIGHT_MARGIN + DEFAULT_PADDING)
+    # Keep interval_list coordinates exactly aligned with the WDL Mutect2 region logic.
+    nc_start = LEFT_MARGIN + 1
+    nc_end = L - RIGHT_MARGIN
+
     def shifted_pos(x: int) -> int:
         return ((x - 1 - shift) % L + L) % L + 1
-    start_raw = nc_end + 1 - DEFAULT_PADDING
-    end_raw = nc_start - 1 + DEFAULT_PADDING
+    start_raw = nc_end + 1
+    end_raw = nc_start - 1
     ctrl_start, ctrl_end = sorted((shifted_pos(start_raw), shifted_pos(end_raw)))
     non = interval_dir / f"{sid}_non_control_region.interval_list"
     ctrl = interval_dir / f"{sid}_control_region_shifted.interval_list"
@@ -256,7 +259,12 @@ def write_intervals(sid: str, chrm_fa: Path, shift_fa: Path, shift: int, interva
             f"@SQ\tSN:chrM\tLN:{L}\tM5:{m5_by_fasta[fasta]}\tUR:file://{fasta.resolve()}\n"
             f"chrM\t{start}\t{end}\t+\t.\n"
         )
-    return non, ctrl
+    print(
+        f"Intervals for {sid}: non_control={nc_start}-{nc_end}; "
+        f"control_shifted={ctrl_start}-{ctrl_end}",
+        file=sys.stderr,
+    )
+    return non, ctrl, nc_start, nc_end, ctrl_start, ctrl_end
 
 
 def write_chain(path: Path, L: int, shift: int) -> None:
@@ -404,7 +412,13 @@ def build_one_reference(ref: Dict[str, str], sid: str, score: Dict[str, str], di
         if mask_msg and score.get("REF_TYPE", "") in mask_ref_types:
             messages.append(mask_msg)
         messages.extend(build_whole(wg, whole_fa, chrm_seq, score.get("ValidAnnotatedMitoContig", ""), score.get("HasValidAnnotatedMito", ""), intervals, apply_mask))
-        non, ctrl = write_intervals(sid, chrm_fa, shift_fa, args.shift, dirs["interval"])
+        non, ctrl, nc_start, nc_end, ctrl_start, ctrl_end = write_intervals(sid, chrm_fa, shift_fa, args.shift, dirs["interval"])
+        base.update({
+            "interval_non_control_start": str(nc_start),
+            "interval_non_control_end": str(nc_end),
+            "interval_control_shifted_start": str(ctrl_start),
+            "interval_control_shifted_end": str(ctrl_end),
+        })
         write_chain(chain, len(chrm_seq), args.shift)
         for fasta in [whole_fa, chrm_fa, shift_fa]:
             index_fasta(fasta, args)
