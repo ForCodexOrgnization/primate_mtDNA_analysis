@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -332,6 +333,53 @@ def validate_manifest(manifest: Path) -> int:
     return 1 if errors else 0
 
 
+def build_one_reference(ref: Dict[str, str], sid: str, score: Dict[str, str], dirs: Dict[str, Path],
+                        mask_ref_types: set, args: argparse.Namespace) -> Dict[str, str]:
+    sp = ref["target_species"]
+    base = {c: "" for c in MANIFEST_COLUMNS}
+    base.update({
+        "target_species": sp, "safe_species_id": sid, "wg_fasta_source": ref["wg_fasta_path"], "chrM_fasta_source": ref["chrM_fasta_path"],
+        "REF_TYPE": score.get("REF_TYPE", ""), "MTLIKE_PATTERN": score.get("MTLIKE_PATTERN", ""),
+        "ValidAnnotatedMitoContig": score.get("ValidAnnotatedMitoContig", ""), "HasValidAnnotatedMito": score.get("HasValidAnnotatedMito", ""),
+        "MaskPriority": score.get("MaskPriority", ""), "chrM_reference_context": ref.get("chrM_reference_context", ""),
+        "reference_pairing_status": ref.get("reference_pairing_status", ""), "final_reference_strategy": ref.get("final_reference_strategy", ""),
+        "final_wg_ref_species": ref.get("final_wg_ref_species", ""),
+        "final_wg_assembly_accession": ref.get("final_wg_assembly_accession", ""),
+        "final_chrM_species": ref.get("final_chrM_species", ""),
+        "final_chrM_accession": ref.get("final_chrM_accession", ""),
+    })
+    messages: List[str] = []
+    try:
+        wg, chrm_src = resolve_path(ref["wg_fasta_path"]), resolve_path(ref["chrM_fasta_path"])
+        if not chrm_src.exists():
+            raise FileNotFoundError("missing_chrM_fasta")
+        if not wg.exists():
+            raise FileNotFoundError("missing_wg_fasta")
+        chrm_seq, chrm_warn = select_chrm_sequence(chrm_src); messages.extend(chrm_warn)
+        chrm_fa = dirs["Ref_chrM"] / f"{sid}.fa"
+        shift_fa = dirs["Ref_chrM_shift"] / f"{sid}.fa"
+        whole_fa = dirs["Ref_whole"] / f"{sid}.fa"
+        write_fasta(chrm_fa, [("chrM", chrm_seq)])
+        S = args.shift % len(chrm_seq)
+        write_fasta(shift_fa, [("chrM", chrm_seq[S:] + chrm_seq[:S])])
+        mask_bed = final_mask_candidate(score)
+        intervals = bed_intervals(mask_bed)
+        apply_mask, mask_msg = should_apply_mask(score, mask_ref_types, mask_bed, intervals)
+        if mask_msg and score.get("REF_TYPE", "") in mask_ref_types:
+            messages.append(mask_msg)
+        messages.extend(build_whole(wg, whole_fa, chrm_seq, score.get("ValidAnnotatedMitoContig", ""), score.get("HasValidAnnotatedMito", ""), intervals, apply_mask))
+        non, ctrl = write_intervals(sid, chrm_fa, shift_fa, args.shift, dirs["interval"])
+        chain = dirs["shift_back_chain"] / f"{sid}_ShiftBack.chain"
+        write_chain(chain, len(chrm_seq), args.shift)
+        for fasta in [whole_fa, chrm_fa, shift_fa]:
+            index_fasta(fasta, args)
+        base.update({"numt_mask_bed": rel(mask_bed), "numt_mask_applied_to_whole_ref": "yes" if apply_mask else "no", "build_status": "success", "build_message": ";".join(messages) or "ok"})
+        manifest_paths(base, whole_fa, chrm_fa, shift_fa, non, ctrl, chain)
+    except Exception as exc:
+        base.update({"build_status": "failed", "build_message": ";".join(messages + [str(exc)])})
+    return base
+
+
 def build(args: argparse.Namespace) -> Path:
     out_root = resolve_path(args.out_root)
     dirs = {name: out_root / name for name in ["Ref_whole", "Ref_chrM", "Ref_chrM_shift", "interval", "shift_back_chain"]}
@@ -347,7 +395,7 @@ def build(args: argparse.Namespace) -> Path:
             seen.add(key); unique.append(r)
     species_counts = Counter(r["target_species"] for r in unique)
     species_ord = defaultdict(int)
-    rows = []
+    jobs = []
     mask_ref_types = {x.strip() for x in args.mask_ref_types.split(",") if x.strip()}
     for ref in unique:
         sp = ref["target_species"]
@@ -355,50 +403,29 @@ def build(args: argparse.Namespace) -> Path:
         sid = safe_species_id(sp)
         if species_counts[sp] > 1:
             sid = f"{sid}_ref{species_ord[sp]:04d}"
-        score = score_by_species.get(sp, {})
-        base = {c: "" for c in MANIFEST_COLUMNS}
-        base.update({
-            "target_species": sp, "safe_species_id": sid, "wg_fasta_source": ref["wg_fasta_path"], "chrM_fasta_source": ref["chrM_fasta_path"],
-            "REF_TYPE": score.get("REF_TYPE", ""), "MTLIKE_PATTERN": score.get("MTLIKE_PATTERN", ""),
-            "ValidAnnotatedMitoContig": score.get("ValidAnnotatedMitoContig", ""), "HasValidAnnotatedMito": score.get("HasValidAnnotatedMito", ""),
-            "MaskPriority": score.get("MaskPriority", ""), "chrM_reference_context": ref.get("chrM_reference_context", ""),
-            "reference_pairing_status": ref.get("reference_pairing_status", ""), "final_reference_strategy": ref.get("final_reference_strategy", ""),
-            "final_wg_ref_species": ref.get("final_wg_ref_species", ""),
-            "final_wg_assembly_accession": ref.get("final_wg_assembly_accession", ""),
-            "final_chrM_species": ref.get("final_chrM_species", ""),
-            "final_chrM_accession": ref.get("final_chrM_accession", ""),
-        })
-        messages: List[str] = []
-        try:
-            wg, chrm_src = resolve_path(ref["wg_fasta_path"]), resolve_path(ref["chrM_fasta_path"])
-            if not chrm_src.exists():
-                raise FileNotFoundError("missing_chrM_fasta")
-            if not wg.exists():
-                raise FileNotFoundError("missing_wg_fasta")
-            chrm_seq, chrm_warn = select_chrm_sequence(chrm_src); messages.extend(chrm_warn)
-            chrm_fa = dirs["Ref_chrM"] / f"{sid}.fa"
-            shift_fa = dirs["Ref_chrM_shift"] / f"{sid}.fa"
-            whole_fa = dirs["Ref_whole"] / f"{sid}.fa"
-            write_fasta(chrm_fa, [("chrM", chrm_seq)])
-            S = args.shift % len(chrm_seq)
-            write_fasta(shift_fa, [("chrM", chrm_seq[S:] + chrm_seq[:S])])
-            mask_bed = final_mask_candidate(score)
-            intervals = bed_intervals(mask_bed)
-            apply_mask, mask_msg = should_apply_mask(score, mask_ref_types, mask_bed, intervals)
-            if mask_msg and score.get("REF_TYPE", "") in mask_ref_types:
-                messages.append(mask_msg)
-            messages.extend(build_whole(wg, whole_fa, chrm_seq, score.get("ValidAnnotatedMitoContig", ""), score.get("HasValidAnnotatedMito", ""), intervals, apply_mask))
-            non, ctrl = write_intervals(sid, chrm_fa, shift_fa, args.shift, dirs["interval"])
-            chain = dirs["shift_back_chain"] / f"{sid}_ShiftBack.chain"
-            write_chain(chain, len(chrm_seq), args.shift)
-            for fasta in [whole_fa, chrm_fa, shift_fa]:
-                index_fasta(fasta, args)
-            base.update({"numt_mask_bed": rel(mask_bed), "numt_mask_applied_to_whole_ref": "yes" if apply_mask else "no", "build_status": "success", "build_message": ";".join(messages) or "ok"})
-            manifest_paths(base, whole_fa, chrm_fa, shift_fa, non, ctrl, chain)
-        except Exception as exc:
-            base.update({"build_status": "failed", "build_message": ";".join(messages + [str(exc)])})
-        rows.append(base)
-    manifest = out_root / "variant_calling_reference_manifest.tsv"
+        jobs.append((ref, sid, score_by_species.get(sp, {})))
+
+    threads = max(1, args.threads)
+    if args.job_index:
+        if args.job_index < 1 or args.job_index > len(jobs):
+            raise SystemExit(f"--job-index {args.job_index} outside available reference package range 1..{len(jobs)}")
+        ref, sid, score = jobs[args.job_index - 1]
+        rows = [build_one_reference(ref, sid, score, dirs, mask_ref_types, args)]
+    elif threads == 1 or len(jobs) <= 1:
+        rows = [build_one_reference(ref, sid, score, dirs, mask_ref_types, args) for ref, sid, score in jobs]
+    else:
+        print(f"Building {len(jobs)} variant-reference packages with {threads} workers", file=sys.stderr)
+        rows = [None] * len(jobs)
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            future_to_index = {
+                executor.submit(build_one_reference, ref, sid, score, dirs, mask_ref_types, args): i
+                for i, (ref, sid, score) in enumerate(jobs)
+            }
+            for future in as_completed(future_to_index):
+                rows[future_to_index[future]] = future.result()
+
+    manifest = resolve_path(args.manifest_output) if args.manifest_output else out_root / "variant_calling_reference_manifest.tsv"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     with manifest.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=MANIFEST_COLUMNS, delimiter="\t", lineterminator="\n")
         writer.writeheader(); writer.writerows(rows)
@@ -413,7 +440,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score", "--score-file", dest="score", default="results/preprocessing/in_house_score/merged_in_house_score.tsv")
     parser.add_argument("--out-root", "--outdir", dest="out_root", default="references/variant_calling")
     parser.add_argument("--shift", type=int, default=8000)
-    parser.add_argument("--mask-ref-types", default="#C-likely_comp,#C-Ambiguous")
+    parser.add_argument("--mask-ref-types", default="#C-likely_comp,#C-Ambiguous,#A")
+    parser.add_argument("--threads", type=int, default=int(os.environ.get("VARIANT_REFERENCE_THREADS", "1")), help="Number of reference packages to build in parallel")
+    parser.add_argument("--job-index", type=int, default=0, help="Build only the 1-based reference package index, for Slurm array tasks")
+    parser.add_argument("--manifest-output", default="", help="Write manifest rows to this TSV instead of the default final manifest")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--samtools", default=os.environ.get("SAMTOOLS_COMMAND", "samtools"))
