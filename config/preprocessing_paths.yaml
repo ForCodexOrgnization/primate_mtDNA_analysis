@@ -44,4 +44,8 @@ a_mask_mode: "mask_if_requested"
 # Number of species/reference packages to build concurrently in the variant_references step.
 # With Slurm, this is the job-array % concurrency limit; locally, it is worker count.
 variant_reference_threads: 1
+# Per-job Slurm resources for variant_references array tasks.
+variant_reference_slurm_time: "24:00:00"
+variant_reference_slurm_cpus: 4
+variant_reference_slurm_mem: "16G"
 variant_calling_reference_out_root: "references/variant_calling"

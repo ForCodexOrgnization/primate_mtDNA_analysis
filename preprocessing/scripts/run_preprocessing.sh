@@ -39,6 +39,12 @@ HPC environment config keys:
   gatk_command             gatk executable name/path (default: gatk).
   variant_reference_threads
                             Reference packages to build in parallel (default: 1).
+  variant_reference_slurm_time
+                            Slurm walltime per variant-reference array task (default: 24:00:00).
+  variant_reference_slurm_cpus
+                            Slurm CPUs per variant-reference array task (default: 4).
+  variant_reference_slurm_mem
+                            Slurm memory per variant-reference array task (default: 16G).
   curl_command             curl executable name/path (default: curl).
   efetch_command           efetch executable name/path (default: efetch).
   reference_discovery_threads
@@ -164,6 +170,9 @@ MASK_REF_TYPES=$(config_get mask_ref_types "#C-likely_comp,#C-Ambiguous,#A")
 A_MASK_MODE=$(config_get a_mask_mode "mask_if_requested")
 VARIANT_CALLING_REFERENCE_OUT_ROOT=$(config_get variant_calling_reference_out_root "references/variant_calling")
 VARIANT_REFERENCE_THREADS=$(config_get variant_reference_threads "1")
+VARIANT_REFERENCE_SLURM_TIME=$(config_get variant_reference_slurm_time "24:00:00")
+VARIANT_REFERENCE_SLURM_CPUS=$(config_get variant_reference_slurm_cpus "4")
+VARIANT_REFERENCE_SLURM_MEM=$(config_get variant_reference_slurm_mem "16G")
 
 ENVIRONMENT_SETUP_SCRIPT=$(config_get environment_setup_script "")
 RSCRIPT_COMMAND=$(config_get rscript_command "Rscript")
@@ -312,6 +321,9 @@ run_variant_references() {
   OUT_ROOT="$VARIANT_CALLING_REFERENCE_OUT_ROOT" \
   MASK_REF_TYPES="$MASK_REF_TYPES" \
   VARIANT_REFERENCE_THREADS="$VARIANT_REFERENCE_THREADS" \
+  VARIANT_REFERENCE_SLURM_TIME="$VARIANT_REFERENCE_SLURM_TIME" \
+  VARIANT_REFERENCE_SLURM_CPUS="$VARIANT_REFERENCE_SLURM_CPUS" \
+  VARIANT_REFERENCE_SLURM_MEM="$VARIANT_REFERENCE_SLURM_MEM" \
   PYTHON_COMMAND="$PYTHON_COMMAND" \
   SAMTOOLS_COMMAND="$SAMTOOLS_COMMAND" \
   BWA_COMMAND="$BWA_COMMAND" \

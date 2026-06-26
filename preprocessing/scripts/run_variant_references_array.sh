@@ -10,6 +10,9 @@ SAMTOOLS_COMMAND=${SAMTOOLS_COMMAND:-samtools}
 BWA_COMMAND=${BWA_COMMAND:-bwa}
 GATK_COMMAND=${GATK_COMMAND:-gatk}
 MAX_CONCURRENT=${VARIANT_REFERENCE_THREADS:-${MAX_CONCURRENT:-1}}
+VARIANT_REFERENCE_SLURM_TIME=${VARIANT_REFERENCE_SLURM_TIME:-24:00:00}
+VARIANT_REFERENCE_SLURM_CPUS=${VARIANT_REFERENCE_SLURM_CPUS:-4}
+VARIANT_REFERENCE_SLURM_MEM=${VARIANT_REFERENCE_SLURM_MEM:-16G}
 VARIANT_REFERENCE_LOG_DIR=${VARIANT_REFERENCE_LOG_DIR:-logs/preprocessing}
 BUILD_SCRIPT=${BUILD_SCRIPT:-preprocessing/scripts/build_variant_calling_references.sh}
 SHARD_DIR="${OUT_ROOT}/manifest_shards"
@@ -91,9 +94,27 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
 fi
 
 if [[ "${RUN_LOCAL:-0}" != "1" ]] && command -v sbatch >/dev/null 2>&1; then
-  jid=$(sbatch --parsable --array="1-${N}%${MAX_CONCURRENT}" --export=ALL,REF_INPUTS="$REF_INPUTS",SCORE="$SCORE",OUT_ROOT="$OUT_ROOT",MASK_REF_TYPES="$MASK_REF_TYPES",PYTHON_COMMAND="$PYTHON_COMMAND",SAMTOOLS_COMMAND="$SAMTOOLS_COMMAND",BWA_COMMAND="$BWA_COMMAND",GATK_COMMAND="$GATK_COMMAND",VARIANT_REFERENCE_LOG_DIR="$VARIANT_REFERENCE_LOG_DIR",BUILD_SCRIPT="$BUILD_SCRIPT" "$0")
+  jid=$(sbatch --parsable \
+    --job-name="variant_refs" \
+    --output="${VARIANT_REFERENCE_LOG_DIR}/variant_refs_%A_%a.out" \
+    --error="${VARIANT_REFERENCE_LOG_DIR}/variant_refs_%A_%a.err" \
+    --time="$VARIANT_REFERENCE_SLURM_TIME" \
+    --cpus-per-task="$VARIANT_REFERENCE_SLURM_CPUS" \
+    --mem="$VARIANT_REFERENCE_SLURM_MEM" \
+    --array="1-${N}%${MAX_CONCURRENT}" \
+    --export=ALL,REF_INPUTS="$REF_INPUTS",SCORE="$SCORE",OUT_ROOT="$OUT_ROOT",MASK_REF_TYPES="$MASK_REF_TYPES",PYTHON_COMMAND="$PYTHON_COMMAND",SAMTOOLS_COMMAND="$SAMTOOLS_COMMAND",BWA_COMMAND="$BWA_COMMAND",GATK_COMMAND="$GATK_COMMAND",VARIANT_REFERENCE_LOG_DIR="$VARIANT_REFERENCE_LOG_DIR",BUILD_SCRIPT="$BUILD_SCRIPT",VARIANT_REFERENCE_SLURM_TIME="$VARIANT_REFERENCE_SLURM_TIME",VARIANT_REFERENCE_SLURM_CPUS="$VARIANT_REFERENCE_SLURM_CPUS",VARIANT_REFERENCE_SLURM_MEM="$VARIANT_REFERENCE_SLURM_MEM" \
+    "$0")
   echo "Submitted variant-reference array job ${jid} for ${N} reference packages (max concurrent ${MAX_CONCURRENT})." >&2
-  merge_jid=$(sbatch --parsable --dependency="afterok:${jid}" --export=ALL,REF_INPUTS="$REF_INPUTS",SCORE="$SCORE",OUT_ROOT="$OUT_ROOT",PYTHON_COMMAND="$PYTHON_COMMAND",VARIANT_REFERENCE_LOG_DIR="$VARIANT_REFERENCE_LOG_DIR",MERGE_ONLY=1 "$0")
+  merge_jid=$(sbatch --parsable \
+    --job-name="variant_refs_merge" \
+    --output="${VARIANT_REFERENCE_LOG_DIR}/variant_refs_merge_%j.out" \
+    --error="${VARIANT_REFERENCE_LOG_DIR}/variant_refs_merge_%j.err" \
+    --time="$VARIANT_REFERENCE_SLURM_TIME" \
+    --cpus-per-task="1" \
+    --mem="8G" \
+    --dependency="afterok:${jid}" \
+    --export=ALL,REF_INPUTS="$REF_INPUTS",SCORE="$SCORE",OUT_ROOT="$OUT_ROOT",PYTHON_COMMAND="$PYTHON_COMMAND",VARIANT_REFERENCE_LOG_DIR="$VARIANT_REFERENCE_LOG_DIR",MERGE_ONLY=1 \
+    "$0")
   echo "Submitted variant-reference manifest merge job ${merge_jid} after array ${jid}." >&2
 else
   echo "sbatch unavailable or RUN_LOCAL=1; building ${N} reference packages locally with ${MAX_CONCURRENT} workers." >&2
