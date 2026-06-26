@@ -295,6 +295,38 @@ def manifest_paths(base: Dict[str, str], whole: Path, chrm: Path, shift: Path, n
     })
 
 
+def expected_package_paths(sid: str, dirs: Dict[str, Path]) -> Tuple[Path, Path, Path, Path, Path, Path]:
+    """Return the standard output paths for one variant-calling reference package."""
+    whole = dirs["Ref_whole"] / f"{sid}.fa"
+    chrm = dirs["Ref_chrM"] / f"{sid}.fa"
+    shift = dirs["Ref_chrM_shift"] / f"{sid}.fa"
+    non = dirs["interval"] / f"{sid}_non_control_region.interval_list"
+    ctrl = dirs["interval"] / f"{sid}_control_region_shifted.interval_list"
+    chain = dirs["shift_back_chain"] / f"{sid}_ShiftBack.chain"
+    return whole, chrm, shift, non, ctrl, chain
+
+
+def package_complete(paths: Sequence[Path]) -> bool:
+    """Return True when all expected package outputs and FASTA indexes exist."""
+    whole, chrm, shift, non, ctrl, chain = paths
+    required = [whole, chrm, shift, non, ctrl, chain]
+    for fasta in [whole, chrm, shift]:
+        required.extend(expected_indexes(fasta))
+    return all(p.exists() and p.stat().st_size > 0 for p in required)
+
+
+def successful_manifest_rows(manifest: Path) -> Dict[str, Dict[str, str]]:
+    """Return successful rows from an existing final manifest, keyed by safe species ID."""
+    if not manifest.exists() or manifest.stat().st_size == 0:
+        return {}
+    try:
+        rows = read_tsv(manifest, MANIFEST_COLUMNS)
+    except Exception as exc:
+        print(f"WARNING: could not read existing manifest for skip checks: {exc}", file=sys.stderr)
+        return {}
+    return {r["safe_species_id"]: r for r in rows if r.get("build_status") == "success" and r.get("safe_species_id")}
+
+
 def validate_manifest(manifest: Path) -> int:
     rows = read_tsv(manifest, MANIFEST_COLUMNS)
     success = [r for r in rows if r.get("build_status") == "success"]
@@ -334,6 +366,7 @@ def validate_manifest(manifest: Path) -> int:
 
 
 def build_one_reference(ref: Dict[str, str], sid: str, score: Dict[str, str], dirs: Dict[str, Path],
+                        existing_success: Dict[str, Dict[str, str]],
                         mask_ref_types: set, args: argparse.Namespace) -> Dict[str, str]:
     sp = ref["target_species"]
     base = {c: "" for c in MANIFEST_COLUMNS}
@@ -350,26 +383,28 @@ def build_one_reference(ref: Dict[str, str], sid: str, score: Dict[str, str], di
     })
     messages: List[str] = []
     try:
+        whole_fa, chrm_fa, shift_fa, non, ctrl, chain = expected_package_paths(sid, dirs)
+        if sid in existing_success and package_complete([whole_fa, chrm_fa, shift_fa, non, ctrl, chain]) and not args.force:
+            base.update(existing_success[sid])
+            base.update({"build_status": "success", "build_message": "skipped_existing_manifest_success_and_outputs"})
+            manifest_paths(base, whole_fa, chrm_fa, shift_fa, non, ctrl, chain)
+            return base
         wg, chrm_src = resolve_path(ref["wg_fasta_path"]), resolve_path(ref["chrM_fasta_path"])
         if not chrm_src.exists():
             raise FileNotFoundError("missing_chrM_fasta")
         if not wg.exists():
             raise FileNotFoundError("missing_wg_fasta")
-        chrm_seq, chrm_warn = select_chrm_sequence(chrm_src); messages.extend(chrm_warn)
-        chrm_fa = dirs["Ref_chrM"] / f"{sid}.fa"
-        shift_fa = dirs["Ref_chrM_shift"] / f"{sid}.fa"
-        whole_fa = dirs["Ref_whole"] / f"{sid}.fa"
-        write_fasta(chrm_fa, [("chrM", chrm_seq)])
-        S = args.shift % len(chrm_seq)
-        write_fasta(shift_fa, [("chrM", chrm_seq[S:] + chrm_seq[:S])])
         mask_bed = final_mask_candidate(score)
         intervals = bed_intervals(mask_bed)
         apply_mask, mask_msg = should_apply_mask(score, mask_ref_types, mask_bed, intervals)
+        chrm_seq, chrm_warn = select_chrm_sequence(chrm_src); messages.extend(chrm_warn)
+        write_fasta(chrm_fa, [("chrM", chrm_seq)])
+        S = args.shift % len(chrm_seq)
+        write_fasta(shift_fa, [("chrM", chrm_seq[S:] + chrm_seq[:S])])
         if mask_msg and score.get("REF_TYPE", "") in mask_ref_types:
             messages.append(mask_msg)
         messages.extend(build_whole(wg, whole_fa, chrm_seq, score.get("ValidAnnotatedMitoContig", ""), score.get("HasValidAnnotatedMito", ""), intervals, apply_mask))
         non, ctrl = write_intervals(sid, chrm_fa, shift_fa, args.shift, dirs["interval"])
-        chain = dirs["shift_back_chain"] / f"{sid}_ShiftBack.chain"
         write_chain(chain, len(chrm_seq), args.shift)
         for fasta in [whole_fa, chrm_fa, shift_fa]:
             index_fasta(fasta, args)
@@ -385,6 +420,8 @@ def build(args: argparse.Namespace) -> Path:
     dirs = {name: out_root / name for name in ["Ref_whole", "Ref_chrM", "Ref_chrM_shift", "interval", "shift_back_chain"]}
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
+    existing_manifest = out_root / "variant_calling_reference_manifest.tsv"
+    existing_success = successful_manifest_rows(existing_manifest) if not args.force else {}
     refs = read_tsv(resolve_path(args.ref_inputs), REQUIRED_REF_COLUMNS)
     scores = read_tsv(resolve_path(args.score), REQUIRED_SCORE_COLUMNS)
     score_by_species = {r["Species"]: r for r in scores}
@@ -410,15 +447,15 @@ def build(args: argparse.Namespace) -> Path:
         if args.job_index < 1 or args.job_index > len(jobs):
             raise SystemExit(f"--job-index {args.job_index} outside available reference package range 1..{len(jobs)}")
         ref, sid, score = jobs[args.job_index - 1]
-        rows = [build_one_reference(ref, sid, score, dirs, mask_ref_types, args)]
+        rows = [build_one_reference(ref, sid, score, dirs, existing_success, mask_ref_types, args)]
     elif threads == 1 or len(jobs) <= 1:
-        rows = [build_one_reference(ref, sid, score, dirs, mask_ref_types, args) for ref, sid, score in jobs]
+        rows = [build_one_reference(ref, sid, score, dirs, existing_success, mask_ref_types, args) for ref, sid, score in jobs]
     else:
         print(f"Building {len(jobs)} variant-reference packages with {threads} workers", file=sys.stderr)
         rows = [None] * len(jobs)
         with ThreadPoolExecutor(max_workers=threads) as executor:
             future_to_index = {
-                executor.submit(build_one_reference, ref, sid, score, dirs, mask_ref_types, args): i
+                executor.submit(build_one_reference, ref, sid, score, dirs, existing_success, mask_ref_types, args): i
                 for i, (ref, sid, score) in enumerate(jobs)
             }
             for future in as_completed(future_to_index):
