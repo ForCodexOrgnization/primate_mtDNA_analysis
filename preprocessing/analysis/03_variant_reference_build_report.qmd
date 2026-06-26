@@ -6,6 +6,7 @@ format:
     toc: true
     toc-depth: 3
     number-sections: true
+    code-fold: true
 execute:
   echo: true
   warning: false
@@ -21,16 +22,49 @@ library(DT)
 
 repo_root <- tryCatch(
   system2("git", c("rev-parse", "--show-toplevel"), stdout = TRUE, stderr = FALSE),
-  error = function(e) getwd()
+  error = function(e) NA_character_
 )
-repo_root <- normalizePath(repo_root[1], mustWork = TRUE)
+repo_root <- repo_root[1]
+if (is.na(repo_root) || repo_root == "" || !dir.exists(repo_root)) {
+  repo_root <- normalizePath(file.path(getwd(), "../.."), mustWork = TRUE)
+}
+repo_root <- normalizePath(repo_root, mustWork = TRUE)
 knitr::opts_knit$set(root.dir = repo_root)
+
+resolve_path <- function(path) {
+  path <- as.character(path)
+  if (length(path) == 0 || is.na(path) || path == "") return(NA_character_)
+  if (grepl("^/", path)) return(path)
+  file.path(repo_root, path)
+}
+
+file_exists_nonempty <- function(path) {
+  full_path <- resolve_path(path)
+  !is.na(full_path) &&
+    file.exists(full_path) &&
+    !is.na(file.info(full_path)$size) &&
+    file.info(full_path)$size > 0
+}
 
 final_manifest <- "references/variant_calling/variant_calling_reference_manifest.tsv"
 shard_dir <- "references/variant_calling/manifest_shards"
 
+variant_inputs_status <- tibble(
+  input_name = c("final_manifest", "manifest_shard_dir"),
+  relative_path = c(final_manifest, shard_dir),
+  resolved_path = map_chr(relative_path, resolve_path),
+  found = file.exists(resolved_path),
+  size_bytes = if_else(found & !is.na(file.info(resolved_path)$size), as.numeric(file.info(resolved_path)$size), NA_real_)
+)
+
+cat("Current getwd():", getwd(), "\n")
+cat("Resolved repo_root:", repo_root, "\n")
+cat("Key input path resolution:\n")
+print(variant_inputs_status)
+
 read_manifest_safely <- function(path) {
-  readr::read_tsv(path, show_col_types = FALSE, col_types = readr::cols(.default = readr::col_character()))
+  full_path <- resolve_path(path)
+  readr::read_tsv(full_path, show_col_types = FALSE, col_types = readr::cols(.default = readr::col_character()))
 }
 
 empty_manifest <- function() {
@@ -60,7 +94,7 @@ ensure_columns <- function(x, cols) {
 required_report_cols <- names(empty_manifest())
 
 load_variant_manifest <- function() {
-  if (file.exists(final_manifest) && file.info(final_manifest)$size > 0) {
+  if (file_exists_nonempty(final_manifest)) {
     dat <- read_manifest_safely(final_manifest) %>% ensure_columns(required_report_cols)
     return(list(
       manifest = dat,
@@ -73,8 +107,9 @@ load_variant_manifest <- function() {
     ))
   }
 
-  shard_files <- if (dir.exists(shard_dir)) {
-    list.files(shard_dir, pattern = "\\.tsv$", full.names = TRUE)
+  shard_dir_resolved <- resolve_path(shard_dir)
+  shard_files <- if (!is.na(shard_dir_resolved) && dir.exists(shard_dir_resolved)) {
+    list.files(shard_dir_resolved, pattern = "\\.tsv$", full.names = TRUE)
   } else {
     character()
   }
@@ -233,20 +268,17 @@ ggplot(success_rows, aes(x = REF_TYPE, fill = numt_mask_applied_to_whole_ref)) +
 # `#A` masking diagnostic
 
 ```{r a-diagnostic}
-resolve_repo_path <- function(path) {
-  if (is.na(path) || path == "") return(NA_character_)
-  if (grepl("^/", path)) path else file.path(repo_root, path)
-}
+resolve_repo_path <- resolve_path
 
 count_bed_intervals <- function(path) {
-  resolved <- resolve_repo_path(path)
+  resolved <- resolve_path(path)
   if (is.na(resolved) || !file.exists(resolved) || file.info(resolved)$size == 0) return(0L)
   lines <- readLines(resolved, warn = FALSE)
   sum(lines != "" & !str_starts(lines, "#"))
 }
 
 bed_size <- function(path) {
-  resolved <- resolve_repo_path(path)
+  resolved <- resolve_path(path)
   if (is.na(resolved) || !file.exists(resolved)) return(NA_real_)
   as.numeric(file.info(resolved)$size)
 }
@@ -256,7 +288,7 @@ a_rows <- manifest %>%
   mutate(
     bed_path_nonempty = numt_mask_bed != "",
     bed_exists = map_lgl(numt_mask_bed, ~ {
-      resolved <- resolve_repo_path(.x)
+      resolved <- resolve_path(.x)
       !is.na(resolved) && file.exists(resolved)
     }),
     bed_size_bytes = map_dbl(numt_mask_bed, bed_size),

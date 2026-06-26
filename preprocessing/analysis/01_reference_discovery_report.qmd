@@ -26,10 +26,21 @@ fs_available <- requireNamespace("fs", quietly = TRUE)
 
 repo_root <- tryCatch(
   system2("git", c("rev-parse", "--show-toplevel"), stdout = TRUE, stderr = FALSE),
-  error = function(e) getwd()
+  error = function(e) NA_character_
 )
-repo_root <- normalizePath(repo_root[1], mustWork = TRUE)
+repo_root <- repo_root[1]
+if (is.na(repo_root) || repo_root == "" || !dir.exists(repo_root)) {
+  repo_root <- normalizePath(file.path(getwd(), "../.."), mustWork = TRUE)
+}
+repo_root <- normalizePath(repo_root, mustWork = TRUE)
 knitr::opts_knit$set(root.dir = repo_root)
+
+resolve_path <- function(path) {
+  path <- as.character(path)
+  if (length(path) == 0 || is.na(path) || path == "") return(NA_character_)
+  if (grepl("^/", path)) return(path)
+  file.path(repo_root, path)
+}
 
 primary_inputs <- c(
   discovery_summary = "data/metadata/species_reference_chrM_summary.tsv",
@@ -39,14 +50,21 @@ primary_inputs <- c(
 )
 
 file_exists_nonempty <- function(path) {
-  file.exists(path) && !is.na(file.info(path)$size) && file.info(path)$size > 0
+  full_path <- resolve_path(path)
+  !is.na(full_path) &&
+    file.exists(full_path) &&
+    !is.na(file.info(full_path)$size) &&
+    file.info(full_path)$size > 0
 }
 
 read_tsv_if_exists <- function(path) {
-  if (!file_exists_nonempty(path)) {
-    return(tibble())
-  }
-  readr::read_tsv(path, show_col_types = FALSE, col_types = readr::cols(.default = readr::col_character()))
+  full_path <- resolve_path(path)
+  if (!file_exists_nonempty(path)) return(tibble())
+  readr::read_tsv(
+    full_path,
+    show_col_types = FALSE,
+    col_types = readr::cols(.default = readr::col_character())
+  )
 }
 
 has_col <- function(df, col) {
@@ -67,19 +85,22 @@ normalize_missing_values <- function(x) {
 path_exists <- function(path) {
   path <- normalize_missing_values(path)
   if (is.na(path)) return(FALSE)
-  file.exists(path)
+  file.exists(resolve_path(path))
 }
 
 path_is_dir <- function(path) {
   path <- normalize_missing_values(path)
-  if (is.na(path) || !file.exists(path)) return(FALSE)
-  if (fs_available) fs::is_dir(path) else isTRUE(file.info(path)$isdir)
+  if (is.na(path)) return(FALSE)
+  full_path <- resolve_path(path)
+  file.exists(full_path) && isTRUE(file.info(full_path)$isdir)
 }
 
 path_file_size <- function(path) {
   path <- normalize_missing_values(path)
-  if (is.na(path) || !file.exists(path) || path_is_dir(path)) return(NA_real_)
-  as.numeric(file.info(path)$size)
+  if (is.na(path)) return(NA_real_)
+  full_path <- resolve_path(path)
+  if (!file.exists(full_path) || isTRUE(file.info(full_path)$isdir)) return(NA_real_)
+  as.numeric(file.info(full_path)$size)
 }
 
 is_fasta_like <- function(path) {
@@ -115,11 +136,18 @@ materialized_chrm_candidates <- c("materialized_chrM_fasta", "chrM_fasta_path", 
 
 inputs_status <- tibble(
   input_name = names(primary_inputs),
-  path = unname(primary_inputs),
-  found = file.exists(path),
-  nonempty = map_lgl(path, file_exists_nonempty),
-  rows = map_int(path, ~ nrow(read_tsv_if_exists(.x)))
+  relative_path = unname(primary_inputs),
+  resolved_path = map_chr(relative_path, resolve_path),
+  found = file.exists(resolved_path),
+  size_bytes = if_else(found, as.numeric(file.info(resolved_path)$size), NA_real_),
+  nonempty = map_lgl(relative_path, file_exists_nonempty),
+  rows = map_int(relative_path, ~ nrow(read_tsv_if_exists(.x)))
 )
+
+cat("Current getwd():", getwd(), "\n")
+cat("Resolved repo_root:", repo_root, "\n")
+cat("Key input path resolution:\n")
+print(inputs_status %>% select(input_name, relative_path, resolved_path, found, size_bytes))
 
 missing_inputs <- inputs_status %>% filter(!nonempty)
 
@@ -274,7 +302,7 @@ if (nrow(missing_inputs) > 0) {
   cat("::: {.callout-warning}\n")
   cat("## Missing or empty optional input files\n\n")
   cat("The report will continue with available inputs, but these files were missing or empty:\n\n")
-  for (p in missing_inputs$path) cat("- `", p, "`\n", sep = "")
+  for (p in missing_inputs$relative_path) cat("- `", p, "`\n", sep = "")
   cat(":::\n")
 }
 ```
@@ -589,8 +617,13 @@ if (issues == 0L && nrow(missing_inputs) == 0 && nrow(in_house_not_usable) == 0)
   cat("## Ready for in-house score\n\n")
   cat("All required inputs that were checked look complete for reference discovery/materialization and in-house score readiness.\n")
   cat(":::\n")
+} else if (issues == 0L && nrow(missing_inputs) > 0) {
+  cat("::: {.callout-warning}\n")
+  cat("## Required inputs unavailable\n\n")
+  cat("The report could not fully evaluate the pipeline because one or more required input files were missing or empty. Review the Overview input table before interpreting downstream readiness.\n")
+  cat(":::\n")
 } else if (issues == 0L) {
-  cat("No blocking discovery/materialization issues were detected from the available inputs, but review missing optional inputs and unusable in-house rows above if present.\n")
+  cat("No blocking discovery/materialization issues were detected from the available inputs.\n")
 }
 ```
 
