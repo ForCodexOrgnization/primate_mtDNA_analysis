@@ -1,0 +1,601 @@
+---
+title: "Reference discovery and materialization status report"
+subtitle: "Primate mtDNA preprocessing first-pass diagnostics"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(DT)
+library(stringr)
+
+fs_available <- requireNamespace("fs", quietly = TRUE)
+
+repo_root <- tryCatch(
+  system2("git", c("rev-parse", "--show-toplevel"), stdout = TRUE, stderr = FALSE),
+  error = function(e) getwd()
+)
+repo_root <- normalizePath(repo_root[1], mustWork = TRUE)
+knitr::opts_knit$set(root.dir = repo_root)
+
+primary_inputs <- c(
+  discovery_summary = "data/metadata/species_reference_chrM_summary.tsv",
+  materialization_results = "results/preprocessing/reference_materialization/reference_materialization_manifest.tsv",
+  materialization_references = "references/manifests/reference_materialization_manifest.tsv",
+  in_house_inputs = "references/manifests/in_house_score_reference_inputs.tsv"
+)
+
+file_exists_nonempty <- function(path) {
+  file.exists(path) && !is.na(file.info(path)$size) && file.info(path)$size > 0
+}
+
+read_tsv_if_exists <- function(path) {
+  if (!file_exists_nonempty(path)) {
+    return(tibble())
+  }
+  readr::read_tsv(path, show_col_types = FALSE, col_types = readr::cols(.default = readr::col_character()))
+}
+
+has_col <- function(df, col) {
+  !is.null(df) && col %in% names(df)
+}
+
+first_existing_col <- function(df, candidates) {
+  found <- candidates[candidates %in% names(df)]
+  if (length(found) == 0) NA_character_ else found[[1]]
+}
+
+normalize_missing_values <- function(x) {
+  x <- as.character(x)
+  x <- str_trim(replace_na(x, ""))
+  if_else(x %in% c("", "NA", "N/A", "na", "n/a", ".", "NULL", "null", "None", "none"), NA_character_, x)
+}
+
+path_exists <- function(path) {
+  path <- normalize_missing_values(path)
+  if (is.na(path)) return(FALSE)
+  file.exists(path)
+}
+
+path_is_dir <- function(path) {
+  path <- normalize_missing_values(path)
+  if (is.na(path) || !file.exists(path)) return(FALSE)
+  if (fs_available) fs::is_dir(path) else isTRUE(file.info(path)$isdir)
+}
+
+path_file_size <- function(path) {
+  path <- normalize_missing_values(path)
+  if (is.na(path) || !file.exists(path) || path_is_dir(path)) return(NA_real_)
+  as.numeric(file.info(path)$size)
+}
+
+is_fasta_like <- function(path) {
+  path <- normalize_missing_values(path)
+  if (is.na(path)) return(FALSE)
+  str_detect(str_to_lower(path), "\\.(fa|fasta|fna|fa\\.gz|fasta\\.gz|fna\\.gz)$")
+}
+
+count_or_message <- function(df, col, label = col) {
+  if (is.na(col) || !has_col(df, col)) {
+    cat("No `", label, "` column was available; skipping this summary.\n\n", sep = "")
+    return(invisible(NULL))
+  }
+  df %>%
+    mutate(value = normalize_missing_values(.data[[col]]), value = replace_na(value, "missing")) %>%
+    count(value, sort = TRUE, name = "n") %>%
+    knitr::kable(col.names = c(label, "n"))
+}
+
+source_col_candidates <- c("reference_source", "ref_source", "source", "wg_source", "chrM_source", "status", "reference_status", "discovery_status")
+family_col_candidates <- c("family", "Family", "taxonomic_family")
+genus_col_candidates <- c("genus", "Genus")
+species_col_candidates <- c("target_species", "species", "Species", "scientific_name", "binomial")
+wg_path_candidates <- c("wg_fasta_path", "whole_genome_fasta", "wg_fasta", "whole_fasta", "wg_reference_path", "wg_path", "fasta_path", "local_wg_fasta")
+chrm_path_candidates <- c("chrM_fasta_path", "chrm_fasta_path", "chrM_fasta", "chrm_fasta", "mitochondrial_fasta", "mt_fasta", "chrM_reference_path", "chrM_path", "local_chrM_fasta")
+embedded_col_candidates <- c("embedded_chrM", "has_embedded_chrM", "embedded_chrM_status", "chrM_embedded", "wg_has_chrM", "contains_chrM")
+chrm_acc_candidates <- c("chrM_accession", "chrm_accession", "mitochondrial_accession", "mt_accession")
+wg_acc_candidates <- c("wg_accession", "whole_genome_accession", "assembly_accession", "genome_accession")
+status_col_candidates <- c("build_status", "status", "materialization_status", "result", "state")
+message_col_candidates <- c("build_message", "message", "error", "error_message", "stderr", "reason")
+materialized_wg_candidates <- c("materialized_wg_fasta", "wg_fasta_path", "wg_fasta", "whole_fasta", "output_wg_fasta", "local_wg_fasta")
+materialized_chrm_candidates <- c("materialized_chrM_fasta", "chrM_fasta_path", "chrM_fasta", "chrm_fasta_path", "chrm_fasta", "output_chrM_fasta", "local_chrM_fasta")
+
+inputs_status <- tibble(
+  input_name = names(primary_inputs),
+  path = unname(primary_inputs),
+  found = file.exists(path),
+  nonempty = map_lgl(path, file_exists_nonempty),
+  rows = map_int(path, ~ nrow(read_tsv_if_exists(.x)))
+)
+
+missing_inputs <- inputs_status %>% filter(!nonempty)
+
+discovery <- read_tsv_if_exists(primary_inputs[["discovery_summary"]])
+materialization_results <- read_tsv_if_exists(primary_inputs[["materialization_results"]])
+materialization_references <- read_tsv_if_exists(primary_inputs[["materialization_references"]])
+in_house_inputs <- read_tsv_if_exists(primary_inputs[["in_house_inputs"]])
+
+species_col <- first_existing_col(discovery, species_col_candidates)
+wg_path_col <- first_existing_col(discovery, wg_path_candidates)
+chrm_path_col <- first_existing_col(discovery, chrm_path_candidates)
+family_col <- first_existing_col(discovery, family_col_candidates)
+genus_col <- first_existing_col(discovery, genus_col_candidates)
+embedded_col <- first_existing_col(discovery, embedded_col_candidates)
+chrm_acc_col <- first_existing_col(discovery, chrm_acc_candidates)
+wg_acc_col <- first_existing_col(discovery, wg_acc_candidates)
+
+if (!is.na(species_col) && nrow(discovery) > 0) {
+  discovery <- discovery %>% mutate(target_species_report = normalize_missing_values(.data[[species_col]]))
+} else {
+  discovery$target_species_report <- rep(NA_character_, nrow(discovery))
+}
+
+if (!is.na(wg_path_col) && nrow(discovery) > 0) {
+  discovery <- discovery %>% mutate(wg_path_report = normalize_missing_values(.data[[wg_path_col]]))
+} else {
+  discovery$wg_path_report <- rep(NA_character_, nrow(discovery))
+}
+
+if (!is.na(chrm_path_col) && nrow(discovery) > 0) {
+  discovery <- discovery %>% mutate(chrM_path_report = normalize_missing_values(.data[[chrm_path_col]]))
+} else {
+  discovery$chrM_path_report <- rep(NA_character_, nrow(discovery))
+}
+
+if (is.na(genus_col) && nrow(discovery) > 0) {
+  discovery <- discovery %>% mutate(genus_report = str_extract(target_species_report, "^[^_ ]+"))
+  genus_col_report <- "genus_report"
+} else {
+  genus_col_report <- genus_col
+}
+
+path_problem_rows <- function(df, path_col, path_label) {
+  if (is.na(path_col) || nrow(df) == 0) return(tibble())
+  df %>%
+    transmute(
+      target_species = target_species_report,
+      path_type = path_label,
+      path_value = .data[[path_col]],
+      normalized_path = normalize_missing_values(.data[[path_col]]),
+      is_missing_value = is.na(normalized_path),
+      exists = map_lgl(normalized_path, path_exists),
+      is_directory = map_lgl(normalized_path, path_is_dir),
+      fasta_like_extension = map_lgl(normalized_path, is_fasta_like)
+    ) %>%
+    filter(is_missing_value | is_directory | (exists & !fasta_like_extension))
+}
+
+missing_wg <- discovery %>% filter(is.na(wg_path_report))
+missing_chrm <- discovery %>% filter(is.na(chrM_path_report))
+missing_both <- discovery %>% filter(is.na(wg_path_report), is.na(chrM_path_report))
+duplicated_species <- discovery %>%
+  filter(!is.na(target_species_report)) %>%
+  add_count(target_species_report, name = "target_species_n") %>%
+  filter(target_species_n > 1) %>%
+  arrange(target_species_report)
+duplicated_species_paths <- discovery %>%
+  filter(!is.na(target_species_report)) %>%
+  add_count(target_species_report, wg_path_report, chrM_path_report, name = "species_path_n") %>%
+  filter(species_path_n > 1) %>%
+  arrange(target_species_report, wg_path_report, chrM_path_report)
+suspicious_paths <- bind_rows(
+  path_problem_rows(discovery, wg_path_col, "WG"),
+  path_problem_rows(discovery, chrm_path_col, "chrM")
+)
+
+materialization_all <- bind_rows(
+  materialization_results %>% mutate(manifest_source = primary_inputs[["materialization_results"]]),
+  materialization_references %>% mutate(manifest_source = primary_inputs[["materialization_references"]])
+)
+mat_status_col <- first_existing_col(materialization_all, status_col_candidates)
+mat_message_col <- first_existing_col(materialization_all, message_col_candidates)
+mat_wg_col <- first_existing_col(materialization_all, materialized_wg_candidates)
+mat_chrm_col <- first_existing_col(materialization_all, materialized_chrm_candidates)
+
+if (nrow(materialization_all) > 0) {
+  materialization_all <- materialization_all %>%
+    mutate(
+      mat_status_report = if (!is.na(mat_status_col)) normalize_missing_values(.data[[mat_status_col]]) else NA_character_,
+      mat_message_report = if (!is.na(mat_message_col)) normalize_missing_values(.data[[mat_message_col]]) else NA_character_,
+      mat_wg_path_report = if (!is.na(mat_wg_col)) normalize_missing_values(.data[[mat_wg_col]]) else NA_character_,
+      mat_chrM_path_report = if (!is.na(mat_chrm_col)) normalize_missing_values(.data[[mat_chrm_col]]) else NA_character_,
+      mat_failure_category = case_when(
+        !is.na(mat_status_report) & str_detect(str_to_lower(mat_status_report), "success|complete|ok|done") ~ "success",
+        str_detect(replace_na(mat_message_report, ""), fixed("SIGKILL", ignore_case = TRUE)) ~ "SIGKILL",
+        str_detect(replace_na(mat_message_report, ""), fixed("Is a directory", ignore_case = TRUE)) ~ "path_is_directory",
+        str_detect(replace_na(mat_message_report, ""), regex("missing.*wg|wg.*missing", ignore_case = TRUE)) ~ "missing_wg",
+        str_detect(replace_na(mat_message_report, ""), regex("missing.*chrM|chrM.*missing|missing.*chrm|chrm.*missing", ignore_case = TRUE)) ~ "missing_chrM",
+        !is.na(mat_message_report) & mat_message_report != "" ~ "other_message",
+        TRUE ~ "unknown_or_not_reported"
+      ),
+      mat_wg_exists = map_lgl(mat_wg_path_report, path_exists),
+      mat_chrM_exists = map_lgl(mat_chrM_path_report, path_exists),
+      mat_wg_missing_output = !is.na(mat_wg_path_report) & !mat_wg_exists,
+      mat_chrM_missing_output = !is.na(mat_chrM_path_report) & !mat_chrM_exists
+    )
+}
+
+in_house_species_col <- first_existing_col(in_house_inputs, species_col_candidates)
+in_house_wg_col <- first_existing_col(in_house_inputs, c("wg_fasta_path", wg_path_candidates))
+in_house_chrm_col <- first_existing_col(in_house_inputs, c("chrM_fasta_path", "chrm_fasta_path", chrm_path_candidates))
+
+if (nrow(in_house_inputs) > 0) {
+  in_house_inputs <- in_house_inputs %>%
+    mutate(
+      ih_target_species = if (!is.na(in_house_species_col)) normalize_missing_values(.data[[in_house_species_col]]) else NA_character_,
+      ih_wg_path = if (!is.na(in_house_wg_col)) normalize_missing_values(.data[[in_house_wg_col]]) else NA_character_,
+      ih_chrM_path = if (!is.na(in_house_chrm_col)) normalize_missing_values(.data[[in_house_chrm_col]]) else NA_character_,
+      ih_wg_exists = map_lgl(ih_wg_path, path_exists),
+      ih_chrM_exists = map_lgl(ih_chrM_path, path_exists),
+      ih_usable = !is.na(ih_wg_path) & !is.na(ih_chrM_path) & !map_lgl(ih_wg_path, path_is_dir) & !map_lgl(ih_chrM_path, path_is_dir)
+    )
+}
+```
+
+# Overview
+
+```{r overview}
+cat("Report generated at:", format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"), "\n\n")
+
+knitr::kable(inputs_status)
+
+overview_counts <- tibble(
+  metric = c(
+    "unique_target_species",
+    "species_with_usable_wg_reference_path",
+    "species_with_usable_chrM_reference_path",
+    "species_with_both_wg_and_chrM_paths"
+  ),
+  value = c(
+    n_distinct(discovery$target_species_report, na.rm = TRUE),
+    n_distinct(discovery$target_species_report[!is.na(discovery$wg_path_report)], na.rm = TRUE),
+    n_distinct(discovery$target_species_report[!is.na(discovery$chrM_path_report)], na.rm = TRUE),
+    n_distinct(discovery$target_species_report[!is.na(discovery$wg_path_report) & !is.na(discovery$chrM_path_report)], na.rm = TRUE)
+  )
+)
+knitr::kable(overview_counts)
+```
+
+```{r missing-input-warning, results='asis'}
+if (nrow(missing_inputs) > 0) {
+  cat("::: {.callout-warning}\n")
+  cat("## Missing or empty optional input files\n\n")
+  cat("The report will continue with available inputs, but these files were missing or empty:\n\n")
+  for (p in missing_inputs$path) cat("- `", p, "`\n", sep = "")
+  cat(":::\n")
+}
+```
+
+# Reference discovery summary
+
+```{r discovery-summary}
+if (nrow(discovery) == 0) {
+  cat("No non-empty discovery summary was available at `", primary_inputs[["discovery_summary"]], "`.\n", sep = "")
+} else {
+  cat("Discovery rows loaded:", nrow(discovery), "\n\n")
+}
+```
+
+## Family distribution
+
+```{r family-summary}
+count_or_message(discovery, family_col, "family")
+```
+
+## Genus distribution
+
+```{r genus-summary}
+if (!is.na(genus_col_report)) {
+  count_or_message(discovery, genus_col_report, "genus")
+} else {
+  cat("No genus column was available and genus could not be parsed from species names.\n\n")
+}
+```
+
+## Reference source/status columns
+
+```{r reference-source-status-summary}
+source_status_cols <- intersect(source_col_candidates, names(discovery))
+if (length(source_status_cols) == 0) {
+  cat("No reference source/status columns were available; skipping this summary.\n\n")
+} else {
+  for (col in source_status_cols) {
+    cat("### `", col, "`\n\n", sep = "")
+    print(count_or_message(discovery, col, col))
+    cat("\n\n")
+  }
+}
+```
+
+## Embedded chrM status
+
+```{r embedded-chrm-summary}
+count_or_message(discovery, embedded_col, "embedded chrM status")
+```
+
+## chrM accession availability
+
+```{r chrm-accession-summary}
+if (!is.na(chrm_acc_col)) {
+  discovery %>%
+    mutate(chrM_accession_available = !is.na(normalize_missing_values(.data[[chrm_acc_col]]))) %>%
+    count(chrM_accession_available, name = "n") %>%
+    knitr::kable()
+} else {
+  cat("No chrM accession column was available; skipping this summary.\n\n")
+}
+```
+
+## WG accession availability
+
+```{r wg-accession-summary}
+if (!is.na(wg_acc_col)) {
+  discovery %>%
+    mutate(wg_accession_available = !is.na(normalize_missing_values(.data[[wg_acc_col]]))) %>%
+    count(wg_accession_available, name = "n") %>%
+    knitr::kable()
+} else {
+  cat("No WG accession column was available; skipping this summary.\n\n")
+}
+```
+
+# Missing reference diagnostics
+
+## Missing WG paths
+
+```{r missing-wg}
+DT::datatable(missing_wg, filter = "top", options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
+```
+
+## Missing chrM paths
+
+```{r missing-chrm}
+DT::datatable(missing_chrm, filter = "top", options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
+```
+
+## Missing both WG and chrM paths
+
+```{r missing-both}
+DT::datatable(missing_both, filter = "top", options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
+```
+
+## Duplicated target species
+
+```{r duplicated-target-species}
+DT::datatable(duplicated_species, filter = "top", options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
+```
+
+## Duplicated species/reference path combinations
+
+```{r duplicated-species-paths}
+DT::datatable(duplicated_species_paths, filter = "top", options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
+```
+
+## Suspicious paths
+
+```{r suspicious-paths}
+DT::datatable(suspicious_paths, filter = "top", options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
+```
+
+# Reference materialization summary
+
+```{r materialization-summary}
+if (nrow(materialization_all) == 0) {
+  cat("No non-empty reference materialization manifest was available.\n\n")
+} else {
+  cat("Materialization rows loaded:", nrow(materialization_all), "\n\n")
+
+  if (!is.na(mat_status_col)) {
+    materialization_all %>% count(manifest_source, mat_status_report, sort = TRUE, name = "n") %>% knitr::kable()
+  } else {
+    cat("No materialization status/build_status column was available.\n\n")
+  }
+
+  if (!is.na(mat_message_col)) {
+    materialization_all %>% count(mat_failure_category, sort = TRUE, name = "n") %>% knitr::kable()
+  } else {
+    cat("No materialization build_message/message/error column was available.\n\n")
+  }
+
+  mat_output_counts <- tibble(
+    metric = c("materialized_WG_FASTA_files", "materialized_chrM_FASTA_files", "missing_output_FASTA_files"),
+    value = c(
+      sum(materialization_all$mat_wg_exists),
+      sum(materialization_all$mat_chrM_exists),
+      sum(materialization_all$mat_wg_missing_output | materialization_all$mat_chrM_missing_output)
+    )
+  )
+  knitr::kable(mat_output_counts)
+}
+```
+
+## Failed or problematic materialization rows
+
+```{r materialization-problem-table}
+materialization_problem_rows <- if (nrow(materialization_all) == 0) {
+  tibble()
+} else {
+  materialization_all %>%
+    filter(
+      is.na(mat_status_report) |
+        !str_detect(str_to_lower(mat_status_report), "success|complete|ok|done") |
+        mat_wg_missing_output |
+        mat_chrM_missing_output
+    )
+}
+DT::datatable(materialization_problem_rows, filter = "top", options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
+```
+
+# In-house score input readiness
+
+```{r in-house-readiness}
+if (nrow(in_house_inputs) == 0) {
+  cat("No non-empty in-house score input manifest was available at `", primary_inputs[["in_house_inputs"]], "`.\n", sep = "")
+  in_house_summary <- tibble(metric = character(), value = integer())
+  in_house_duplicates_species <- tibble()
+  in_house_duplicates_paths <- tibble()
+  in_house_not_usable <- tibble()
+} else {
+  in_house_duplicates_species <- in_house_inputs %>%
+    filter(!is.na(ih_target_species)) %>%
+    add_count(ih_target_species, name = "target_species_n") %>%
+    filter(target_species_n > 1)
+
+  in_house_duplicates_paths <- in_house_inputs %>%
+    filter(!is.na(ih_target_species)) %>%
+    add_count(ih_target_species, ih_wg_path, ih_chrM_path, name = "species_path_n") %>%
+    filter(species_path_n > 1)
+
+  in_house_not_usable <- in_house_inputs %>% filter(!ih_usable)
+
+  in_house_summary <- tibble(
+    metric = c(
+      "total_input_rows",
+      "unique_target_species",
+      "rows_with_wg_fasta_path_present",
+      "rows_with_chrM_fasta_path_present",
+      "rows_with_both_paths_present",
+      "duplicated_target_species_rows",
+      "duplicated_target_species_wg_chrM_path_rows"
+    ),
+    value = c(
+      nrow(in_house_inputs),
+      n_distinct(in_house_inputs$ih_target_species, na.rm = TRUE),
+      sum(!is.na(in_house_inputs$ih_wg_path)),
+      sum(!is.na(in_house_inputs$ih_chrM_path)),
+      sum(!is.na(in_house_inputs$ih_wg_path) & !is.na(in_house_inputs$ih_chrM_path)),
+      nrow(in_house_duplicates_species),
+      nrow(in_house_duplicates_paths)
+    )
+  )
+  knitr::kable(in_house_summary)
+}
+```
+
+## Rows not usable for in-house scoring
+
+```{r in-house-not-usable-table}
+DT::datatable(in_house_not_usable, filter = "top", options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
+```
+
+# Plots
+
+## Reference/materialization status
+
+```{r materialization-status-plot, fig.width=9, fig.height=5}
+if (nrow(materialization_all) > 0 && !is.na(mat_status_col)) {
+  ggplot(materialization_all, aes(x = mat_status_report, fill = manifest_source)) +
+    geom_bar(position = "dodge") +
+    labs(x = "Materialization status", y = "Rows", fill = "Manifest source") +
+    theme_minimal(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 35, hjust = 1))
+} else {
+  cat("No materialization status column was available for plotting.\n")
+}
+```
+
+## Family or genus counts
+
+```{r family-genus-plot, fig.width=9, fig.height=5}
+plot_group_col <- if (!is.na(family_col)) family_col else genus_col_report
+plot_group_label <- if (!is.na(family_col)) "family" else "genus"
+if (!is.na(plot_group_col) && nrow(discovery) > 0) {
+  plot_data <- discovery %>%
+    mutate(group = replace_na(normalize_missing_values(.data[[plot_group_col]]), "missing")) %>%
+    count(group, sort = TRUE) %>%
+    slice_head(n = 25)
+  ggplot(plot_data, aes(x = reorder(group, n), y = n)) +
+    geom_col() +
+    coord_flip() +
+    labs(x = plot_group_label, y = "Species/row count") +
+    theme_minimal(base_size = 12)
+} else {
+  cat("No family or genus information was available for plotting.\n")
+}
+```
+
+## WG/chrM availability
+
+```{r wg-chrm-availability-plot, fig.width=8, fig.height=5}
+availability_plot_data <- discovery %>%
+  transmute(
+    availability = case_when(
+      !is.na(wg_path_report) & !is.na(chrM_path_report) ~ "both WG and chrM",
+      !is.na(wg_path_report) & is.na(chrM_path_report) ~ "WG only",
+      is.na(wg_path_report) & !is.na(chrM_path_report) ~ "chrM only",
+      TRUE ~ "missing both"
+    )
+  ) %>%
+  count(availability, name = "n")
+
+ggplot(availability_plot_data, aes(x = availability, y = n, fill = availability)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = "Reference path availability", y = "Rows") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+```
+
+# Suggested next actions
+
+```{r suggested-next-actions, results='asis'}
+issues <- 0L
+
+if (nrow(missing_wg) > 0 || nrow(missing_chrm) > 0) {
+  issues <- issues + 1L
+  cat("::: {.callout-warning}\n")
+  cat("## Missing reference paths\n\n")
+  cat("- Missing WG paths: ", nrow(missing_wg), " rows. Inspect the `Missing WG paths` table above.\n", sep = "")
+  cat("- Missing chrM paths: ", nrow(missing_chrm), " rows. Inspect the `Missing chrM paths` table above.\n", sep = "")
+  cat(":::\n\n")
+}
+
+if (nrow(duplicated_species) > 0) {
+  issues <- issues + 1L
+  cat("::: {.callout-warning}\n")
+  cat("## Duplicated target species\n\n")
+  cat("There are ", nrow(duplicated_species), " rows involved in duplicated `target_species` values. Downstream score/reference build steps may use unexpected duplicate rows.\n", sep = "")
+  cat(":::\n\n")
+}
+
+if (nrow(in_house_inputs) > 0 && nrow(discovery) > 0) {
+  discovery_unique <- n_distinct(discovery$target_species_report, na.rm = TRUE)
+  in_house_unique <- n_distinct(in_house_inputs$ih_target_species, na.rm = TRUE)
+  if (in_house_unique < discovery_unique) {
+    issues <- issues + 1L
+    cat("::: {.callout-warning}\n")
+    cat("## Fewer species in in-house score inputs\n\n")
+    cat("`in_house_score_reference_inputs.tsv` has ", in_house_unique,
+        " unique species, compared with ", discovery_unique,
+        " unique species in `species_reference_chrM_summary.tsv`.\n", sep = "")
+    cat(":::\n\n")
+  }
+}
+
+if (issues == 0L && nrow(missing_inputs) == 0 && nrow(in_house_not_usable) == 0) {
+  cat("::: {.callout-tip}\n")
+  cat("## Ready for in-house score\n\n")
+  cat("All required inputs that were checked look complete for reference discovery/materialization and in-house score readiness.\n")
+  cat(":::\n")
+} else if (issues == 0L) {
+  cat("No blocking discovery/materialization issues were detected from the available inputs, but review missing optional inputs and unusable in-house rows above if present.\n")
+}
+```
+
+# Session info
+
+```{r session-info}
+sessionInfo()
+```
