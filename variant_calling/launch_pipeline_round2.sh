@@ -3,7 +3,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
 #SBATCH --time=24:00:00
-#SBATCH --output=log_round2/nf_batch_%A_%a.log
+#SBATCH --output=logs/variant_calling/round2/nf_batch_%A_%a.log
 
 set -euo pipefail
 
@@ -21,7 +21,7 @@ if [ -z "${SLURM_JOB_ID:-}" ]; then
     echo "--- Running in Master Mode on Login Node ---"
 
     mkdir -p "${NF_BASE_WORK_DIR}"
-    mkdir -p log_round2
+    mkdir -p logs/variant_calling/round2
 
     echo "Cleaning up old batch files in ${NF_BASE_WORK_DIR}"
     rm -f "${NF_BASE_WORK_DIR}/sample_batch_"*
@@ -48,7 +48,7 @@ else
     echo "--- Running in Worker Mode on Compute Node (Task ${SLURM_ARRAY_TASK_ID}) ---"
     echo "================================================================="
 
-    LOG_DIR="${SLURM_SUBMIT_DIR}/log_round2"
+    LOG_DIR="${SLURM_SUBMIT_DIR}/logs/variant_calling/round2"
     mkdir -p "${LOG_DIR}"
 
     SUBMIT_DIR="${SLURM_SUBMIT_DIR}"

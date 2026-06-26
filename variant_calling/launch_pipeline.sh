@@ -3,7 +3,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
 #SBATCH --time=24:00:00
-#SBATCH --output=log/nf_batch_%A_%a.log
+#SBATCH --output=logs/variant_calling/main/nf_batch_%A_%a.log
 
 set -e
 
@@ -21,8 +21,9 @@ if [ -z "$SLURM_JOB_ID" ]; then
     # --- 登录节点逻辑 (Master Mode) ---
     echo "--- Running in Master Mode on Login Node ---"
 
-    # 确保 NF_BASE_WORK_DIR 存在
+    # 确保 NF_BASE_WORK_DIR 和日志目录存在
     mkdir -p "${NF_BASE_WORK_DIR}"
+    mkdir -p logs/variant_calling/main
 
     echo "Cleaning up old batch files in ${NF_BASE_WORK_DIR}."
     # 只清 sample_batch_*，不动 batch_* 目录，方便 Nextflow -resume
@@ -50,7 +51,7 @@ else
     echo "--- Running in Worker Mode on Compute Node (Task ${SLURM_ARRAY_TASK_ID}) ---"
     echo "================================================================="
 
-    LOG_DIR="log"
+    LOG_DIR="${SLURM_SUBMIT_DIR}/logs/variant_calling/main"
     mkdir -p "$LOG_DIR"
     echo "[*] Log directory: $(pwd)/${LOG_DIR}"
 

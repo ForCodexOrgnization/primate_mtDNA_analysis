@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=merge_ref
-#SBATCH --output=log/preprocessing/numt_%A_%a.out
-#SBATCH --error=log/preprocessing/numt_%A_%a.err
+#SBATCH --output=logs/preprocessing/in_house_score/numt_%A_%a.out
+#SBATCH --error=logs/preprocessing/in_house_score/numt_%A_%a.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
@@ -55,7 +55,7 @@ PYTHON_COMMAND="${PYTHON_COMMAND:-python3}"
 MAKEBLASTDB_COMMAND="${MAKEBLASTDB_COMMAND:-makeblastdb}"
 BLASTN_COMMAND="${BLASTN_COMMAND:-blastn}"
 ARRAY_CONCURRENCY="${ARRAY_CONCURRENCY:-50}"
-IN_HOUSE_SCORE_LOG_DIR="${IN_HOUSE_SCORE_LOG_DIR:-log/preprocessing}"
+IN_HOUSE_SCORE_LOG_DIR="${IN_HOUSE_SCORE_LOG_DIR:-logs/preprocessing/in_house_score}"
 
 mkdir -p "$OUTDIR" "$IN_HOUSE_SCORE_LOG_DIR" "${OUTDIR}/numt_candidates" "${OUTDIR}/numt_beds"
 if [[ -n "${BLAST_MODULE:-}" ]] && command -v module >/dev/null 2>&1; then
