@@ -5,6 +5,22 @@ The script materializes per-reference FASTA packages for whole-genome + chrM,
 unshifted chrM, shifted chrM, GATK interval lists, shift-back chains, and
 reference indexes.  Failures are recorded per row in the output manifest so one
 problematic species does not stop the remaining reference packages.
+
+Quick manual integrity triage after rebuilding:
+  # Show rows where Ref_whole chrM differs from Ref_chrM
+  awk -F'\t' '
+  NR==1 {for(i=1;i<=NF;i++) h[$i]=i; next}
+  $h["check_status"]!="pass" {
+    print $h["target_species"], $h["REF_TYPE"], $h["expected_chrM_mode"], \
+      $h["whole_chrM_len"], $h["Ref_chrM_len"], $h["check_message"]
+  }' results/preprocessing/reports/variant_reference_integrity_check.tsv
+
+  # Compare a single species manually
+  sp=Aotus_azarae
+  grep -c "^>chrM$" references/variant_calling/Ref_whole/${sp}.fa
+  diff -q \
+    <(awk '/^>/{p=($0==">chrM"); next} p' references/variant_calling/Ref_whole/${sp}.fa) \
+    <(awk '/^>/{p=($0==">chrM"); next} p' references/variant_calling/Ref_chrM/${sp}.fa)
 """
 from __future__ import annotations
 
@@ -68,6 +84,17 @@ def rel(path: Optional[Path]) -> str:
 def resolve_path(value: str) -> Path:
     p = Path((value or "").strip())
     return p if p.is_absolute() else REPO_ROOT / p
+
+
+def normalize_species_name(value: str) -> str:
+    """Return a normalized species token for robust equality checks."""
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def same_species(a: str, b: str) -> bool:
+    """Return True when two non-empty species labels refer to the same species."""
+    norm_a = normalize_species_name(a)
+    return norm_a == normalize_species_name(b) and norm_a != ""
 
 
 def safe_species_id(value: str) -> str:
@@ -193,20 +220,37 @@ def should_apply_mask(score: Dict[str, str], mask_ref_types: set, bed: Optional[
     return True, ""
 
 
-def build_whole(wg: Path, out: Path, chrm_seq: str, valid_contig: str, has_valid_mito: str,
-                intervals: Sequence[Tuple[str, int, int]], apply_mask: bool) -> List[str]:
+def build_whole(
+    wg: Path,
+    out: Path,
+    chrm_seq: str,
+    valid_contig: str,
+    has_valid_mito: str,
+    intervals: Sequence[Tuple[str, int, int]],
+    apply_mask: bool,
+    target_species: str = "",
+    final_chrM_species: str = "",
+) -> List[str]:
     warnings: List[str] = []
     by_contig: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
     for contig, start, end in intervals:
         by_contig[contig].append((start, end))
     embedded = str(has_valid_mito).strip() == "1" and not is_missing(valid_contig)
     valid_contig = valid_contig.strip()
+    selected_chrm_is_target_species = same_species(final_chrM_species, target_species)
     chrm_count = 0
     seen = set()
     records = []
     for name, _desc, seq in fasta_iter(wg):
         seen.add(name)
         out_name = "chrM" if embedded and name == valid_contig else name
+        if embedded and name == valid_contig:
+            if selected_chrm_is_target_species:
+                if seq != chrm_seq:
+                    warnings.append("embedded_chrM_sequence_differed_from_selected_target_chrM_replaced")
+                seq = chrm_seq
+            else:
+                warnings.append("selected_chrM_not_target_species_embedded_chrM_not_replaced")
         if name == "chrM" and out_name != "chrM":
             warnings.append("WG_contig_named_chrM_not_ValidAnnotatedMitoContig")
         if out_name == "chrM":
@@ -221,6 +265,8 @@ def build_whole(wg: Path, out: Path, chrm_seq: str, valid_contig: str, has_valid
     if not embedded:
         if any(name == "chrM" for name, _ in records):
             warnings.append("existing chrM contig present before append")
+        if not selected_chrm_is_target_species:
+            warnings.append("selected_chrM_not_target_species_chrM_appended")
         records.append(("chrM", chrm_seq))
         chrm_count += 1
     write_fasta(out, records)
@@ -411,7 +457,17 @@ def build_one_reference(ref: Dict[str, str], sid: str, score: Dict[str, str], di
         write_fasta(shift_fa, [("chrM", chrm_seq[S:] + chrm_seq[:S])])
         if mask_msg and score.get("REF_TYPE", "") in mask_ref_types:
             messages.append(mask_msg)
-        messages.extend(build_whole(wg, whole_fa, chrm_seq, score.get("ValidAnnotatedMitoContig", ""), score.get("HasValidAnnotatedMito", ""), intervals, apply_mask))
+        messages.extend(build_whole(
+            wg=wg,
+            out=whole_fa,
+            chrm_seq=chrm_seq,
+            valid_contig=score.get("ValidAnnotatedMitoContig", ""),
+            has_valid_mito=score.get("HasValidAnnotatedMito", ""),
+            intervals=intervals,
+            apply_mask=apply_mask,
+            target_species=ref.get("target_species", ""),
+            final_chrM_species=ref.get("final_chrM_species", ""),
+        ))
         non, ctrl, nc_start, nc_end, ctrl_start, ctrl_end = write_intervals(sid, chrm_fa, shift_fa, args.shift, dirs["interval"])
         base.update({
             "interval_non_control_start": str(nc_start),
