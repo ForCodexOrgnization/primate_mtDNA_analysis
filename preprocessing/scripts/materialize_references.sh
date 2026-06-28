@@ -36,7 +36,10 @@ def download_file(url, out_path):
     tmp = out_path + ".download"
     if os.path.exists(tmp):
         os.remove(tmp)
-    run([os.environ.get("WGET_COMMAND", "wget"), "-O", tmp, url])
+    try:
+        run_with_output([os.environ.get("WGET_COMMAND", "wget"), "-O", tmp, url])
+    except Exception as e:
+        raise RuntimeError(f"download failed for {url}: {e}") from e
     os.replace(tmp, out_path)
 
 
@@ -74,8 +77,48 @@ def reference_pairing_status(target, wg_species, chrM_species):
 
 def dna_zoo_species_token(value):
     raw = str(value or "").strip()
+    if raw.lower().startswith("dnazoo:"):
+        raw = raw.split(":", 1)[1]
+    elif raw.lower().startswith("dnazoo_"):
+        raw = raw.split("_", 1)[1]
     token = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_")
     return token or normalize_species(raw)
+
+
+def sanitize_local_id(value):
+    raw = str(value or "").strip()
+    if raw.lower().startswith("dnazoo:"):
+        raw = "DNAZoo_" + raw.split(":", 1)[1]
+    token = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("_")
+    return token or "unknown"
+
+
+def dnazoo_token_from_row(row, fallback_species, prefer_chrM=False):
+    candidates = []
+    if not prefer_chrM:
+        candidates.extend([
+            row.get("final_wg_assembly_accession", ""),
+            row.get("final_wg_ref_species", ""),
+            fallback_species,
+        ])
+    candidates.extend([
+        row.get("final_chrM_species", ""),
+        row.get("final_chrM_accession", ""),
+        fallback_species,
+    ])
+    if prefer_chrM and is_dnazoo_source(row.get("final_wg_ref_source", "")):
+        # For DNA Zoo-backed WG rows, prefer the same target/WG species MT FASTA
+        # before falling back to a cross-species mitochondrial reference.
+        candidates = [
+            row.get("final_wg_assembly_accession", ""),
+            row.get("final_wg_ref_species", ""),
+            fallback_species,
+        ] + candidates
+    for candidate in candidates:
+        token = dna_zoo_species_token(candidate)
+        if token:
+            return token
+    return dna_zoo_species_token(fallback_species)
 
 
 def is_dnazoo_source(value):
@@ -83,8 +126,8 @@ def is_dnazoo_source(value):
 
 
 def materialize_dnazoo_wg(row, asm, fallback_species):
-    token = dna_zoo_species_token(row.get("final_wg_ref_species") or fallback_species)
-    stable_id = asm or f"DNAZOO_{token}"
+    token = dnazoo_token_from_row(row, fallback_species)
+    stable_id = sanitize_local_id(asm) if asm else f"DNAZoo_{token}"
     wg_dir = os.path.join("references", "wg", stable_id)
     gz_path = os.path.join(wg_dir, f"{stable_id}.genome.fa.gz")
     fasta_path = os.path.join(wg_dir, f"{stable_id}.genome.fa")
@@ -98,14 +141,14 @@ def materialize_dnazoo_wg(row, asm, fallback_species):
 
 
 def materialize_dnazoo_chrM(row, fallback_species):
-    token = dna_zoo_species_token(row.get("final_chrM_species") or fallback_species)
+    token = dnazoo_token_from_row(row, fallback_species, prefer_chrM=True)
     chrout = os.path.join("references", "chrM", "dnazoo", f"{token}_MT.fasta")
     url = f"https://dnazoo.s3.wasabisys.com/{token}/{token}_MT.fasta"
     print(f"[DNA Zoo] attempting chrM URL: {url}", file=sys.stderr)
     print(f"[DNA Zoo] chrM output: {chrout}", file=sys.stderr)
     download_file(url, chrout)
     run([os.environ.get("SAMTOOLS_COMMAND", "samtools"), "faidx", chrout])
-    return chrout, url
+    return chrout, url, token
 
 
 def ensure_indexable_wg_fasta(wg_path, src_url):
@@ -358,11 +401,10 @@ for r in rows:
     if is_dnazoo_source(r.get("final_wg_ref_source", "")):
         try:
             asm, wg, report, attempted_url = materialize_dnazoo_wg(r, asm, target)
-            if not r.get("final_wg_assembly_accession", ""):
-                r["final_wg_assembly_accession"] = asm
+            r["final_wg_assembly_accession"] = asm
             r["wg_expected_output_fasta"] = wg
             status = "success"
-            msg = "downloaded_dnazoo_decompressed_and_indexed"
+            msg = f"downloaded_dnazoo_decompressed_and_indexed:url={attempted_url}"
         except Exception as e:
             status = "failure"
             msg = f"dnazoo_wg_download_failed:{str(e).replace(chr(9), ' ')}"
@@ -385,13 +427,16 @@ for r in rows:
     emsg = "missing_chrM_ref"
     if is_dnazoo_source(r.get("final_chrM_source", "")) or is_dnazoo_source(r.get("final_wg_ref_source", "")) and not r.get("final_chrM_accession", "").startswith(("NC_", "CM_", "J")):
         try:
-            chrout, attempted_chrM_url = materialize_dnazoo_chrM(r, target)
+            chrout, attempted_chrM_url, dnazoo_chrM_token = materialize_dnazoo_chrM(r, target)
+            r["final_chrM_species"] = normalize_species(dnazoo_chrM_token)
+            r["final_chrM_source"] = "DNAZoo"
+            r["final_chrM_accession"] = f"DNAZoo:{dnazoo_chrM_token}"
             r["chrM_reference_context"] = "independent_chrM_ref"
             r["chrM_extraction_strategy"] = "download_dnazoo_mt_fasta"
             r["chrM_expected_output_fasta"] = chrout
             ctx = r["chrM_reference_context"]
             estatus = "success"
-            emsg = "downloaded_dnazoo_mt_fasta"
+            emsg = f"downloaded_dnazoo_mt_fasta:url={attempted_chrM_url}"
         except Exception as e:
             estatus = "failure"
             emsg = f"dnazoo_chrM_download_failed:{str(e).replace(chr(9), ' ')}"

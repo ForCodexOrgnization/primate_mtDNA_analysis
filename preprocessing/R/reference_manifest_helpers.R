@@ -8,9 +8,19 @@ normalize_species <- function(x) {
 safe_token <- function(x) { x <- normalize_species(x); x[is.na(x) | x == ""] <- "unknown"; x }
 dna_zoo_species_token <- function(x) {
   raw <- trimws(blank_to_na(x))
+  raw <- ifelse(grepl("^DNAZoo:", coalesce_chr(raw), ignore.case = TRUE), sub("^DNAZoo:", "", raw, ignore.case = TRUE), raw)
+  raw <- ifelse(grepl("^DNAZoo_", coalesce_chr(raw), ignore.case = TRUE), sub("^DNAZoo_", "", raw, ignore.case = TRUE), raw)
   token <- gsub("[^A-Za-z0-9]+", "_", raw)
   token <- gsub("^_+|_+$", "", token)
   token[is.na(token) | token == ""] <- safe_token(raw[is.na(token) | token == ""])
+  token
+}
+sanitize_local_id <- function(x) {
+  raw <- trimws(blank_to_na(x))
+  raw <- ifelse(grepl("^DNAZoo:", coalesce_chr(raw), ignore.case = TRUE), paste0("DNAZoo_", sub("^DNAZoo:", "", raw, ignore.case = TRUE)), raw)
+  token <- gsub("[^A-Za-z0-9._-]+", "_", raw)
+  token <- gsub("^_+|_+$", "", token)
+  token[is.na(token) | token == ""] <- "unknown"
   token
 }
 is_dnazoo_source <- function(x) grepl("dna\\s*zoo|dnazoo", coalesce_chr(x), ignore.case = TRUE)
