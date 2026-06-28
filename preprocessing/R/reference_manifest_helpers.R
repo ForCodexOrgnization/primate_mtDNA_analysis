@@ -1,8 +1,19 @@
 `%||%` <- function(x, y) if (is.null(x)) y else x
 blank_to_na <- function(x) { x <- as.character(x); x[is.na(x) | trimws(x) == ""] <- NA_character_; x }
 coalesce_chr <- function(...) { args <- lapply(list(...), blank_to_na); out <- args[[1]]; for (a in args[-1]) out[is.na(out)] <- a[is.na(out)]; out[is.na(out)] <- ""; out }
-normalize_species <- function(x) tolower(gsub("[^a-z0-9]+", "_", trimws(blank_to_na(x))))
+normalize_species <- function(x) {
+  x <- tolower(gsub("[^a-z0-9]+", "_", trimws(blank_to_na(x))))
+  gsub("^_+|_+$", "", x)
+}
 safe_token <- function(x) { x <- normalize_species(x); x[is.na(x) | x == ""] <- "unknown"; x }
+dna_zoo_species_token <- function(x) {
+  raw <- trimws(blank_to_na(x))
+  token <- gsub("[^A-Za-z0-9]+", "_", raw)
+  token <- gsub("^_+|_+$", "", token)
+  token[is.na(token) | token == ""] <- safe_token(raw[is.na(token) | token == ""])
+  token
+}
+is_dnazoo_source <- function(x) grepl("dna\\s*zoo|dnazoo", coalesce_chr(x), ignore.case = TRUE)
 mito_len_ok <- function(x, min_len = 14000, max_len = 25000) suppressWarnings(!is.na(as.numeric(x)) & as.numeric(x) >= min_len & as.numeric(x) <= max_len)
 classify_chrM_context <- function(source, chrM_acc, chrM_asm, wg_asm, chrM_len, min_len = 14000, max_len = 25000) {
   src <- tolower(coalesce_chr(source)); acc <- coalesce_chr(chrM_acc); len_ok <- mito_len_ok(chrM_len, min_len, max_len)
@@ -26,7 +37,6 @@ manual_review_reasons <- function(df, min_len = 14000, max_len = 25000) {
     len <- suppressWarnings(as.numeric(get("final_chrM_length"))); if (is.na(len) || len < min_len || len > max_len) reasons <- c(reasons, "chrM_length_outside_14000_25000")
     if (get("chrM_reference_context") == "missing_chrM_ref") reasons <- c(reasons, "missing_chrM_ref")
     if (get("reference_pairing_status") %in% c("wg_only_no_chrM", "chrM_only_no_wg", "no_reference_found")) reasons <- c(reasons, get("reference_pairing_status"))
-    if (grepl("dnazoo|dna zoo", get("final_wg_ref_source"), ignore.case = TRUE)) reasons <- c(reasons, "dnazoo_download_not_implemented")
     paste(unique(reasons), collapse = ";")
   })
 }
