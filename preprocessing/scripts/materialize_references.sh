@@ -4,7 +4,7 @@ MANIFEST=${1:-references/manifests/reference_materialization_manifest.tsv}
 OUTDIR=${OUTDIR:-results/preprocessing/reference_materialization}
 LOCAL_MITO_FASTA=${LOCAL_MITO_FASTA:-}
 mkdir -p "$OUTDIR" references/wg references/chrM/embedded_from_wg references/chrM/independent references/chrM/dnazoo references/manifests
-DL="$OUTDIR/reference_download_manifest.tsv"; EX="$OUTDIR/chrM_extraction_manifest.tsv"; IH="$OUTDIR/in_house_score_reference_inputs.tsv"; CC="$OUTDIR/chrM_candidate_check.tsv"; RESOLVED_RESULTS="$OUTDIR/reference_materialization_manifest.resolved.tsv"; RESOLVED_REFS="references/manifests/reference_materialization_manifest.resolved.tsv"
+DL="$OUTDIR/reference_download_manifest.tsv"; EX="$OUTDIR/chrM_extraction_manifest.tsv"; IH="$OUTDIR/in_house_score_reference_inputs.tsv"; IH_SKIP="$OUTDIR/in_house_score_reference_inputs.skipped_missing_chrM.tsv"; CC="$OUTDIR/chrM_candidate_check.tsv"; RESOLVED_RESULTS="$OUTDIR/reference_materialization_manifest.resolved.tsv"; RESOLVED_REFS="references/manifests/reference_materialization_manifest.resolved.tsv"
 PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
 WGET_COMMAND=${WGET_COMMAND:-wget}
 SAMTOOLS_COMMAND=${SAMTOOLS_COMMAND:-samtools}
@@ -542,7 +542,25 @@ if rows:
             row.get("final_wg_ref_species", ""),
             row.get("final_chrM_species", ""),
         )
-    for extra_col in ["manual_review_reason", "chrM_reference_context", "chrM_extraction_strategy", "chrM_source_assembly_accession", "chrM_source_accession", "final_chrM_assembly_accession", "chrM_expected_output_fasta", "wg_expected_output_fasta", "reference_pairing_status"]:
+        missing_chrM = (
+            row.get("final_reference_strategy", "") == "wg_ref_found_but_no_chrM_found"
+            or row.get("chrM_reference_context", "") == "missing_chrM_ref"
+            or row.get("reference_pairing_status", "") == "wg_only_no_chrM"
+            or not row.get("chrM_expected_output_fasta", "")
+            or not row.get("final_chrM_accession", "")
+            or not row.get("final_chrM_species", "")
+        )
+        if missing_chrM:
+            row["manual_review_required"] = "yes"
+            reasons = []
+            if row.get("manual_review_reason", ""):
+                reasons.extend([p for p in row.get("manual_review_reason", "").split(";") if p])
+            if row.get("final_reference_strategy", "") == "wg_ref_found_but_no_chrM_found":
+                reasons.append("wg_ref_found_but_no_chrM_found")
+            if row.get("chrM_reference_context", "") == "missing_chrM_ref":
+                reasons.append("missing_chrM_ref")
+            row["manual_review_reason"] = ";".join(dict.fromkeys(reasons or ["missing_chrM_ref"]))
+    for extra_col in ["manual_review_required", "manual_review_reason", "chrM_reference_context", "chrM_extraction_strategy", "chrM_source_assembly_accession", "chrM_source_accession", "final_chrM_assembly_accession", "chrM_expected_output_fasta", "wg_expected_output_fasta", "reference_pairing_status"]:
         if extra_col not in fieldnames:
             fieldnames.append(extra_col)
     for resolved_manifest in [resolved_results, resolved_refs]:
@@ -552,10 +570,10 @@ if rows:
             writer.writeheader()
             writer.writerows(rows)
 PY
-"$PYTHON_COMMAND" - "$RESOLVED_RESULTS" "$DL" "$EX" "$IH" <<'PY'
+"$PYTHON_COMMAND" - "$RESOLVED_RESULTS" "$DL" "$EX" "$IH" "$IH_SKIP" <<'PY'
 import csv, re, sys
 from collections import Counter
-man,dl,ex,ih=sys.argv[1:]
+man,dl,ex,ih,ih_skip=sys.argv[1:]
 def normalize_species(value):
   return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
 def reference_pairing_status(target, wg_species, chrM_species):
@@ -571,21 +589,45 @@ def reference_pairing_status(target, wg_species, chrM_species):
 dlmap={r['target_species']:r for r in csv.DictReader(open(dl), delimiter='\t')}
 exmap={r['target_species']:r for r in csv.DictReader(open(ex), delimiter='\t')}
 cols='target_species reference_pairing_status chrM_reference_context final_wg_ref_species final_wg_assembly_accession wg_fasta_path wg_fai_path wg_assembly_report_path final_chrM_species final_chrM_accession chrM_fasta_path chrM_fai_path chrM_extraction_strategy final_reference_strategy manual_review_required manual_review_reason'.split()
+skip_cols='target_species final_reference_strategy reference_pairing_status chrM_reference_context final_wg_ref_species final_wg_assembly_accession final_chrM_species final_chrM_accession manual_review_required manual_review_reason'.split()
 counts=Counter()
-with open(ih,'w',newline='') as out_handle:
+skipped=[]
+written=0
+total=0
+with open(ih,'w',newline='') as out_handle, open(ih_skip,'w',newline='') as skip_handle:
   w=csv.DictWriter(out_handle, fieldnames=cols, delimiter='\t'); w.writeheader()
+  skip_w=csv.DictWriter(skip_handle, fieldnames=skip_cols, delimiter='\t'); skip_w.writeheader()
   for r in csv.DictReader(open(man), delimiter='\t'):
+    total+=1
     d=dlmap.get(r['target_species'],{}); e=exmap.get(r['target_species'],{})
     reasons=[x for x in [r.get('manual_review_reason','')] if x]
     if d.get('status') not in ('success','skipped'): reasons.append('wg_download_'+d.get('status','failure'))
     if e.get('status') not in ('success','skipped'): reasons.append('chrM_materialization_'+e.get('status','failure'))
     status=reference_pairing_status(r.get('target_species',''), r.get('final_wg_ref_species',''), r.get('final_chrM_species',''))
     out={c:r.get(c,'') for c in cols}; out.update({'reference_pairing_status':status,'wg_fasta_path':d.get('wg_fasta_path',r.get('wg_expected_output_fasta','')),'wg_fai_path':d.get('wg_fai_path',''),'wg_assembly_report_path':d.get('wg_assembly_report_path',''),'chrM_fasta_path':e.get('chrM_fasta_path',r.get('chrM_expected_output_fasta','')),'chrM_fai_path':e.get('chrM_fai_path',''),'manual_review_required':'yes' if reasons else 'no','manual_review_reason':';'.join(dict.fromkeys(reasons))})
+    skip_missing_chrM = (
+      r.get('final_reference_strategy','') == 'wg_ref_found_but_no_chrM_found'
+      or r.get('chrM_reference_context','') == 'missing_chrM_ref'
+      or status == 'wg_only_no_chrM'
+      or not r.get('chrM_expected_output_fasta','')
+      or not r.get('final_chrM_accession','')
+      or not r.get('final_chrM_species','')
+    )
+    if skip_missing_chrM:
+      skipped.append(r.get('target_species',''))
+      skip_w.writerow({c:out.get(c,r.get(c,'')) for c in skip_cols})
+      continue
     counts[status]+=1
+    written+=1
     w.writerow(out)
 print("in_house_score_reference_inputs.tsv reference_pairing_status counts:", file=sys.stderr)
 for k,v in counts.most_common():
   print(f"  {k}\t{v}", file=sys.stderr)
+print(f"in_house_score_reference_inputs.tsv total resolved rows: {total}", file=sys.stderr)
+print(f"in_house_score_reference_inputs.tsv rows written: {written}", file=sys.stderr)
+print(f"in_house_score_reference_inputs.tsv rows skipped due to missing chrM: {len(skipped)}", file=sys.stderr)
+if skipped:
+  print("in_house_score_reference_inputs.tsv skipped species due to missing chrM: " + ", ".join(skipped), file=sys.stderr)
 non_missing=sum(v for k,v in counts.items() if k)
 if non_missing and counts["cross_species_wg_cross_species_chrM"] / non_missing > 0.9:
   print("WARNING: >90% of non-missing rows are cross_species_wg_cross_species_chrM", file=sys.stderr)
