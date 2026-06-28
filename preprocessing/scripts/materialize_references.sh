@@ -3,7 +3,7 @@ set -euo pipefail
 MANIFEST=${1:-references/manifests/reference_materialization_manifest.tsv}
 OUTDIR=${OUTDIR:-results/preprocessing/reference_materialization}
 LOCAL_MITO_FASTA=${LOCAL_MITO_FASTA:-}
-mkdir -p "$OUTDIR" references/wg references/chrM/embedded_from_wg references/chrM/independent references/manifests
+mkdir -p "$OUTDIR" references/wg references/chrM/embedded_from_wg references/chrM/independent references/chrM/dnazoo references/manifests
 DL="$OUTDIR/reference_download_manifest.tsv"; EX="$OUTDIR/chrM_extraction_manifest.tsv"; IH="$OUTDIR/in_house_score_reference_inputs.tsv"; CC="$OUTDIR/chrM_candidate_check.tsv"; RESOLVED_RESULTS="$OUTDIR/reference_materialization_manifest.resolved.tsv"; RESOLVED_REFS="references/manifests/reference_materialization_manifest.resolved.tsv"
 PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
 WGET_COMMAND=${WGET_COMMAND:-wget}
@@ -15,7 +15,7 @@ echo -e "target_species\tassembly_accession\tstatus\twg_fasta_path\twg_fai_path\
 echo -e "target_species\tchrM_reference_context\tstatus\tchrM_fasta_path\tchrM_fai_path\tmessage" > "$EX"
 echo -e "target_species\tattempted_assembly_accession\tattempt_type\twg_fasta_path\tassembly_report_path\tcandidate_names\tcandidates_found_in_fai\tcandidates_missing_from_fai\tstatus\tfallback_action" > "$CC"
 "$PYTHON_COMMAND" - "$MANIFEST" "$DL" "$EX" "$CC" "$RESOLVED_RESULTS" "$RESOLVED_REFS" <<'PY'
-import csv, gzip, os, shutil, subprocess, sys
+import csv, gzip, os, re, shutil, subprocess, sys
 man, dl, ex, cc, resolved_results, resolved_refs = sys.argv[1:]
 
 
@@ -45,6 +45,67 @@ def gunzip_to_fasta(gz_path, fasta_path):
     with gzip.open(gz_path, "rb") as src, open(tmp, "wb") as dst:
         shutil.copyfileobj(src, dst)
     os.replace(tmp, fasta_path)
+
+
+def normalize_species(value):
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def reference_pairing_status(target, wg_species, chrM_species):
+    t = normalize_species(target)
+    wg = normalize_species(wg_species)
+    mt = normalize_species(chrM_species)
+    has_wg = bool(wg)
+    has_mt = bool(mt)
+    if has_wg and has_mt and wg == t and mt == t:
+        return "same_species_wg_same_species_chrM"
+    if has_wg and has_mt and wg == t and mt != t:
+        return "same_species_wg_cross_species_chrM"
+    if has_wg and has_mt and wg != t and mt == t:
+        return "cross_species_wg_same_species_chrM"
+    if has_wg and has_mt and wg != t and mt != t:
+        return "cross_species_wg_cross_species_chrM"
+    if has_wg and not has_mt:
+        return "wg_only_no_chrM"
+    if not has_wg and has_mt:
+        return "chrM_only_no_wg"
+    return "no_reference_found"
+
+
+def dna_zoo_species_token(value):
+    raw = str(value or "").strip()
+    token = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_")
+    return token or normalize_species(raw)
+
+
+def is_dnazoo_source(value):
+    return bool(re.search(r"dna\s*zoo|dnazoo", str(value or ""), re.I))
+
+
+def materialize_dnazoo_wg(row, asm, fallback_species):
+    token = dna_zoo_species_token(row.get("final_wg_ref_species") or fallback_species)
+    stable_id = asm or f"DNAZOO_{token}"
+    wg_dir = os.path.join("references", "wg", stable_id)
+    gz_path = os.path.join(wg_dir, f"{stable_id}.genome.fa.gz")
+    fasta_path = os.path.join(wg_dir, f"{stable_id}.genome.fa")
+    url = f"https://dnazoo.s3.wasabisys.com/{token}/{token}.fasta.gz"
+    print(f"[DNA Zoo] attempting WG URL: {url}", file=sys.stderr)
+    print(f"[DNA Zoo] WG output: {fasta_path}", file=sys.stderr)
+    download_file(url, gz_path)
+    gunzip_to_fasta(gz_path, fasta_path)
+    run([os.environ.get("SAMTOOLS_COMMAND", "samtools"), "faidx", fasta_path])
+    return stable_id, fasta_path, "", url
+
+
+def materialize_dnazoo_chrM(row, fallback_species):
+    token = dna_zoo_species_token(row.get("final_chrM_species") or fallback_species)
+    chrout = os.path.join("references", "chrM", "dnazoo", f"{token}_MT.fasta")
+    url = f"https://dnazoo.s3.wasabisys.com/{token}/{token}_MT.fasta"
+    print(f"[DNA Zoo] attempting chrM URL: {url}", file=sys.stderr)
+    print(f"[DNA Zoo] chrM output: {chrout}", file=sys.stderr)
+    download_file(url, chrout)
+    run([os.environ.get("SAMTOOLS_COMMAND", "samtools"), "faidx", chrout])
+    return chrout, url
 
 
 def ensure_indexable_wg_fasta(wg_path, src_url):
@@ -294,7 +355,18 @@ for r in rows:
     wg = manifest_wg[:-3] if manifest_wg.endswith(".gz") else manifest_wg
     status = "skipped"
     msg = "missing_ftp_or_assembly"
-    if asm and ftp and "dnazoo" not in r.get("final_wg_ref_source", "").lower():
+    if is_dnazoo_source(r.get("final_wg_ref_source", "")):
+        try:
+            asm, wg, report, attempted_url = materialize_dnazoo_wg(r, asm, target)
+            if not r.get("final_wg_assembly_accession", ""):
+                r["final_wg_assembly_accession"] = asm
+            r["wg_expected_output_fasta"] = wg
+            status = "success"
+            msg = "downloaded_dnazoo_decompressed_and_indexed"
+        except Exception as e:
+            status = "failure"
+            msg = f"dnazoo_wg_download_failed:{str(e).replace(chr(9), ' ')}"
+    elif asm and ftp:
         os.makedirs(os.path.dirname(wg), exist_ok=True)
         base = ftp.rstrip("/").split("/")[-1]
         src = f"{ftp.rstrip('/')}/{base}_genomic.fna.gz"
@@ -307,14 +379,23 @@ for r in rows:
         except Exception as e:
             status = "failure"
             msg = str(e).replace("\t", " ")
-    elif "dnazoo" in r.get("final_wg_ref_source", "").lower():
-        status = "manual_review"
-        msg = "dnazoo_download_not_implemented"
     chrout = r.get("chrM_expected_output_fasta", "")
     ctx = r.get("chrM_reference_context", "")
     estatus = "skipped"
     emsg = "missing_chrM_ref"
-    if chrout and ctx == "embedded_in_wg_ref" and wg:
+    if is_dnazoo_source(r.get("final_chrM_source", "")) or is_dnazoo_source(r.get("final_wg_ref_source", "")) and not r.get("final_chrM_accession", "").startswith(("NC_", "CM_", "J")):
+        try:
+            chrout, attempted_chrM_url = materialize_dnazoo_chrM(r, target)
+            r["chrM_reference_context"] = "independent_chrM_ref"
+            r["chrM_extraction_strategy"] = "download_dnazoo_mt_fasta"
+            r["chrM_expected_output_fasta"] = chrout
+            ctx = r["chrM_reference_context"]
+            estatus = "success"
+            emsg = "downloaded_dnazoo_mt_fasta"
+        except Exception as e:
+            estatus = "failure"
+            emsg = f"dnazoo_chrM_download_failed:{str(e).replace(chr(9), ' ')}"
+    elif chrout and ctx == "embedded_in_wg_ref" and wg:
         cands = [r.get(k, "") for k in ["final_chrM_contig_name", "final_chrM_refseq_accn", "final_chrM_genbank_accn", "final_chrM_accession", "final_chrM_ucsc_name"]]
         report_cands = parse_assembly_report_chrM_candidates(report)
         current_cands = cands + report_cands
@@ -410,7 +491,13 @@ for r in rows:
 
 if rows:
     fieldnames = list(rows[0].keys())
-    for extra_col in ["manual_review_reason", "chrM_reference_context", "chrM_extraction_strategy", "chrM_source_assembly_accession", "chrM_source_accession", "final_chrM_assembly_accession", "chrM_expected_output_fasta"]:
+    for row in rows:
+        row["reference_pairing_status"] = reference_pairing_status(
+            row.get("target_species", ""),
+            row.get("final_wg_ref_species", ""),
+            row.get("final_chrM_species", ""),
+        )
+    for extra_col in ["manual_review_reason", "chrM_reference_context", "chrM_extraction_strategy", "chrM_source_assembly_accession", "chrM_source_accession", "final_chrM_assembly_accession", "chrM_expected_output_fasta", "wg_expected_output_fasta", "reference_pairing_status"]:
         if extra_col not in fieldnames:
             fieldnames.append(extra_col)
     for resolved_manifest in [resolved_results, resolved_refs]:
@@ -421,18 +508,57 @@ if rows:
             writer.writerows(rows)
 PY
 "$PYTHON_COMMAND" - "$RESOLVED_RESULTS" "$DL" "$EX" "$IH" <<'PY'
-import csv, sys
+import csv, re, sys
+from collections import Counter
 man,dl,ex,ih=sys.argv[1:]
+def normalize_species(value):
+  return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+def reference_pairing_status(target, wg_species, chrM_species):
+  t=normalize_species(target); wg=normalize_species(wg_species); mt=normalize_species(chrM_species)
+  has_wg=bool(wg); has_mt=bool(mt)
+  if has_wg and has_mt and wg == t and mt == t: return "same_species_wg_same_species_chrM"
+  if has_wg and has_mt and wg == t and mt != t: return "same_species_wg_cross_species_chrM"
+  if has_wg and has_mt and wg != t and mt == t: return "cross_species_wg_same_species_chrM"
+  if has_wg and has_mt and wg != t and mt != t: return "cross_species_wg_cross_species_chrM"
+  if has_wg and not has_mt: return "wg_only_no_chrM"
+  if not has_wg and has_mt: return "chrM_only_no_wg"
+  return "no_reference_found"
 dlmap={r['target_species']:r for r in csv.DictReader(open(dl), delimiter='\t')}
 exmap={r['target_species']:r for r in csv.DictReader(open(ex), delimiter='\t')}
 cols='target_species reference_pairing_status chrM_reference_context final_wg_ref_species final_wg_assembly_accession wg_fasta_path wg_fai_path wg_assembly_report_path final_chrM_species final_chrM_accession chrM_fasta_path chrM_fai_path chrM_extraction_strategy final_reference_strategy manual_review_required manual_review_reason'.split()
-w=csv.DictWriter(open(ih,'w',newline=''), fieldnames=cols, delimiter='\t'); w.writeheader()
-for r in csv.DictReader(open(man), delimiter='\t'):
-  d=dlmap.get(r['target_species'],{}); e=exmap.get(r['target_species'],{})
-  reasons=[x for x in [r.get('manual_review_reason','')] if x]
-  if d.get('status') not in ('success','skipped'): reasons.append('wg_download_'+d.get('status','failure'))
-  if e.get('status') not in ('success','skipped'): reasons.append('chrM_materialization_'+e.get('status','failure'))
-  out={c:r.get(c,'') for c in cols}; out.update({'wg_fasta_path':d.get('wg_fasta_path',r.get('wg_expected_output_fasta','')),'wg_fai_path':d.get('wg_fai_path',''),'wg_assembly_report_path':d.get('wg_assembly_report_path',''),'chrM_fasta_path':e.get('chrM_fasta_path',r.get('chrM_expected_output_fasta','')),'chrM_fai_path':e.get('chrM_fai_path',''),'manual_review_required':'yes' if reasons else 'no','manual_review_reason':';'.join(dict.fromkeys(reasons))})
-  w.writerow(out)
+counts=Counter()
+with open(ih,'w',newline='') as out_handle:
+  w=csv.DictWriter(out_handle, fieldnames=cols, delimiter='\t'); w.writeheader()
+  for r in csv.DictReader(open(man), delimiter='\t'):
+    d=dlmap.get(r['target_species'],{}); e=exmap.get(r['target_species'],{})
+    reasons=[x for x in [r.get('manual_review_reason','')] if x]
+    if d.get('status') not in ('success','skipped'): reasons.append('wg_download_'+d.get('status','failure'))
+    if e.get('status') not in ('success','skipped'): reasons.append('chrM_materialization_'+e.get('status','failure'))
+    status=reference_pairing_status(r.get('target_species',''), r.get('final_wg_ref_species',''), r.get('final_chrM_species',''))
+    out={c:r.get(c,'') for c in cols}; out.update({'reference_pairing_status':status,'wg_fasta_path':d.get('wg_fasta_path',r.get('wg_expected_output_fasta','')),'wg_fai_path':d.get('wg_fai_path',''),'wg_assembly_report_path':d.get('wg_assembly_report_path',''),'chrM_fasta_path':e.get('chrM_fasta_path',r.get('chrM_expected_output_fasta','')),'chrM_fai_path':e.get('chrM_fai_path',''),'manual_review_required':'yes' if reasons else 'no','manual_review_reason':';'.join(dict.fromkeys(reasons))})
+    counts[status]+=1
+    w.writerow(out)
+print("in_house_score_reference_inputs.tsv reference_pairing_status counts:", file=sys.stderr)
+for k,v in counts.most_common():
+  print(f"  {k}\t{v}", file=sys.stderr)
+non_missing=sum(v for k,v in counts.items() if k)
+if non_missing and counts["cross_species_wg_cross_species_chrM"] / non_missing > 0.9:
+  print("WARNING: >90% of non-missing rows are cross_species_wg_cross_species_chrM", file=sys.stderr)
 PY
 cp "$IH" references/manifests/in_house_score_reference_inputs.tsv
+cmp -s "$IH" references/manifests/in_house_score_reference_inputs.tsv || { echo "ERROR: in-house score input copies differ" >&2; exit 1; }
+# Post-run validation examples:
+# md5sum results/preprocessing/reference_materialization/in_house_score_reference_inputs.tsv references/manifests/in_house_score_reference_inputs.tsv
+# awk -F'\t' 'NR==1 {for(i=1;i<=NF;i++) h[$i]=i; next} {count[$h["reference_pairing_status"]]++} END {for(k in count) print count[k], k}' references/manifests/in_house_score_reference_inputs.tsv | sort -nr
+"$PYTHON_COMMAND" - "$RESOLVED_RESULTS" <<'PY'
+import csv, sys
+from collections import Counter
+counts=Counter(r.get("reference_pairing_status","") for r in csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+print("reference_materialization_manifest.resolved.tsv reference_pairing_status counts:", file=sys.stderr)
+for k,v in counts.most_common():
+    print(f"  {k}\t{v}", file=sys.stderr)
+non_missing=sum(v for k,v in counts.items() if k)
+if non_missing and counts["cross_species_wg_cross_species_chrM"] / non_missing > 0.9:
+    print("WARNING: >90% of non-missing rows are cross_species_wg_cross_species_chrM", file=sys.stderr)
+PY
+cmp -s "$RESOLVED_RESULTS" "$RESOLVED_REFS" || { echo "ERROR: resolved manifest copies differ" >&2; exit 1; }
