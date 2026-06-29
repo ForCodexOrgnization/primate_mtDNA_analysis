@@ -75,7 +75,25 @@ def reference_pairing_status(target, wg_species, chrM_species):
 def dna_zoo_species_token(value):
     raw = str(value or "").strip()
     token = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_")
-    return token or normalize_species(raw)
+    if not token:
+        return normalize_species(raw)
+    parts = [p for p in token.split("_") if p]
+    if len(parts) >= 2 and all(re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", p) for p in parts[:2]):
+        parts[0] = parts[0][:1].upper() + parts[0][1:].lower()
+        parts[1:] = [p.lower() for p in parts[1:]]
+        return "_".join(parts)
+    return token
+
+
+def dna_zoo_token_for_row(row, species_value):
+    target = row.get("target_species", "")
+    if target and normalize_species(species_value) == normalize_species(target):
+        return dna_zoo_species_token(target)
+    return dna_zoo_species_token(species_value or target)
+
+
+def local_stable_id(value):
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("_")
 
 
 def is_dnazoo_source(value):
@@ -83,8 +101,8 @@ def is_dnazoo_source(value):
 
 
 def materialize_dnazoo_wg(row, asm, fallback_species):
-    token = dna_zoo_species_token(row.get("final_wg_ref_species") or fallback_species)
-    stable_id = asm or f"DNAZOO_{token}"
+    token = dna_zoo_token_for_row(row, row.get("final_wg_ref_species") or fallback_species)
+    stable_id = local_stable_id(asm) if asm else f"DNAZoo_{token}"
     wg_dir = os.path.join("references", "wg", stable_id)
     gz_path = os.path.join(wg_dir, f"{stable_id}.genome.fa.gz")
     fasta_path = os.path.join(wg_dir, f"{stable_id}.genome.fa")
@@ -97,8 +115,9 @@ def materialize_dnazoo_wg(row, asm, fallback_species):
     return stable_id, fasta_path, "", url
 
 
-def materialize_dnazoo_chrM(row, fallback_species):
-    token = dna_zoo_species_token(row.get("final_chrM_species") or fallback_species)
+def materialize_dnazoo_chrM(row, fallback_species, prefer_target=False):
+    species = fallback_species if prefer_target else (row.get("final_chrM_species") or fallback_species)
+    token = dna_zoo_token_for_row(row, species)
     chrout = os.path.join("references", "chrM", "dnazoo", f"{token}_MT.fasta")
     url = f"https://dnazoo.s3.wasabisys.com/{token}/{token}_MT.fasta"
     print(f"[DNA Zoo] attempting chrM URL: {url}", file=sys.stderr)
@@ -385,7 +404,13 @@ for r in rows:
     emsg = "missing_chrM_ref"
     if is_dnazoo_source(r.get("final_chrM_source", "")) or is_dnazoo_source(r.get("final_wg_ref_source", "")) and not r.get("final_chrM_accession", "").startswith(("NC_", "CM_", "J")):
         try:
-            chrout, attempted_chrM_url = materialize_dnazoo_chrM(r, target)
+            try:
+                chrout, attempted_chrM_url = materialize_dnazoo_chrM(r, target, prefer_target=True)
+                target_token = dna_zoo_token_for_row(r, target)
+                r["final_chrM_species"] = target_token
+                r["final_chrM_accession"] = f"DNAZoo:{target_token}_MT"
+            except Exception:
+                chrout, attempted_chrM_url = materialize_dnazoo_chrM(r, target)
             r["chrM_reference_context"] = "independent_chrM_ref"
             r["chrM_extraction_strategy"] = "download_dnazoo_mt_fasta"
             r["chrM_expected_output_fasta"] = chrout
@@ -507,10 +532,11 @@ if rows:
             writer.writeheader()
             writer.writerows(rows)
 PY
-"$PYTHON_COMMAND" - "$RESOLVED_RESULTS" "$DL" "$EX" "$IH" <<'PY'
+SKIPPED_IH="$OUTDIR/in_house_score_reference_inputs.skipped_missing_chrM.tsv"
+"$PYTHON_COMMAND" - "$RESOLVED_RESULTS" "$DL" "$EX" "$IH" "$SKIPPED_IH" <<'PY'
 import csv, re, sys
 from collections import Counter
-man,dl,ex,ih=sys.argv[1:]
+man,dl,ex,ih,skipped_ih=sys.argv[1:]
 def normalize_species(value):
   return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
 def reference_pairing_status(target, wg_species, chrM_species):
@@ -526,9 +552,19 @@ def reference_pairing_status(target, wg_species, chrM_species):
 dlmap={r['target_species']:r for r in csv.DictReader(open(dl), delimiter='\t')}
 exmap={r['target_species']:r for r in csv.DictReader(open(ex), delimiter='\t')}
 cols='target_species reference_pairing_status chrM_reference_context final_wg_ref_species final_wg_assembly_accession wg_fasta_path wg_fai_path wg_assembly_report_path final_chrM_species final_chrM_accession chrM_fasta_path chrM_fai_path chrM_extraction_strategy final_reference_strategy manual_review_required manual_review_reason'.split()
-counts=Counter()
-with open(ih,'w',newline='') as out_handle:
+skipped_cols='target_species final_reference_strategy reference_pairing_status chrM_reference_context final_wg_ref_species final_wg_assembly_accession final_chrM_species final_chrM_accession manual_review_required manual_review_reason'.split()
+def is_missing_chrM_input(row, status, chrM_fasta_path):
+  return (
+    row.get('final_reference_strategy','') == 'wg_ref_found_but_no_chrM_found'
+    or row.get('chrM_reference_context','') == 'missing_chrM_ref'
+    or status == 'wg_only_no_chrM'
+    or not row.get('final_chrM_species','')
+    or (not row.get('chrM_expected_output_fasta','') and not chrM_fasta_path)
+  )
+counts=Counter(); skipped_counts=Counter()
+with open(ih,'w',newline='') as out_handle, open(skipped_ih,'w',newline='') as skipped_handle:
   w=csv.DictWriter(out_handle, fieldnames=cols, delimiter='\t'); w.writeheader()
+  sw=csv.DictWriter(skipped_handle, fieldnames=skipped_cols, delimiter='\t'); sw.writeheader()
   for r in csv.DictReader(open(man), delimiter='\t'):
     d=dlmap.get(r['target_species'],{}); e=exmap.get(r['target_species'],{})
     reasons=[x for x in [r.get('manual_review_reason','')] if x]
@@ -536,11 +572,19 @@ with open(ih,'w',newline='') as out_handle:
     if e.get('status') not in ('success','skipped'): reasons.append('chrM_materialization_'+e.get('status','failure'))
     status=reference_pairing_status(r.get('target_species',''), r.get('final_wg_ref_species',''), r.get('final_chrM_species',''))
     out={c:r.get(c,'') for c in cols}; out.update({'reference_pairing_status':status,'wg_fasta_path':d.get('wg_fasta_path',r.get('wg_expected_output_fasta','')),'wg_fai_path':d.get('wg_fai_path',''),'wg_assembly_report_path':d.get('wg_assembly_report_path',''),'chrM_fasta_path':e.get('chrM_fasta_path',r.get('chrM_expected_output_fasta','')),'chrM_fai_path':e.get('chrM_fai_path',''),'manual_review_required':'yes' if reasons else 'no','manual_review_reason':';'.join(dict.fromkeys(reasons))})
+    if is_missing_chrM_input(r, status, out['chrM_fasta_path']):
+      skipped_counts[status]+=1
+      sw.writerow({c:out.get(c,r.get(c,'')) for c in skipped_cols})
+      continue
     counts[status]+=1
     w.writerow(out)
 print("in_house_score_reference_inputs.tsv reference_pairing_status counts:", file=sys.stderr)
 for k,v in counts.most_common():
   print(f"  {k}\t{v}", file=sys.stderr)
+if skipped_counts:
+  print("skipped missing chrM rows:", file=sys.stderr)
+  for k,v in skipped_counts.most_common():
+    print(f"  {k}\t{v}", file=sys.stderr)
 non_missing=sum(v for k,v in counts.items() if k)
 if non_missing and counts["cross_species_wg_cross_species_chrM"] / non_missing > 0.9:
   print("WARNING: >90% of non-missing rows are cross_species_wg_cross_species_chrM", file=sys.stderr)
