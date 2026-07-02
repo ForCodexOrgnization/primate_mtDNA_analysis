@@ -35,12 +35,12 @@ in_house_score_reference_inputs: "references/manifests/in_house_score_reference_
 merged_in_house_score: "results/preprocessing/in_house_score/merged_in_house_score.tsv"
 
 # NUMT mask selection scope for the in-house score step.
-# mask_ref_types is a comma-separated list of REF_TYPE values that should receive
-# final minimal NUMT masks when candidate fragments pass the thresholds. Including
-# #A requires a_mask_mode: "mask_if_requested"; otherwise #A rows remain diagnostic-only.
+# Category-level policy: #C-likely_comp and #C-Ambiguous receive FINAL
+# masks from the coverage/minimal set cover selection. #A and #C-likely_incomp
+# remain diagnostic/no-mask.
 numt_target_chrm_cov: 0.95
-mask_ref_types: "#C-likely_comp,#C-Ambiguous,#A"
-a_mask_mode: "mask_if_requested"
+mask_ref_types: "#C-likely_comp,#C-Ambiguous"
+a_mask_mode: "diagnostic_only"
 # Number of species/reference packages to build concurrently in the variant_references step.
 # With Slurm, this is the job-array % concurrency limit; locally, it is worker count.
 variant_reference_threads: 100

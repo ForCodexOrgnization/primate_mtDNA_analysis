@@ -19,7 +19,7 @@ set -euo pipefail
 #      intervals per merged subject fragment, not min(qstart)~max(qend).
 #      This prevents one short fragment from falsely covering the whole chrM.
 #   3. Summary header uses Bash $'...' so tabs are real tabs, not literal \t.
-#   4. Mask BED/fragment TSV files are written for #C-Ambiguous and #C-likely_comp references.
+#   4. Minimal-set-cover mask BED/fragment TSV files are written for #C-Ambiguous and #C-likely_comp references; #A and #C-likely_incomp remain diagnostic/no-mask.
 #
 # Recommended use:
 #   SUBMIT_ARRAY=1 bash preprocessing/scripts/in_house_score_with_minimal_numt_mask.sh
@@ -85,12 +85,13 @@ NUMT_MAX_EVALUE="1e-3"
 NUMT_MIN_BITSCORE="0"
 NUMT_TARGET_CHRM_COV="${NUMT_TARGET_CHRM_COV:-0.95}"
 NUMT_PAD_BP="50"
-MASK_REF_TYPES="${MASK_REF_TYPES:-#C-likely_comp,#C-Ambiguous,#A}"
-A_MASK_MODE="${A_MASK_MODE:-mask_if_requested}"
+MASK_REF_TYPES="${MASK_REF_TYPES:-#C-likely_comp,#C-Ambiguous}"
+A_MASK_MODE="${A_MASK_MODE:-diagnostic_only}"
 
 # -------------------- Final mask selection --------------------
-# #C-Ambiguous and #C-likely_comp references receive a minimal chrM-covering
-# FINAL NUMT mask. Other reference classes keep header-only final mask files.
+# #C-Ambiguous and #C-likely_comp references receive minimal chrM-covering
+# FINAL NUMT masks selected by coverage/set cover. #A and #C-likely_incomp
+# keep header-only final mask files.
 
 # -------------------- Summary header --------------------
 BASE_SUMMARY_HEADER=$'Species\tREF_TYPE\tMTLIKE_PATTERN\tValidAnnotatedMitoContig\tValidAnnotatedMitoLength\tHasValidAnnotatedMito\tTopContig\tTopLength\tMitoRefLength\tMaxHitRatio\tTotalHitRatio\tContigRatio\tScore\tM\t_dCplus\t_dCminus\t_dTplus\t_dTminus\tTopContigMergedLen\tTopContigMergedRatio\tLongestMergedHitLen\tCumulativeMergedHitLength\tMergedHitContigsN\tMergedHitIntervalsN\tNonTopLongestMergedHitLen\tNonTopCumulativeMergedHitLength\tNonTopMergedHitContigsN\tNonTopMergedHitIntervalsN'
@@ -398,7 +399,8 @@ if a_mask_mode not in ("diagnostic_only", "mask_if_requested"):
     raise SystemExit(f"Unsupported A_MASK_MODE={a_mask_mode!r}; expected diagnostic_only or mask_if_requested")
 mito_len = int(float(mito_len_s)) if mito_len_s not in ("", "NA") else 0
 mask_requested = ref_type in mask_ref_types
-should_final_mask = mask_requested and (ref_type != "#A" or a_mask_mode == "mask_if_requested")
+# Category-level policy: #A and #C-likely_incomp are never final-masked.
+should_final_mask = mask_requested and ref_type in {"#C-likely_comp", "#C-Ambiguous"}
 
 cand_header = "Species\tFragmentID\tSubjectContig\tSubjectStart1\tSubjectEnd1\tSubjectStart0\tSubjectEnd0\tSubjectLen\tQueryIntervals\tQueryCoveredBp\tPidentMax\tPidentMean\tBitscoreMax\tEvalueMin\tHSPsN"
 bed_header = "#chrom\tstart0\tend0\tfragment_id\tspecies\tq_covered_bp\tsubject_len\tpident_max\tbitscore_max"
@@ -606,11 +608,7 @@ with open(minimal_tsv, "a") as out_tsv, open(minimal_bed, "a") as out_bed:
 
 final_selected = []
 if ref_type == "#A":
-    if should_final_mask and all_frag_n > 0:
-        final_selected = minimal_sorted
-        final_strategy = "A_FINAL_minimal_non_chrM_mask" if min_target_reached == "yes" else "A_FINAL_minimal_non_chrM_mask_target_not_reached"
-    else:
-        final_strategy = "A_diagnostic_non_chrM_numt_candidates_only"
+    final_strategy = "A_diagnostic_non_chrM_numt_candidates_only"
 elif ref_type == "#C-likely_incomp":
     final_strategy = "no_mask_likely_incomplete_reference"
 elif ref_type == "#C-likely_comp":
@@ -743,7 +741,7 @@ merge_all_summaries() {
   log "Merged #A non-chrM diagnostic candidates: ${a_candidates}"
   log "REF_TYPE vs MaskPriority summary:"
   awk -F'	' 'NR==1{for(i=1;i<=NF;i++){if($i=="REF_TYPE") r=i; if($i=="MaskPriority") m=i} next} {k=$r"	"$m; c[k]++} END{for(k in c) print "  " k "	" c[k]}' "$merged" >&2
-  awk -F'	' 'NR==1{for(i=1;i<=NF;i++){if($i=="REF_TYPE") r=i; if($i=="MaskPriority") m=i} next} $r=="#C-likely_comp" || $r=="#C-Ambiguous" {eligible++} $m ~ /FINAL_.*mask/ {applied++} END{print "[INFO] final mask applied count: " applied+0 "; default eligible rows: " eligible+0 > "/dev/stderr"}' "$merged"
+  awk -F'	' 'NR==1{for(i=1;i<=NF;i++){if($i=="REF_TYPE") r=i; if($i=="MaskPriority") m=i} next} $r=="#C-likely_comp" || $r=="#C-Ambiguous" {eligible++} $m ~ /FINAL_.*mask/ {applied++} END{print "[INFO] final mask applied count: " applied+0 "; category-mask eligible rows: " eligible+0 > "/dev/stderr"}' "$merged"
   if [[ "$n_missing" -gt 0 ]]; then
     warn "Missing summary list: ${missing}"
   fi

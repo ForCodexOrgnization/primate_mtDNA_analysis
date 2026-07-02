@@ -4,7 +4,7 @@ set -euo pipefail
 REF_INPUTS=${REF_INPUTS:-references/manifests/in_house_score_reference_inputs.tsv}
 SCORE=${SCORE:-results/preprocessing/in_house_score/merged_in_house_score.tsv}
 OUT_ROOT=${OUT_ROOT:-references/variant_calling}
-MASK_REF_TYPES=${MASK_REF_TYPES:-#C-likely_comp,#C-Ambiguous,#A}
+MASK_REF_TYPES=${MASK_REF_TYPES:-#C-likely_comp,#C-Ambiguous}
 PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
 SAMTOOLS_COMMAND=${SAMTOOLS_COMMAND:-samtools}
 BWA_COMMAND=${BWA_COMMAND:-bwa}
