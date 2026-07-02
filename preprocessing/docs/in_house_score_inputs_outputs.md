@@ -8,5 +8,5 @@ Outputs are written under `results/preprocessing/in_house_score/` by default:
 
 - per-reference `*.summary.tsv` files;
 - reference-level candidate fragments under `numt_candidates/`;
-- #C-Ambiguous BED/fragment masks under `numt_beds/`;
+- #C-likely_comp and #C-Ambiguous minimal-set-cover BED/fragment masks under `numt_beds/` (#A and #C-likely_incomp are diagnostic/no-mask);
 - `all_species.in_house_summary.with_numt_mask.tsv` and `merged_in_house_score.tsv` for downstream variant-input preparation.

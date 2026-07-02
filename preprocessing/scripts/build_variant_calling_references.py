@@ -547,7 +547,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score", "--score-file", dest="score", default="results/preprocessing/in_house_score/merged_in_house_score.tsv")
     parser.add_argument("--out-root", "--outdir", dest="out_root", default="references/variant_calling")
     parser.add_argument("--shift", type=int, default=8000)
-    parser.add_argument("--mask-ref-types", default="#C-likely_comp,#C-Ambiguous,#A")
+    parser.add_argument("--mask-ref-types", default="#C-likely_comp,#C-Ambiguous")
     parser.add_argument("--threads", type=int, default=int(os.environ.get("VARIANT_REFERENCE_THREADS", "1")), help="Number of reference packages to build in parallel")
     parser.add_argument("--job-index", type=int, default=0, help="Build only the 1-based reference package index, for Slurm array tasks")
     parser.add_argument("--manifest-output", default="", help="Write manifest rows to this TSV instead of the default final manifest")
