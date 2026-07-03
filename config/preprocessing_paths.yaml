@@ -48,4 +48,5 @@ variant_reference_threads: 100
 variant_reference_slurm_time: "24:00:00"
 variant_reference_slurm_cpus: 4
 variant_reference_slurm_mem: "32G"
+variant_reference_skip_existing: false
 variant_calling_reference_out_root: "references/variant_calling"
