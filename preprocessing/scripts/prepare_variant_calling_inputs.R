@@ -36,7 +36,7 @@ if (file.exists(score_file) && file.info(score_file)$size > 0) {
 }
 
 variant_ref_manifest <- "references/variant_calling/variant_calling_reference_manifest.tsv"
-variant_ref_cols <- c("safe_species_id","whole_fasta","whole_fai","whole_dict","chrM_fasta","chrM_fai","chrM_dict","chrM_shift_fasta","chrM_shift_fai","chrM_shift_dict","non_control_interval","control_region_shifted_interval","shift_back_chain","numt_mask_applied_to_whole_ref","build_status","build_message")
+variant_ref_cols <- c("safe_species_id","whole_fasta","whole_fai","whole_dict","nuclear_fasta","nuclear_fai","chrM_fasta","chrM_fai","chrM_dict","chrM_shift_fasta","chrM_shift_fai","chrM_shift_dict","non_control_interval","control_region_shifted_interval","shift_back_chain","numt_mask_applied_to_whole_ref","build_status","build_message")
 if (file.exists(variant_ref_manifest) && file.info(variant_ref_manifest)$size > 0) {
   variant_refs <- read_tsv_flexible(variant_ref_manifest)
   if ("target_species" %in% names(variant_refs)) {
