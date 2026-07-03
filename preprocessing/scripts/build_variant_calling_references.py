@@ -61,7 +61,8 @@ REQUIRED_SCORE_COLUMNS = [
 MANIFEST_COLUMNS = [
     "target_species", "safe_species_id", "REF_TYPE", "MTLIKE_PATTERN", "ValidAnnotatedMitoContig",
     "HasValidAnnotatedMito", "MaskPriority", "numt_mask_bed", "numt_mask_applied_to_whole_ref",
-    "whole_fasta", "whole_fai", "whole_dict", "chrM_fasta", "chrM_fai", "chrM_dict",
+    "whole_fasta", "whole_fai", "whole_dict", "nuclear_fasta", "nuclear_fai",
+    "chrM_fasta", "chrM_fai", "chrM_dict",
     "chrM_shift_fasta", "chrM_shift_fai", "chrM_shift_dict", "non_control_interval",
     "control_region_shifted_interval", "interval_non_control_start", "interval_non_control_end",
     "interval_control_shifted_start", "interval_control_shifted_end", "shift_back_chain",
@@ -275,6 +276,34 @@ def build_whole(
     return warnings
 
 
+def build_nuclear_only(whole: Path, out: Path, wg_source: Optional[Path] = None) -> List[str]:
+    """Write a whole-genome FASTA with chrM/mitochondrial contigs removed."""
+    mitochondrial_source_names = set()
+    if wg_source and wg_source.exists():
+        mitochondrial_source_names = {
+            name for name, desc, _seq in fasta_iter(wg_source)
+            if CHRM_KEYWORDS.search(desc) or CHRM_KEYWORDS.search(name)
+        }
+    kept = 0
+    removed: List[str] = []
+    records = []
+    for name, desc, seq in fasta_iter(whole):
+        if (
+            name == "chrM"
+            or name in mitochondrial_source_names
+            or CHRM_KEYWORDS.search(desc)
+            or CHRM_KEYWORDS.search(name)
+        ):
+            removed.append(name)
+            continue
+        kept += 1
+        records.append((name, seq))
+    if kept == 0:
+        raise ValueError("nuclear_only_fasta_has_no_records")
+    write_fasta(out, records)
+    return [f"nuclear_only_removed_contigs:{','.join(removed[:10])}"] if removed else ["nuclear_only_removed_contigs:none"]
+
+
 def fasta_lengths(path: Path) -> Dict[str, int]:
     return {name: len(seq) for name, _desc, seq in fasta_iter(path)}
 
@@ -340,30 +369,52 @@ def index_fasta(fasta: Path, args: argparse.Namespace) -> None:
     subprocess.run([args.gatk, "CreateSequenceDictionary", "-R", str(fasta), "-O", str(fasta.with_suffix(".dict"))], check=True)
 
 
-def manifest_paths(base: Dict[str, str], whole: Path, chrm: Path, shift: Path, non: Path, ctrl: Path, chain: Path) -> None:
+
+def expected_fasta_bwa_indexes(fasta: Path) -> List[Path]:
+    """Return FASTA .fai plus BWA index paths, without a sequence dictionary."""
+    return [Path(str(fasta) + ext) for ext in [".fai", ".amb", ".ann", ".bwt", ".pac", ".sa"]]
+
+
+def index_fasta_for_bwa(fasta: Path, args: argparse.Namespace) -> None:
+    """Build samtools FASTA and BWA indexes for a FASTA file."""
+    expected = expected_fasta_bwa_indexes(fasta)
+    have = [p.exists() for p in expected]
+    if all(have) and not args.force:
+        return
+    if any(have):
+        for p in expected:
+            if p.exists():
+                p.unlink()
+    subprocess.run([args.samtools, "faidx", str(fasta)], check=True)
+    subprocess.run([args.bwa, "index", str(fasta)], check=True)
+
+def manifest_paths(base: Dict[str, str], whole: Path, nuclear: Path, chrm: Path, shift: Path, non: Path, ctrl: Path, chain: Path) -> None:
     base.update({
         "whole_fasta": rel(whole), "whole_fai": rel(Path(str(whole) + ".fai")), "whole_dict": rel(whole.with_suffix(".dict")),
+        "nuclear_fasta": rel(nuclear), "nuclear_fai": rel(Path(str(nuclear) + ".fai")),
         "chrM_fasta": rel(chrm), "chrM_fai": rel(Path(str(chrm) + ".fai")), "chrM_dict": rel(chrm.with_suffix(".dict")),
         "chrM_shift_fasta": rel(shift), "chrM_shift_fai": rel(Path(str(shift) + ".fai")), "chrM_shift_dict": rel(shift.with_suffix(".dict")),
         "non_control_interval": rel(non), "control_region_shifted_interval": rel(ctrl), "shift_back_chain": rel(chain),
     })
 
 
-def expected_package_paths(sid: str, dirs: Dict[str, Path]) -> Tuple[Path, Path, Path, Path, Path, Path]:
+def expected_package_paths(sid: str, dirs: Dict[str, Path]) -> Tuple[Path, Path, Path, Path, Path, Path, Path]:
     """Return the standard output paths for one variant-calling reference package."""
     whole = dirs["Ref_whole"] / f"{sid}.fa"
+    nuclear = dirs["nuclear_only_refs"] / f"{sid}.fa"
     chrm = dirs["Ref_chrM"] / f"{sid}.fa"
     shift = dirs["Ref_chrM_shift"] / f"{sid}.fa"
     non = dirs["interval"] / f"{sid}_non_control_region.interval_list"
     ctrl = dirs["interval"] / f"{sid}_control_region_shifted.interval_list"
     chain = dirs["shift_back_chain"] / f"{sid}_ShiftBack.chain"
-    return whole, chrm, shift, non, ctrl, chain
+    return whole, nuclear, chrm, shift, non, ctrl, chain
 
 
 def package_complete(paths: Sequence[Path]) -> bool:
     """Return True when all expected package outputs and FASTA indexes exist."""
-    whole, chrm, shift, non, ctrl, chain = paths
-    required = [whole, chrm, shift, non, ctrl, chain]
+    whole, nuclear, chrm, shift, non, ctrl, chain = paths
+    required = [whole, nuclear, chrm, shift, non, ctrl, chain]
+    required.extend(expected_fasta_bwa_indexes(nuclear))
     for fasta in [whole, chrm, shift]:
         required.extend(expected_indexes(fasta))
     return all(p.exists() and p.stat().st_size > 0 for p in required)
@@ -388,7 +439,7 @@ def validate_manifest(manifest: Path) -> int:
     errors = []
     for r in success:
         sid = r["safe_species_id"]
-        whole, chrm, shift = map(resolve_path, [r["whole_fasta"], r["chrM_fasta"], r["chrM_shift_fasta"]])
+        whole, nuclear, chrm, shift = map(resolve_path, [r["whole_fasta"], r.get("nuclear_fasta", ""), r["chrM_fasta"], r["chrM_shift_fasta"]])
         wlens, clens, slens = fasta_lengths(whole), fasta_lengths(chrm), fasta_lengths(shift)
         if list(clens) != ["chrM"] or list(slens) != ["chrM"] or len(clens) != 1 or len(slens) != 1:
             errors.append(f"{sid}: Ref_chrM/shift record name/count invalid")
@@ -400,6 +451,14 @@ def validate_manifest(manifest: Path) -> int:
             missing = [rel(p) for p in expected_indexes(fasta) if not p.exists()]
             if missing:
                 errors.append(f"{sid}: missing indexes for {rel(fasta)}: {','.join(missing)}")
+        if not nuclear.exists():
+            errors.append(f"{sid}: missing nuclear-only FASTA")
+        else:
+            if any(name == "chrM" or CHRM_KEYWORDS.search(desc) or CHRM_KEYWORDS.search(name) for name, desc, _seq in fasta_iter(nuclear)):
+                errors.append(f"{sid}: nuclear-only FASTA contains chrM/mitochondrial contig")
+            missing = [rel(p) for p in expected_fasta_bwa_indexes(nuclear) if not p.exists()]
+            if missing:
+                errors.append(f"{sid}: missing indexes for {rel(nuclear)}: {','.join(missing)}")
         for key in ["non_control_interval", "control_region_shifted_interval"]:
             txt = resolve_path(r[key]).read_text().splitlines()
             sq = next((x for x in txt if x.startswith("@SQ")), "")
@@ -437,11 +496,11 @@ def build_one_reference(ref: Dict[str, str], sid: str, score: Dict[str, str], di
     })
     messages: List[str] = []
     try:
-        whole_fa, chrm_fa, shift_fa, non, ctrl, chain = expected_package_paths(sid, dirs)
-        if sid in existing_success and package_complete([whole_fa, chrm_fa, shift_fa, non, ctrl, chain]) and not args.force:
+        whole_fa, nuclear_fa, chrm_fa, shift_fa, non, ctrl, chain = expected_package_paths(sid, dirs)
+        if sid in existing_success and package_complete([whole_fa, nuclear_fa, chrm_fa, shift_fa, non, ctrl, chain]) and not args.force:
             base.update(existing_success[sid])
             base.update({"build_status": "success", "build_message": "skipped_existing_manifest_success_and_outputs"})
-            manifest_paths(base, whole_fa, chrm_fa, shift_fa, non, ctrl, chain)
+            manifest_paths(base, whole_fa, nuclear_fa, chrm_fa, shift_fa, non, ctrl, chain)
             return base
         wg, chrm_src = resolve_path(ref["wg_fasta_path"]), resolve_path(ref["chrM_fasta_path"])
         if not chrm_src.exists():
@@ -468,6 +527,7 @@ def build_one_reference(ref: Dict[str, str], sid: str, score: Dict[str, str], di
             target_species=ref.get("target_species", ""),
             final_chrM_species=ref.get("final_chrM_species", ""),
         ))
+        messages.extend(build_nuclear_only(whole_fa, nuclear_fa, wg))
         non, ctrl, nc_start, nc_end, ctrl_start, ctrl_end = write_intervals(sid, chrm_fa, shift_fa, args.shift, dirs["interval"])
         base.update({
             "interval_non_control_start": str(nc_start),
@@ -478,8 +538,9 @@ def build_one_reference(ref: Dict[str, str], sid: str, score: Dict[str, str], di
         write_chain(chain, len(chrm_seq), args.shift)
         for fasta in [whole_fa, chrm_fa, shift_fa]:
             index_fasta(fasta, args)
+        index_fasta_for_bwa(nuclear_fa, args)
         base.update({"numt_mask_bed": rel(mask_bed), "numt_mask_applied_to_whole_ref": "yes" if apply_mask else "no", "build_status": "success", "build_message": ";".join(messages) or "ok"})
-        manifest_paths(base, whole_fa, chrm_fa, shift_fa, non, ctrl, chain)
+        manifest_paths(base, whole_fa, nuclear_fa, chrm_fa, shift_fa, non, ctrl, chain)
     except Exception as exc:
         base.update({"build_status": "failed", "build_message": ";".join(messages + [str(exc)])})
     return base
@@ -487,7 +548,7 @@ def build_one_reference(ref: Dict[str, str], sid: str, score: Dict[str, str], di
 
 def build(args: argparse.Namespace) -> Path:
     out_root = resolve_path(args.out_root)
-    dirs = {name: out_root / name for name in ["Ref_whole", "Ref_chrM", "Ref_chrM_shift", "interval", "shift_back_chain"]}
+    dirs = {name: out_root / name for name in ["Ref_whole", "nuclear_only_refs", "Ref_chrM", "Ref_chrM_shift", "interval", "shift_back_chain"]}
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
     existing_manifest = out_root / "variant_calling_reference_manifest.tsv"
