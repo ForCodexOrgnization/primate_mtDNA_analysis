@@ -48,38 +48,54 @@ explicit `species_fasta`, `vcf`, and `cov` values.
 ## Run
 
 ```bash
-python qc_analysis/01_coordinate_liftover/run_coordinate_liftover.py \
+python qc_analysis/scripts/run_coordinate_liftover.py \
   --config config/qc_preprocessing.yaml
 ```
 
 Single-sample mode:
 
 ```bash
-python qc_analysis/01_coordinate_liftover/run_coordinate_liftover.py \
+python qc_analysis/scripts/run_coordinate_liftover.py \
   --config config/qc_preprocessing.yaml \
   --sample SAMPLE_NAME
 ```
+
+
+## Run with collected variant-calling inputs
+
+Use the QC preprocessing wrapper to submit collection, coordinate liftover, or both
+steps sequentially through Slurm:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit collect_variant_calling_results config/qc_preprocessing.yaml
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit all config/qc_preprocessing.yaml
+```
+
+Set `collect_variant_calling.outdir` in `config/qc_preprocessing.yaml`; the
+default coordinate-liftover `vcf_dir` and `cov_dir` point at that collected
+output layout.
 
 ## Slurm submission
 
 Use the provided Slurm submission script to run the workflow on the cluster:
 
 ```bash
-sbatch qc_analysis/01_coordinate_liftover/submit_coordinate_liftover.slurm
+sbatch qc_analysis/scripts/submit_coordinate_liftover.slurm
 ```
 
 For one sample, pass `SAMPLE` with `--export`:
 
 ```bash
 sbatch --export=ALL,SAMPLE=SAMPLE_NAME \
-  qc_analysis/01_coordinate_liftover/submit_coordinate_liftover.slurm
+  qc_analysis/scripts/submit_coordinate_liftover.slurm
 ```
 
 For an array run, submit one task per non-header row in `config/sample_ref_file.tsv`:
 
 ```bash
 N=$(awk 'BEGIN{FS="\t"} $0 !~ /^[[:space:]]*#/ && NF >= 2 && tolower($1) != "sample" {n++} END{print n}' config/sample_ref_file.tsv)
-sbatch --array=1-${N}%20 qc_analysis/01_coordinate_liftover/submit_coordinate_liftover.slurm
+sbatch --array=1-${N}%20 qc_analysis/scripts/submit_coordinate_liftover.slurm
 ```
 
 Override defaults with `--export`, for example `CONFIG=...`, `SAMPLE_REF=...`,
