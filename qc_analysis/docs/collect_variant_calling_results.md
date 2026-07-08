@@ -77,8 +77,9 @@ script tries common aliases such as `mt_median_coverage`,
   `FORMAT` `AF` field. Multiple AF values are counted independently.
   * heteroplasmy: `AF >= --low-hetero` and `AF < --low-homo`
   * homoplasmy: `AF >= --low-homo`
-  * Only `PASS` (and `.`) variants are counted by default. Use
-    `--include-filtered` to count filtered variants too.
+  * Only variants with `FILTER` exactly equal to `PASS` are counted.
+  * Only variants with sample `FORMAT` `DP > --min-vcf-dp` are counted;
+    the default `--min-vcf-dp` is `100`.
 
 ## Usage
 
@@ -89,7 +90,8 @@ python qc_analysis/scripts/collect_variant_calling_results.py \
   --metadata config/sample_ref_file.tsv \
   --low-hetero 0.05 \
   --low-homo 0.95 \
-  --coverage-threshold 100
+  --coverage-threshold 100 \
+  --min-vcf-dp 100
 ```
 
 Config mode is also supported via the shared preprocessing-QC YAML file:

@@ -178,7 +178,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     ap.add_argument("--coverage-threshold", type=float, default=float(defaults.get("coverage_threshold") or 100))
     ap.add_argument("--low-hetero", type=float, default=float(defaults.get("low_hetero") or 0.05))
     ap.add_argument("--low-homo", type=float, default=float(defaults.get("low_homo") or 0.95))
-    ap.add_argument("--include-filtered", action="store_true", default=parse_bool(defaults.get("include_filtered", False)))
+    ap.add_argument(
+        "--min-vcf-dp",
+        type=float,
+        default=float(defaults.get("min_vcf_dp") or 100),
+        help="Minimum sample FORMAT DP for counting VCF variants; variants must have DP greater than this value",
+    )
     ap.add_argument("--copy-files", action="store_true", default=parse_bool(defaults.get("copy_files", False)))
     ap.add_argument("--allow-single-cov", action="store_true", default=parse_bool(defaults.get("allow_single_cov", False)))
     ap.add_argument("--mtcn-mt-column", default=defaults.get("mtcn_mt_column"))
@@ -377,7 +382,20 @@ def parse_afs(format_keys: List[str], sample_value: str) -> List[float]:
     return afs
 
 
-def count_vcf(path: Optional[Path], low_hetero: float, low_homo: float, include_filtered: bool) -> Tuple[str, str, List[str]]:
+def parse_sample_float(format_keys: List[str], sample_value: str, key: str) -> Optional[float]:
+    values = sample_value.split(":")
+    if key not in format_keys:
+        return None
+    idx = format_keys.index(key)
+    if idx >= len(values) or values[idx] in {".", ""}:
+        return None
+    try:
+        return float(values[idx])
+    except ValueError:
+        return None
+
+
+def count_vcf(path: Optional[Path], low_hetero: float, low_homo: float, min_dp: float) -> Tuple[str, str, List[str]]:
     if not path:
         return "NA", "NA", []
     hetero = homo = 0
@@ -391,11 +409,15 @@ def count_vcf(path: Optional[Path], low_hetero: float, low_homo: float, include_
             if len(fields) < 10:
                 continue
             filt = fields[6]
-            if not include_filtered and filt not in {"PASS", "."}:
+            if filt != "PASS":
                 continue
-            afs = parse_afs(fields[8].split(":"), fields[9])
+            format_keys = fields[8].split(":")
+            afs = parse_afs(format_keys, fields[9])
             if afs:
                 saw_af = True
+            dp = parse_sample_float(format_keys, fields[9], "DP")
+            if dp is None or dp <= min_dp:
+                continue
             for af in afs:
                 if af >= low_homo:
                     homo += 1
@@ -440,7 +462,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             cov_dest = dirs["cov"] / f"{sample}.merged.max_depth.per_base_coverage.tsv"
             mtcn_values, mtcn_notes = parse_mtcn(mtcn, args)
             notes.extend(mtcn_notes)
-            n_hetero, n_homo, vcf_notes = count_vcf(vcf, args.low_hetero, args.low_homo, args.include_filtered)
+            n_hetero, n_homo, vcf_notes = count_vcf(vcf, args.low_hetero, args.low_homo, args.min_vcf_dp)
             notes.extend(vcf_notes)
             pct100 = mad = "NA"
 
