@@ -11,13 +11,14 @@ from __future__ import annotations
 import argparse
 import configparser
 import csv
+import gzip
 import shlex
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 DNA = set("ACGTNacgtn")
 OUTDIRS = [
@@ -268,6 +269,12 @@ def require_existing_file(path: Path, label: str) -> Path:
     return path
 
 
+def require_gzipped_vcf(path: Path) -> Path:
+    if not path.name.endswith(".vcf.gz"):
+        raise ValueError(f"Input VCF must end with .vcf.gz: {path}")
+    return require_existing_file(path, "VCF")
+
+
 def find_species_fasta(species: str, cfg: configparser.ConfigParser) -> Path:
     fasta_dir = Path(cfg.get("paths", "species_fasta_dir", fallback="").strip())
     if not fasta_dir:
@@ -300,6 +307,48 @@ def find_sample_file(sample: str, cfg: configparser.ConfigParser, dir_key: str, 
     raise ValueError(f"Multiple {label} files found for sample {sample!r}: {unique}")
 
 
+def _looks_like_header(fields: Sequence[str]) -> bool:
+    normalized = {f.strip().lower() for f in fields}
+    return "sample" in normalized or "species" in normalized or "species_fasta" in normalized
+
+
+def iter_sample_ref_rows(path: Path) -> Iterable[dict]:
+    """Yield sample rows from headered or legacy headerless TSV manifests.
+
+    Headered manifests should include at least a ``sample`` column and either a
+    ``species`` or ``species_fasta`` column. Headerless manifests are interpreted
+    as two-column TSVs where the first column is ``sample`` and the second column
+    is ``species``. Extra columns are ignored.
+    """
+    with path.open(newline="") as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        first = next(reader, None)
+        if first is None:
+            return
+        if _looks_like_header(first):
+            dict_reader = csv.DictReader(handle, fieldnames=first, delimiter="\t")
+            for row in dict_reader:
+                if row.get("sample"):
+                    yield row
+            return
+        yield from _iter_headerless_sample_ref_rows([first, *reader], path)
+
+
+def _iter_headerless_sample_ref_rows(rows: Sequence[Sequence[str]], path: Path) -> Iterable[dict]:
+    for line_number, fields in enumerate(rows, start=1):
+        if not fields or not fields[0].strip() or fields[0].lstrip().startswith("#"):
+            continue
+        if len(fields) < 2:
+            raise ValueError(
+                f"Headerless sample_ref_file {path} line {line_number} must contain "
+                "at least sample and species columns"
+            )
+        yield {
+            "sample": fields[0].strip(),
+            "species": fields[1].strip(),
+        }
+
+
 def sample_from_row(row: dict, cfg: configparser.ConfigParser) -> Sample:
     sample_name = row["sample"]
     species = row.get("species") or None
@@ -309,7 +358,7 @@ def sample_from_row(row: dict, cfg: configparser.ConfigParser) -> Sample:
     return Sample(
         sample_name,
         require_existing_file(species_fasta, "species FASTA"),
-        require_existing_file(vcf, "VCF"),
+        require_gzipped_vcf(vcf),
         require_existing_file(cov, "COV"),
         row.get("species_chrom") or "chrM",
         int(row["rotate_anchor"]) if row.get("rotate_anchor") else None,
@@ -335,10 +384,15 @@ def load_rotate_overrides(cfg: configparser.ConfigParser) -> Dict[str, int]:
 def load_samples(cfg: configparser.ConfigParser, sample_filter: Optional[str]) -> List[Sample]:
     samples: List[Sample] = []
     ref = cfg.get("paths", "sample_ref_file", fallback="").strip()
-    if ref and Path(ref).exists():
-        with Path(ref).open() as handle:
-            for row in csv.DictReader(handle, delimiter="\t"):
-                samples.append(sample_from_row(row, cfg))
+    if ref:
+        ref_path = Path(ref)
+        if not ref_path.exists():
+            raise FileNotFoundError(
+                f"sample_ref_file not found: {ref_path}. Set [paths] sample_ref_file "
+                "to an existing TSV or leave it blank and configure [paths] samples."
+            )
+        for row in iter_sample_ref_rows(ref_path):
+            samples.append(sample_from_row(row, cfg))
     else:
         for name in [s.strip() for s in cfg.get("paths", "samples", fallback="").split(",") if s.strip()]:
             sec = f"sample:{name}"
@@ -365,7 +419,7 @@ def load_samples(cfg: configparser.ConfigParser, sample_filter: Optional[str]) -
 
 
 def lift_vcf(sample: Sample, pos_map: Dict[int, dict], out_vcf: Path, human_seq: str, target_chrom: str, check_ref: bool, fail_on_mismatch: bool, stats: SampleStats) -> None:
-    with sample.vcf.open() as inp, out_vcf.open("w") as out:
+    with gzip.open(sample.vcf, "rt") as inp, out_vcf.open("w") as out:
         for line in inp:
             if line.startswith("##"):
                 out.write(line)

@@ -12,7 +12,7 @@ Provide only:
 
 1. raw species chrM FASTA files
 2. raw human chrM FASTA
-3. original species VCF files
+3. original species VCF files compressed as `.vcf.gz`
 4. original species COV files
 5. a `sample_ref_file` TSV or a sample list in the config
 
@@ -22,14 +22,18 @@ A minimal `sample_ref_file` should include only these columns:
 sample	species
 ```
 
+Headerless two-column TSV files are also accepted, with column 1 interpreted as
+`sample` and column 2 interpreted as `species`. Extra columns in headerless files
+are ignored.
+
 With the minimal format, the workflow resolves files from configured input
 directories:
 
 - species FASTA: `{species_fasta_dir}/{species}.fa` by default, with additional
   extensions from `species_fasta_extensions`
-- VCF: the unique file in `vcf_dir` matching `vcf_pattern`, default
-  `{sample}*.vcf` (for example,
-  `ERS12091861.round2.original_coords.clean.final.split.vcf`)
+- VCF: the unique gzipped VCF in `vcf_dir` matching `vcf_pattern`, default
+  `{sample}*.vcf.gz` (for example,
+  `ERS12091861.round2.original_coords.clean.final.split.vcf.gz`)
 - COV: the unique file in `cov_dir` matching `cov_pattern`, default
   `{sample}*.tsv,{sample}*.cov` (for example,
   `SAMN01920507.round1_round2.max_stage_coverage.tsv`)
