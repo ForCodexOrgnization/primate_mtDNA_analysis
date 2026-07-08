@@ -6,7 +6,7 @@ collect_variant_calling:
   input_root: /home/lt692/scratch_pi_njl27/lt692/primate_results_test/new
 
   # Destination for standardized collected inputs and reports.
-  outdir: outputs/qc/collected_variant_calling_results
+  outdir: results/qc/collected_variant_calling_results
 
   # Optional sample metadata table. This can be the same two-column sample/species
   # file used by coordinate_liftover.paths.sample_ref_file.
@@ -32,7 +32,7 @@ collect_variant_calling:
 coordinate_liftover:
   paths:
     # Directory for all generated coordinate-liftover outputs.
-    output_dir: outputs/qc/coordinate_liftover
+    output_dir: results/qc/coordinate_liftover
 
     # Raw, unrotated canonical human chrM FASTA.
     human_fasta: data/reference_tables/human_chrM.fa
@@ -47,9 +47,9 @@ coordinate_liftover:
     # produced by collect_variant_calling.outdir.
     species_fasta_dir: /home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM
     species_fasta_extensions: .fa,.fasta,.fna
-    vcf_dir: outputs/qc/collected_variant_calling_results/collected_vcf
+    vcf_dir: results/qc/collected_variant_calling_results/collected_vcf
     vcf_pattern: "{sample}*.vcf.gz"
-    cov_dir: outputs/qc/collected_variant_calling_results/collected_cov
+    cov_dir: results/qc/collected_variant_calling_results/collected_cov
     cov_pattern: "{sample}*.tsv"
 
     # Alternative to sample_ref_file: comma-separated sample names plus per-sample

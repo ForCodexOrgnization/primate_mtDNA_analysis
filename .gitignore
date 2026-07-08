@@ -1,0 +1,10 @@
+# Deprecated duplicate output root. Use results/ instead.
+outputs/
+
+# Generated QC result products; keep only documentation in git.
+results/qc/*
+!results/qc/README.md
+
+# Python bytecode
+__pycache__/
+*.py[cod]

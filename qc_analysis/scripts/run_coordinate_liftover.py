@@ -48,11 +48,14 @@ class Sample:
     rotate_anchor: Optional[int] = None
     target_sequence: Optional[str] = None
     species: Optional[str] = None
+    missing_files: List[str] = field(default_factory=list)
 
 
 @dataclass
 class SampleStats:
     sample: str
+    status: str = "completed"
+    missing_files: str = ""
     species_bases: int = 0
     mapped_positions: int = 0
     unmapped_positions: int = 0
@@ -449,21 +452,54 @@ def _iter_headerless_sample_ref_rows(rows: Sequence[Sequence[str]], path: Path) 
         }
 
 
+def _missing_path_note(label: str, path: Path) -> str:
+    return f"{label} missing file: {path}"
+
+
+def _validate_input_file(path: Path, label: str) -> List[str]:
+    if not path.exists() or not path.is_file():
+        return [_missing_path_note(label, path)]
+    if label == "VCF" and not path.name.endswith(".vcf.gz"):
+        return [f"VCF invalid file extension (expected .vcf.gz): {path}"]
+    return []
+
+
 def sample_from_row(row: dict, cfg: configparser.ConfigParser) -> Sample:
     sample_name = row["sample"]
     species = row.get("species") or None
-    species_fasta = Path(row["species_fasta"]) if row.get("species_fasta") else find_species_fasta(species or sample_name, cfg)
-    vcf = Path(row["vcf"]) if row.get("vcf") else find_sample_file(sample_name, cfg, "vcf_dir", "vcf_pattern", "VCF")
-    cov = Path(row["cov"]) if row.get("cov") else find_sample_file(sample_name, cfg, "cov_dir", "cov_pattern", "COV")
+    missing_files: List[str] = []
+
+    try:
+        species_fasta = Path(row["species_fasta"]) if row.get("species_fasta") else find_species_fasta(species or sample_name, cfg)
+        missing_files.extend(_validate_input_file(species_fasta, "species FASTA"))
+    except (FileNotFoundError, ValueError) as exc:
+        species_fasta = Path("")
+        missing_files.append(str(exc))
+
+    try:
+        vcf = Path(row["vcf"]) if row.get("vcf") else find_sample_file(sample_name, cfg, "vcf_dir", "vcf_pattern", "VCF")
+        missing_files.extend(_validate_input_file(vcf, "VCF"))
+    except (FileNotFoundError, ValueError) as exc:
+        vcf = Path("")
+        missing_files.append(str(exc))
+
+    try:
+        cov = Path(row["cov"]) if row.get("cov") else find_sample_file(sample_name, cfg, "cov_dir", "cov_pattern", "COV")
+        missing_files.extend(_validate_input_file(cov, "COV"))
+    except (FileNotFoundError, ValueError) as exc:
+        cov = Path("")
+        missing_files.append(str(exc))
+
     return Sample(
         sample_name,
-        require_existing_file(species_fasta, "species FASTA"),
-        require_gzipped_vcf(vcf),
-        require_existing_file(cov, "COV"),
+        species_fasta,
+        vcf,
+        cov,
         row.get("species_chrom") or "chrM",
         int(row["rotate_anchor"]) if row.get("rotate_anchor") else None,
         row.get("target_sequence") or None,
         species,
+        missing_files,
     )
 
 
@@ -618,6 +654,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     summaries: List[SampleStats] = []
     for sample in load_samples(cfg, args.sample):
+        if sample.missing_files:
+            stats = SampleStats(
+                sample.name,
+                status="skipped_missing_file",
+                missing_files="; ".join(sample.missing_files),
+            )
+            stats.notes.append("liftover_skipped=missing_required_input")
+            write_report(stats, dirs["reports"] / f"{sample.name}.coordinate_liftover_qc.tsv")
+            summaries.append(stats)
+            continue
+
         species_raw = read_fasta(sample.species_fasta, sample.target_sequence)
         species_name = cfg.get("fasta", "species_sequence_name_template", fallback="{sample}_chrM").format(sample=sample.name)
         species_prepared = dirs["prepared_fastas"] / f"{sample.name}.prepared.fa"

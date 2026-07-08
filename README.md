@@ -1,16 +1,16 @@
 # Primate mtDNA Analysis
 
-This repository is organized to keep the production variant-calling workflow and downstream reproducible analysis in the same project while maintaining a clear logical separation between them.
+This repository keeps the active primate mtDNA preprocessing, QC, and variant-calling code together while avoiding unused placeholder files and duplicate output roots.
 
 ## Repository structure
 
 ```text
-variant_calling/        # Production Nextflow workflow
-downstream_analysis/    # Quarto/R-based reproducible reports
-config/                 # Global parameters, thresholds, paths, and sample metadata
-data/                   # Small metadata, frozen inputs, and toy data
-results/                # Regenerated reports, tables, and figures
-docs/                   # User manuals and file documentation
+preprocessing/          # Reference discovery/materialization and variant-calling input preparation
+variant_calling/        # Production WDL/Nextflow variant-calling workflows
+qc_analysis/            # QC preprocessing utilities and coordinate liftover scripts
+config/                 # Active workflow configuration files
+results/                # Regenerated reports, tables, figures, and QC result products
+data/                   # Curated small data files when present
 ```
 
-The directories are scaffolded first and can be populated incrementally as the workflow, reports, configuration files, data assets, outputs, and documentation are developed.
+Generated artifacts should be written under `results/`. The old `outputs/` root has been removed because it duplicated `results/`; QC preprocessing now writes under `results/qc/` by default.
