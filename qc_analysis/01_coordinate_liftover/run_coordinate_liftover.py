@@ -170,13 +170,23 @@ def run_alignment(species_fa: Path, human_fa: Path, out_fa: Path, cfg: configpar
     try:
         if use_conda_env:
             quoted_cmd = " ".join([shlex.quote(aligner), *[shlex.quote(o) for o in opts], shlex.quote(str(tmp))])
+            quoted_aligner = shlex.quote(aligner)
             shell_lines = ["source /etc/profile >/dev/null 2>&1 || true"]
             if module_load:
-                shell_lines.append(f"module load {shlex.quote(module_load)}")
+                shell_lines.append(f"module load {shlex.quote(module_load)} >/dev/null 2>&1 || true")
             if conda_env:
-                shell_lines.append('source "$(conda info --base)/etc/profile.d/conda.sh"')
-                shell_lines.append(f"conda activate {shlex.quote(conda_env)}")
-            shell_lines.append(quoted_cmd)
+                shell_lines.extend(
+                    [
+                        "if command -v conda >/dev/null 2>&1; then",
+                        "  CONDA_BASE=$(conda info --base 2>/dev/null || true)",
+                        '  if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then',
+                        '    source "$CONDA_BASE/etc/profile.d/conda.sh" >/dev/null 2>&1 || true',
+                        f"    conda activate {shlex.quote(conda_env)} >/dev/null 2>&1 || true",
+                        "  fi",
+                        "fi",
+                    ]
+                )
+            shell_lines.append(f"if command -v {quoted_aligner} >/dev/null 2>&1; then {quoted_cmd}; else exit 127; fi")
             with out_fa.open("w") as out:
                 subprocess.run("\n".join(shell_lines), check=True, stdout=out, shell=True, executable="/bin/bash")
             return
