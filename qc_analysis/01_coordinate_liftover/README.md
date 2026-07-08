@@ -12,7 +12,7 @@ Provide only:
 
 1. raw species chrM FASTA files
 2. raw human chrM FASTA
-3. original species VCF files
+3. original species VCF files compressed as `.vcf.gz`
 4. original species COV files
 5. a `sample_ref_file` TSV or a sample list in the config
 
@@ -22,14 +22,18 @@ A minimal `sample_ref_file` should include only these columns:
 sample	species
 ```
 
+Headerless two-column TSV files are also accepted, with column 1 interpreted as
+`sample` and column 2 interpreted as `species`. Extra columns in headerless files
+are ignored.
+
 With the minimal format, the workflow resolves files from configured input
 directories:
 
 - species FASTA: `{species_fasta_dir}/{species}.fa` by default, with additional
   extensions from `species_fasta_extensions`
-- VCF: the unique file in `vcf_dir` matching `vcf_pattern`, default
-  `{sample}*.vcf` (for example,
-  `ERS12091861.round2.original_coords.clean.final.split.vcf`)
+- VCF: the unique gzipped VCF in `vcf_dir` matching `vcf_pattern`, default
+  `{sample}*.vcf.gz` (for example,
+  `ERS12091861.round2.original_coords.clean.final.split.vcf.gz`)
 - COV: the unique file in `cov_dir` matching `cov_pattern`, default
   `{sample}*.tsv,{sample}*.cov` (for example,
   `SAMN01920507.round1_round2.max_stage_coverage.tsv`)
@@ -55,19 +59,40 @@ python qc_analysis/01_coordinate_liftover/run_coordinate_liftover.py \
   --sample SAMPLE_NAME
 ```
 
-## MAFFT environment
+## Slurm submission
 
-By default, the alignment step loads MAFFT through the configured HPC conda
-environment before running `mafft`:
+Use the provided Slurm submission script to run the workflow on the cluster:
 
 ```bash
-module load miniconda/24.11.3
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate mafft_env
+sbatch qc_analysis/01_coordinate_liftover/submit_coordinate_liftover.slurm
 ```
 
-These defaults are controlled by `[alignment] use_conda_env`, `module_load`,
-and `conda_env` in `config.coordinate_liftover.ini`.
+For one sample, pass `SAMPLE` with `--export`:
+
+```bash
+sbatch --export=ALL,SAMPLE=SAMPLE_NAME \
+  qc_analysis/01_coordinate_liftover/submit_coordinate_liftover.slurm
+```
+
+For an array run, submit one task per non-header row in `config/sample_ref_file.tsv`:
+
+```bash
+N=$(awk 'BEGIN{FS="\t"} $0 !~ /^[[:space:]]*#/ && NF >= 2 && tolower($1) != "sample" {n++} END{print n}' config/sample_ref_file.tsv)
+sbatch --array=1-${N}%20 qc_analysis/01_coordinate_liftover/submit_coordinate_liftover.slurm
+```
+
+Override defaults with `--export`, for example `CONFIG=...`, `SAMPLE_REF=...`,
+`PYTHON=...`, or `REPO_DIR=...`.
+
+## MAFFT environment
+
+By default, `[alignment] use_conda_env = true`, so the alignment step first tries
+to load MAFFT through the configured HPC conda module. Configure `module_load`
+and `conda_env` in `config.coordinate_liftover.ini` for your cluster.
+
+When `allow_simple_alignment_fallback = true`, missing module, `conda`, or
+`mafft` commands fall back to the deterministic simple alignment path without
+printing noisy shell setup errors.
 
 ## Outputs
 
