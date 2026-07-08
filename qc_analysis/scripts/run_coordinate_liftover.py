@@ -67,6 +67,7 @@ class SampleStats:
     cov_positions_failed_liftover: int = 0
     ref_match_count: int = 0
     ref_mismatch_count: int = 0
+    anchor_source: str = ""
     notes: List[str] = field(default_factory=list)
 
 
@@ -224,8 +225,12 @@ def restore_human_pos(rotated_pos: int, human_len: int, restore_offset: int) -> 
     return ((rotated_pos + restore_offset - 1) % human_len) + 1
 
 
-def infer_anchor(species_seq: str, human_seq: str) -> int:
-    """Infer a species rotation anchor from a shared k-mer; fall back to 1."""
+def infer_anchor_with_status(species_seq: str, human_seq: str) -> Tuple[int, bool]:
+    """Infer a species rotation anchor from a shared k-mer.
+
+    Returns ``(anchor, used_fallback)`` so callers can warn/report when no
+    shared k-mer was found and anchor 1 was used as a last resort.
+    """
     upper_human = human_seq.upper()
     upper_species = species_seq.upper()
     for k in (31, 25, 21, 15):
@@ -234,8 +239,13 @@ def infer_anchor(species_seq: str, human_seq: str) -> int:
             if len(kmer) == k and "N" not in kmer:
                 hit = upper_species.find(kmer)
                 if hit >= 0:
-                    return hit + 1
-    return 1
+                    return hit + 1, False
+    return 1, True
+
+
+def infer_anchor(species_seq: str, human_seq: str) -> int:
+    """Infer a species rotation anchor from a shared k-mer; fall back to 1."""
+    return infer_anchor_with_status(species_seq, human_seq)[0]
 
 
 def write_simple_alignment(species_fa: Path, human_fa: Path, out_fa: Path) -> None:
@@ -517,6 +527,30 @@ def load_rotate_overrides(cfg: configparser.ConfigParser) -> Dict[str, int]:
     return overrides
 
 
+
+def load_anchor_positions(cfg: configparser.ConfigParser) -> Dict[str, dict]:
+    path = cfg.get("coordinates", "anchor_positions_file", fallback="").strip()
+    if not path:
+        return {}
+    anchor_path = Path(path)
+    if not anchor_path.exists():
+        raise FileNotFoundError(f"anchor_positions_file not found: {anchor_path}")
+    anchors: Dict[str, dict] = {}
+    with anchor_path.open(newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            sample = row.get("sample", "").strip()
+            if not sample:
+                continue
+            anchors[sample] = row
+    return anchors
+
+
+def anchor_int(row: dict, key: str, sample: str) -> int:
+    value = row.get(key, "")
+    if value in {"", None}:
+        raise ValueError(f"anchor_positions_file row for sample {sample!r} is missing {key}")
+    return int(value)
+
 def load_samples(cfg: configparser.ConfigParser, sample_filter: Optional[str]) -> List[Sample]:
     samples: List[Sample] = []
     ref = cfg.get("paths", "sample_ref_file", fallback="").strip()
@@ -651,6 +685,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     check_ref = cfg.getboolean("liftover", "check_ref_against_human_fasta", fallback=True)
     fail_ref = cfg.getboolean("liftover", "fail_on_ref_mismatch", fallback=False)
     human_anchor_cfg = cfg.get("coordinates", "human_rotate_anchor", fallback="").strip()
+    anchor_positions = load_anchor_positions(cfg)
 
     summaries: List[SampleStats] = []
     for sample in load_samples(cfg, args.sample):
@@ -670,8 +705,31 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         species_prepared = dirs["prepared_fastas"] / f"{sample.name}.prepared.fa"
         write_fasta(species_prepared, species_name, species_raw.seq)
 
-        species_anchor = sample.rotate_anchor or infer_anchor(species_raw.seq, human_raw.seq)
-        human_anchor = int(human_anchor_cfg) if human_anchor_cfg else infer_anchor(human_raw.seq, species_raw.seq)
+        anchor_source = ""
+        species_fallback = False
+        human_fallback = False
+        if sample.name in anchor_positions:
+            anchor_row = anchor_positions[sample.name]
+            species_anchor = anchor_int(anchor_row, "species_anchor_pos", sample.name)
+            human_anchor = int(human_anchor_cfg) if human_anchor_cfg else anchor_int(anchor_row, "human_anchor_pos", sample.name)
+            anchor_source = "global_anchor_file"
+        else:
+            if sample.rotate_anchor:
+                species_anchor = sample.rotate_anchor
+                anchor_source = "sample_override"
+            else:
+                species_anchor, species_fallback = infer_anchor_with_status(species_raw.seq, human_raw.seq)
+                anchor_source = "fallback_to_1" if species_fallback else "inferred_pairwise"
+            if human_anchor_cfg:
+                human_anchor = int(human_anchor_cfg)
+            else:
+                human_anchor, human_fallback = infer_anchor_with_status(human_raw.seq, species_raw.seq)
+                if human_fallback:
+                    anchor_source = "fallback_to_1"
+        if species_fallback:
+            print(f"WARNING: sample {sample.name}: species infer_anchor found no shared k-mer; falling back to anchor=1", file=sys.stderr)
+        if human_fallback:
+            print(f"WARNING: sample {sample.name}: human infer_anchor found no shared k-mer; falling back to anchor=1", file=sys.stderr)
         species_rotated = dirs["rotated_fastas"] / f"{sample.name}.rotated.fa"
         human_rotated = dirs["rotated_fastas"] / f"{sample.name}.human.rotated.fa"
         write_fasta(species_rotated, species_name, rotate_sequence(species_raw.seq, species_anchor))
@@ -683,6 +741,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         pos_map, stats = build_map(sample, aln, map_path, species_anchor, human_anchor, human_len, restore_offset)
         stats.notes.append(f"species_rotate_anchor={species_anchor}")
         stats.notes.append(f"human_rotate_anchor={human_anchor}")
+        stats.anchor_source = anchor_source
+        stats.notes.append(f"anchor_source={anchor_source}")
 
         lift_vcf(sample, pos_map, dirs["vcf_lifted_raw"] / f"{sample.name}.lifted.raw.vcf", human_raw.seq, target_chrom, check_ref, fail_ref, stats)
         lift_cov(sample, pos_map, dirs["cov_lifted"] / f"{sample.name}.lifted.cov", target_chrom, stats)
