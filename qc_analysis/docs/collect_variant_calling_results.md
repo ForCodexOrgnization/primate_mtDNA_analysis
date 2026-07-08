@@ -53,7 +53,9 @@ sample species mt_median_coverage nuclear_median_coverage mtcn_median Percent_10
 ```
 
 Species are read from an optional metadata TSV/CSV configured with `--metadata`,
-`--metadata-sample-column`, and `--metadata-species-column`. If no species can be
+`--metadata-sample-column`, and `--metadata-species-column`. The same two-column
+`config/sample_ref_file.tsv` used by coordinate liftover can be supplied here;
+headerless files are interpreted as `sample` and `species`. If no species can be
 found, `NA` is written.
 
 mtCN columns can be configured explicitly with `--mtcn-mt-column`,
@@ -84,7 +86,7 @@ script tries common aliases such as `mt_median_coverage`,
 python qc_analysis/scripts/collect_variant_calling_results.py \
   --input-root /path/to/variant_calling_root \
   --outdir /path/to/collected_variant_calling_results \
-  --metadata /path/to/sample_species_metadata.tsv \
+  --metadata config/sample_ref_file.tsv \
   --low-hetero 0.05 \
   --low-homo 0.95 \
   --coverage-threshold 100
