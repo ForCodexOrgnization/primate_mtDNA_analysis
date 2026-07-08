@@ -113,6 +113,10 @@ def is_missing(value: object) -> bool:
     return str(value or "").strip() in {"", "NA", "N/A", "nan", "None", "null"}
 
 
+def env_flag(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
+
+
 def read_tsv(path: Path, required: Sequence[str]) -> List[Dict[str, str]]:
     if not path.exists() or path.stat().st_size == 0:
         raise FileNotFoundError(f"missing_or_empty_tsv:{rel(path)}")
@@ -412,12 +416,22 @@ def expected_package_paths(sid: str, dirs: Dict[str, Path]) -> Tuple[Path, Path,
 
 def package_complete(paths: Sequence[Path]) -> bool:
     """Return True when all expected package outputs and FASTA indexes exist."""
+    return all(p.exists() and p.stat().st_size > 0 for p in package_required_files(paths))
+
+
+def package_files_exist(paths: Sequence[Path]) -> bool:
+    """Return True when all expected package output file paths exist."""
+    return all(p.exists() for p in package_required_files(paths))
+
+
+def package_required_files(paths: Sequence[Path]) -> List[Path]:
+    """Return all expected files for one variant-calling reference package."""
     whole, nuclear, chrm, shift, non, ctrl, chain = paths
     required = [whole, nuclear, chrm, shift, non, ctrl, chain]
     required.extend(expected_fasta_bwa_indexes(nuclear))
     for fasta in [whole, chrm, shift]:
         required.extend(expected_indexes(fasta))
-    return all(p.exists() and p.stat().st_size > 0 for p in required)
+    return required
 
 
 def successful_manifest_rows(manifest: Path) -> Dict[str, Dict[str, str]]:
@@ -497,7 +511,13 @@ def build_one_reference(ref: Dict[str, str], sid: str, score: Dict[str, str], di
     messages: List[str] = []
     try:
         whole_fa, nuclear_fa, chrm_fa, shift_fa, non, ctrl, chain = expected_package_paths(sid, dirs)
-        if sid in existing_success and package_complete([whole_fa, nuclear_fa, chrm_fa, shift_fa, non, ctrl, chain]) and not args.force:
+        expected_outputs = [whole_fa, nuclear_fa, chrm_fa, shift_fa, non, ctrl, chain]
+        outputs_complete = package_complete(expected_outputs)
+        if args.skip_existing and package_files_exist(expected_outputs) and not args.force:
+            base.update({"build_status": "success", "build_message": "skipped_existing_outputs"})
+            manifest_paths(base, whole_fa, nuclear_fa, chrm_fa, shift_fa, non, ctrl, chain)
+            return base
+        if sid in existing_success and outputs_complete and not args.force:
             base.update(existing_success[sid])
             base.update({"build_status": "success", "build_message": "skipped_existing_manifest_success_and_outputs"})
             manifest_paths(base, whole_fa, nuclear_fa, chrm_fa, shift_fa, non, ctrl, chain)
@@ -612,6 +632,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threads", type=int, default=int(os.environ.get("VARIANT_REFERENCE_THREADS", "1")), help="Number of reference packages to build in parallel")
     parser.add_argument("--job-index", type=int, default=0, help="Build only the 1-based reference package index, for Slurm array tasks")
     parser.add_argument("--manifest-output", default="", help="Write manifest rows to this TSV instead of the default final manifest")
+    parser.add_argument("--skip-existing", action="store_true", default=env_flag(os.environ.get("VARIANT_REFERENCE_SKIP_EXISTING", "0")), help="Skip a species/reference package when all expected output files and indexes already exist")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--samtools", default=os.environ.get("SAMTOOLS_COMMAND", "samtools"))
