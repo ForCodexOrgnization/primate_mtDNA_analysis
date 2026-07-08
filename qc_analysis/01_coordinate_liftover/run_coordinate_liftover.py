@@ -67,6 +67,96 @@ class SampleStats:
     notes: List[str] = field(default_factory=list)
 
 
+
+
+def parse_scalar(value: str) -> object:
+    value = value.strip()
+    if value == "" or value.lower() in {"null", "none", "~"}:
+        return None
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value
+
+
+def strip_yaml_comment(line: str) -> str:
+    in_single = False
+    in_double = False
+    for idx, char in enumerate(line):
+        if char == "'" and not in_double:
+            in_single = not in_single
+        elif char == '"' and not in_single:
+            in_double = not in_double
+        elif char == "#" and not in_single and not in_double:
+            return line[:idx]
+    return line
+
+
+def read_simple_yaml(path: Path) -> Dict[str, object]:
+    root: Dict[str, object] = {}
+    stack: List[Tuple[int, Dict[str, object]]] = [(-1, root)]
+    with path.open() as handle:
+        for raw_line in handle:
+            line = strip_yaml_comment(raw_line.rstrip("\n"))
+            if not line.strip():
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            text = line.strip()
+            if ":" not in text:
+                raise SystemExit(f"Unsupported YAML line in {path}: {raw_line.rstrip()}")
+            key, value = text.split(":", 1)
+            key = key.strip().strip('"\'')
+            value = value.strip()
+            while stack and indent <= stack[-1][0]:
+                stack.pop()
+            parent = stack[-1][1]
+            if value == "":
+                child: Dict[str, object] = {}
+                parent[key] = child
+                stack.append((indent, child))
+            elif value == "{}":
+                parent[key] = {}
+            else:
+                parent[key] = parse_scalar(value)
+    return root
+
+
+def _set_section_from_mapping(cfg: configparser.ConfigParser, section_name: str, mapping: Dict[str, object]) -> None:
+    cfg[section_name] = {key: "" if value is None else str(value) for key, value in mapping.items() if not isinstance(value, dict)}
+
+
+def read_workflow_config(path: Path) -> configparser.ConfigParser:
+    cfg = configparser.ConfigParser()
+    if path.suffix.lower() not in {".yaml", ".yml"}:
+        cfg.read(path)
+        return cfg
+
+    data = read_simple_yaml(path)
+    workflow = data.get("coordinate_liftover", data)
+    if not isinstance(workflow, dict):
+        raise SystemExit("coordinate_liftover config must be a mapping")
+    for section_name, section_value in workflow.items():
+        if section_name == "samples_by_name":
+            if isinstance(section_value, dict):
+                for sample_name, sample_value in section_value.items():
+                    if isinstance(sample_value, dict):
+                        _set_section_from_mapping(cfg, f"sample:{sample_name}", sample_value)
+            continue
+        if isinstance(section_value, dict):
+            _set_section_from_mapping(cfg, section_name, section_value)
+    return cfg
+
+
 def read_fasta(path: Path, target: Optional[str] = None) -> FastaRecord:
     records: List[FastaRecord] = []
     name: Optional[str] = None
@@ -288,7 +378,7 @@ def require_gzipped_vcf(path: Path) -> Path:
 def find_species_fasta(species: str, cfg: configparser.ConfigParser) -> Path:
     fasta_dir = Path(cfg.get("paths", "species_fasta_dir", fallback="").strip())
     if not fasta_dir:
-        raise ValueError("sample_ref_file uses a species column; configure [paths] species_fasta_dir")
+        raise ValueError("sample_ref_file uses a species column; configure paths.species_fasta_dir")
     extensions = [e.strip() for e in cfg.get("paths", "species_fasta_extensions", fallback=".fa,.fasta,.fna").split(",") if e.strip()]
     candidates = [fasta_dir / f"{species}{ext}" for ext in extensions]
     existing = [p for p in candidates if p.exists() and p.is_file()]
@@ -303,7 +393,7 @@ def find_species_fasta(species: str, cfg: configparser.ConfigParser) -> Path:
 def find_sample_file(sample: str, cfg: configparser.ConfigParser, dir_key: str, pattern_key: str, label: str) -> Path:
     base_dir = Path(cfg.get("paths", dir_key, fallback="").strip())
     if not base_dir:
-        raise ValueError(f"Configure [paths] {dir_key} to resolve {label} files from sample names")
+        raise ValueError(f"Configure paths.{dir_key} to resolve {label} files from sample names")
     patterns = [p.strip() for p in cfg.get("paths", pattern_key, fallback=f"{{sample}}*").split(",") if p.strip()]
     matches: List[Path] = []
     for pattern in patterns:
@@ -398,8 +488,8 @@ def load_samples(cfg: configparser.ConfigParser, sample_filter: Optional[str]) -
         ref_path = Path(ref)
         if not ref_path.exists():
             raise FileNotFoundError(
-                f"sample_ref_file not found: {ref_path}. Set [paths] sample_ref_file "
-                "to an existing TSV or leave it blank and configure [paths] samples."
+                f"sample_ref_file not found: {ref_path}. Set paths.sample_ref_file "
+                "to an existing TSV or leave it blank and configure paths.samples."
             )
         for row in iter_sample_ref_rows(ref_path):
             samples.append(sample_from_row(row, cfg))
@@ -424,7 +514,7 @@ def load_samples(cfg: configparser.ConfigParser, sample_filter: Optional[str]) -
     if sample_filter:
         samples = [s for s in samples if s.name == sample_filter]
     if not samples:
-        raise ValueError("No samples selected; configure sample_ref_file or [paths] samples")
+        raise ValueError("No samples selected; configure sample_ref_file or paths.samples")
     return samples
 
 
@@ -508,8 +598,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     ap.add_argument("--sample")
     args = ap.parse_args(argv)
 
-    cfg = configparser.ConfigParser()
-    cfg.read(args.config)
+    cfg = read_workflow_config(Path(args.config))
     outdir = Path(cfg.get("paths", "output_dir"))
     dirs = {d: outdir / d for d in OUTDIRS}
     for d in dirs.values():
