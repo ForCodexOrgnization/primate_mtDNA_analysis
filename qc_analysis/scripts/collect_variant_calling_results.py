@@ -238,14 +238,31 @@ def load_metadata(path: Optional[Path], sample_col: str, species_col: str) -> Di
     if not path:
         return {}
     species: Dict[str, str] = {}
+    delimiter = sniff_delimiter(path)
     with path.open(newline="") as handle:
-        reader = csv.DictReader(handle, delimiter=sniff_delimiter(path))
-        if not reader.fieldnames or sample_col not in reader.fieldnames or species_col not in reader.fieldnames:
-            logging.warning("Metadata missing required columns %s and/or %s", sample_col, species_col)
-            return {}
+        reader = csv.DictReader(handle, delimiter=delimiter)
+        if reader.fieldnames and sample_col in reader.fieldnames and species_col in reader.fieldnames:
+            for row in reader:
+                if row.get(sample_col):
+                    species[row[sample_col]] = row.get(species_col, "NA") or "NA"
+            return species
+
+    with path.open(newline="") as handle:
+        reader = csv.reader(handle, delimiter=delimiter)
         for row in reader:
-            if row.get(sample_col):
-                species[row[sample_col]] = row.get(species_col, "NA") or "NA"
+            if not row or row[0].lstrip().startswith("#"):
+                continue
+            if len(row) < 2:
+                continue
+            if row[0].strip().lower() == sample_col.lower() and row[1].strip().lower() == species_col.lower():
+                continue
+            sample = row[0].strip()
+            if sample:
+                species[sample] = row[1].strip() or "NA"
+    if species:
+        logging.info("Loaded headerless two-column metadata from %s", path)
+    else:
+        logging.warning("Metadata missing required columns %s and/or %s", sample_col, species_col)
     return species
 
 

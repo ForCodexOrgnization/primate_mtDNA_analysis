@@ -27,7 +27,8 @@ Headerless two-column TSV files are also accepted, with column 1 interpreted as
 are ignored.
 
 With the minimal format, the workflow resolves files from configured input
-directories:
+directories. Set `vcf_dir` and `cov_dir` directly to the standardized collected
+input directories produced by `collect_variant_calling.outdir`:
 
 - species FASTA: `{species_fasta_dir}/{species}.fa` by default, with additional
   extensions from `species_fasta_extensions`

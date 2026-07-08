@@ -8,8 +8,9 @@ collect_variant_calling:
   # Destination for standardized collected inputs and reports.
   outdir: /path/to/collected_variant_calling_results
 
-  # Optional sample metadata table. TSV is assumed unless the filename ends in .csv.
-  metadata: /path/to/sample_species_metadata.tsv
+  # Optional sample metadata table. This can be the same two-column sample/species
+  # file used by coordinate_liftover.paths.sample_ref_file.
+  metadata: config/sample_ref_file.tsv
   metadata_sample_column: sample
   metadata_species_column: species
 
@@ -42,6 +43,8 @@ coordinate_liftover:
     sample_ref_file: config/sample_ref_file.tsv
 
     # Input directories used when sample_ref_file contains only sample/species.
+    # vcf_dir and cov_dir should point directly at the standardized outputs
+    # produced by collect_variant_calling.outdir.
     species_fasta_dir: /home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM
     species_fasta_extensions: .fa,.fasta,.fna
     vcf_dir: /path/to/collected_variant_calling_results/collected_vcf
