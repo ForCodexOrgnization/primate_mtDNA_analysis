@@ -40,22 +40,22 @@ directories:
 
 Backward-compatible explicit columns are also accepted: `species_fasta`, `vcf`,
 and `cov`. Optional columns are `species_chrom`, `rotate_anchor`, and
-`target_sequence`. Alternatively, set `[paths] samples = sampleA,sampleB` and
-create sections such as `[sample:sampleA]` with either `species` or explicit
-`species_fasta`, `vcf`, and `cov` entries.
+`target_sequence`. Alternatively, set `coordinate_liftover.paths.samples: sampleA,sampleB` and
+add entries under `coordinate_liftover.samples_by_name` with either `species` or
+explicit `species_fasta`, `vcf`, and `cov` values.
 
 ## Run
 
 ```bash
 python qc_analysis/01_coordinate_liftover/run_coordinate_liftover.py \
-  --config qc_analysis/01_coordinate_liftover/config.coordinate_liftover.ini
+  --config config/qc_preprocessing.yaml
 ```
 
 Single-sample mode:
 
 ```bash
 python qc_analysis/01_coordinate_liftover/run_coordinate_liftover.py \
-  --config qc_analysis/01_coordinate_liftover/config.coordinate_liftover.ini \
+  --config config/qc_preprocessing.yaml \
   --sample SAMPLE_NAME
 ```
 
@@ -86,9 +86,9 @@ Override defaults with `--export`, for example `CONFIG=...`, `SAMPLE_REF=...`,
 
 ## MAFFT environment
 
-By default, `[alignment] use_conda_env = true`, so the alignment step first tries
+By default, `coordinate_liftover.alignment.use_conda_env: true`, so the alignment step first tries
 to load MAFFT through the configured HPC conda module. Configure `module_load`
-and `conda_env` in `config.coordinate_liftover.ini` for your cluster.
+and `conda_env` under `coordinate_liftover` in `config/qc_preprocessing.yaml` for your cluster.
 
 When `allow_simple_alignment_fallback = true`, missing module, `conda`, or
 `mafft` commands fall back to the deterministic simple alignment path without
@@ -96,7 +96,7 @@ printing noisy shell setup errors.
 
 ## Outputs
 
-The module creates these subdirectories under `[paths] output_dir`:
+The module creates these subdirectories under `coordinate_liftover.paths.output_dir`:
 
 - `prepared_fastas/` normalized single-record FASTAs
 - `rotated_fastas/` rotated species and human FASTAs

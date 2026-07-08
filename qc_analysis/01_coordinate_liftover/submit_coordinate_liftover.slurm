@@ -9,7 +9,7 @@
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
-CONFIG="${CONFIG:-qc_analysis/01_coordinate_liftover/config.coordinate_liftover.ini}"
+CONFIG="${CONFIG:-config/qc_preprocessing.yaml}"
 SAMPLE_REF="${SAMPLE_REF:-config/sample_ref_file.tsv}"
 PYTHON="${PYTHON:-python}"
 SCRIPT="qc_analysis/01_coordinate_liftover/run_coordinate_liftover.py"

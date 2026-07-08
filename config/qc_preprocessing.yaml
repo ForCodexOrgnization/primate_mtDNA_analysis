@@ -1,0 +1,97 @@
+# Preprocessing QC configuration for variant-calling result collection and
+# coordinate liftover. Edit paths before running on a real dataset.
+
+collect_variant_calling:
+  # Root directory with one subdirectory per sample.
+  input_root: /path/to/variant_calling_root
+
+  # Destination for standardized collected inputs and reports.
+  outdir: /path/to/collected_variant_calling_results
+
+  # Optional sample metadata table. TSV is assumed unless the filename ends in .csv.
+  metadata: /path/to/sample_species_metadata.tsv
+  metadata_sample_column: sample
+  metadata_species_column: species
+
+  # Coverage and heteroplasmy/homoplasmy thresholds.
+  coverage_threshold: 100
+  low_hetero: 0.05
+  low_homo: 0.95
+
+  # By default, only PASS variants are counted and VCF/mtCN files are symlinked.
+  include_filtered: false
+  copy_files: false
+  allow_single_cov: false
+
+  # Optional explicit mtCN columns. Leave empty/null to use robust common aliases.
+  mtcn_mt_column:
+  mtcn_nuclear_column:
+  mtcn_mtcn_column:
+
+coordinate_liftover:
+  paths:
+    # Directory for all generated coordinate-liftover outputs.
+    output_dir: qc_analysis/01_coordinate_liftover/output
+
+    # Raw, unrotated canonical human chrM FASTA.
+    human_fasta: data/reference_tables/human_chrM.fa
+
+    # TSV with one row per sample. Minimal required columns: sample, species.
+    # Explicit columns are also supported: species_fasta, vcf, cov.
+    # Optional columns: species_chrom, rotate_anchor, target_sequence.
+    sample_ref_file: config/sample_ref_file.tsv
+
+    # Input directories used when sample_ref_file contains only sample/species.
+    species_fasta_dir: /home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM
+    species_fasta_extensions: .fa,.fasta,.fna
+    vcf_dir: /path/to/collected_variant_calling_results/collected_vcf
+    vcf_pattern: "{sample}*.vcf.gz"
+    cov_dir: /path/to/collected_variant_calling_results/collected_cov
+    cov_pattern: "{sample}*.tsv"
+
+    # Alternative to sample_ref_file: comma-separated sample names plus per-sample
+    # sections under coordinate_liftover.samples_by_name.
+    samples: ""
+    rotate_pos_file: ""
+
+  coordinates:
+    # Human canonical chrM length and restore offset used to convert rotated human
+    # coordinates back to canonical coordinates. For rCRS chrM, length is 16569.
+    human_len: 16569
+    human_restore_offset: 0
+    target_chrom: chrM
+
+    # Optional 1-based anchor for human rotation. If empty, the script infers an
+    # anchor by sequence matching to each species; if matching fails, position 1 is used.
+    human_rotate_anchor: ""
+
+  fasta:
+    # Optional sequence identifier to select from multi-record human FASTA.
+    human_target_sequence: ""
+    # Default target sequence name used in prepared FASTAs.
+    human_sequence_name: human_chrM
+    species_sequence_name_template: "{sample}_chrM"
+
+  alignment:
+    aligner: mafft
+    aligner_options: --auto --quiet
+    # Try loading the optional HPC conda environment before running the aligner.
+    use_conda_env: true
+    module_load: miniconda/24.11.3
+    conda_env: mafft_env
+    # If true and the external aligner is unavailable, write a deterministic simple
+    # ungapped pairwise alignment so small smoke tests can still exercise the module.
+    allow_simple_alignment_fallback: true
+
+  liftover:
+    check_ref_against_human_fasta: true
+    fail_on_ref_mismatch: false
+
+  # Optional explicit per-sample entries when paths.samples is set. Example:
+  # samples_by_name:
+  #   SAMPLE_NAME:
+  #     species: Pan_troglodytes
+  #     species_fasta: /path/to/species.fa
+  #     vcf: /path/to/sample.vcf.gz
+  #     cov: /path/to/sample.coverage.tsv
+  samples_by_name: {}
