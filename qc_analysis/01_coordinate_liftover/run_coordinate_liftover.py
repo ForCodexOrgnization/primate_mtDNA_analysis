@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import configparser
 import csv
+import gzip
 import shlex
 import shutil
 import subprocess
@@ -268,6 +269,12 @@ def require_existing_file(path: Path, label: str) -> Path:
     return path
 
 
+def require_gzipped_vcf(path: Path) -> Path:
+    if not path.name.endswith(".vcf.gz"):
+        raise ValueError(f"Input VCF must end with .vcf.gz: {path}")
+    return require_existing_file(path, "VCF")
+
+
 def find_species_fasta(species: str, cfg: configparser.ConfigParser) -> Path:
     fasta_dir = Path(cfg.get("paths", "species_fasta_dir", fallback="").strip())
     if not fasta_dir:
@@ -351,7 +358,7 @@ def sample_from_row(row: dict, cfg: configparser.ConfigParser) -> Sample:
     return Sample(
         sample_name,
         require_existing_file(species_fasta, "species FASTA"),
-        require_existing_file(vcf, "VCF"),
+        require_gzipped_vcf(vcf),
         require_existing_file(cov, "COV"),
         row.get("species_chrom") or "chrM",
         int(row["rotate_anchor"]) if row.get("rotate_anchor") else None,
@@ -412,7 +419,7 @@ def load_samples(cfg: configparser.ConfigParser, sample_filter: Optional[str]) -
 
 
 def lift_vcf(sample: Sample, pos_map: Dict[int, dict], out_vcf: Path, human_seq: str, target_chrom: str, check_ref: bool, fail_on_mismatch: bool, stats: SampleStats) -> None:
-    with sample.vcf.open() as inp, out_vcf.open("w") as out:
+    with gzip.open(sample.vcf, "rt") as inp, out_vcf.open("w") as out:
         for line in inp:
             if line.startswith("##"):
                 out.write(line)
