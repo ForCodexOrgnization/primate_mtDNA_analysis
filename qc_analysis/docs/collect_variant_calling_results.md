@@ -101,3 +101,14 @@ python qc_analysis/scripts/collect_variant_calling_results.py \
 
 Set `collect_variant_calling.copy_files: true` in `config/qc_preprocessing.yaml`
 or pass `--copy-files` to copy VCF and mtCN files instead of creating symlinks.
+
+## Run together with coordinate liftover
+
+Use the QC preprocessing wrapper to submit this step alone, coordinate liftover
+alone, or both steps sequentially through Slurm:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit collect_variant_calling_results config/qc_preprocessing.yaml
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit all config/qc_preprocessing.yaml
+```
