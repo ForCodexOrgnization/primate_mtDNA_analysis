@@ -22,6 +22,10 @@ A minimal `sample_ref_file` should include only these columns:
 sample	species
 ```
 
+Headerless two-column TSV files are also accepted, with column 1 interpreted as
+`sample` and column 2 interpreted as `species`. Extra columns in headerless files
+are ignored.
+
 With the minimal format, the workflow resolves files from configured input
 directories:
 
