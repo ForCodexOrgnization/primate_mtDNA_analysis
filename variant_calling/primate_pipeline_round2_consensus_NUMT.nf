@@ -43,6 +43,8 @@ params.round1_consensus_numt_suffix = params.round1_consensus_numt_suffix ?: '.c
 params.round1_numt_vcf_subdir = params.round1_numt_vcf_subdir ?: 'numt_decoy_variant_calling'
 params.round1_nuc_vcf_suffix = params.round1_nuc_vcf_suffix ?: '.numt_decoy.raw.vcf.gz'
 params.strict_numt_ref = params.strict_numt_ref ?: true
+params.enable_ref_alt_flip = params.enable_ref_alt_flip == null ? 1 : params.enable_ref_alt_flip
+params.fail_on_unresolvable_target_ref = params.fail_on_unresolvable_target_ref == null ? 0 : params.fail_on_unresolvable_target_ref
 
 log.info """
 ROUND2 CONSENSUS mtDNA PIPELINE
@@ -61,6 +63,8 @@ Round1 consensus NUMT suffix: ${params.round1_consensus_numt_suffix}
 Round1 NUMT VCF subdir: ${params.round1_numt_vcf_subdir}
 Round1 NUMT VCF suffix: ${params.round1_nuc_vcf_suffix}
 Strict NUMT ref:        ${params.strict_numt_ref}
+REF/ALT flip enabled:   ${params.enable_ref_alt_flip}
+Fail unresolvable target REF: ${params.fail_on_unresolvable_target_ref}
 mt shift:               ${params.mt_shift}
 interval padding:       ${params.mt_interval_padding}
 WDL ref files:          generated inside this NF
@@ -1310,6 +1314,8 @@ out_vcf = Path(f"{sample}.round2.original_coords.clean.final.split.vcf")
 unresolved_tsv = Path(f"{sample}.round2.original_coords.unresolved.tsv")
 skipped_overlap_tsv = Path(f"{sample}.round2.original_coords.skipped_overlap_consensus_sites.tsv")
 summary_tsv = Path(f"{sample}.round2.original_coords.liftback.summary.tsv")
+enable_ref_alt_flip = str("${params.enable_ref_alt_flip}").lower() not in ("0", "false", "no", "off", "")
+fail_on_unresolvable_target_ref = str("${params.fail_on_unresolvable_target_ref}").lower() in ("1", "true", "yes", "on")
 
 
 def open_text(path):
@@ -1397,7 +1403,7 @@ def flip_sample_fields(fmt, sample_value):
     old_ad = d.get("AD")
 
     # Arrays ordered as REF,ALT.
-    for key in ("AD", "F1R2", "F2R1"):
+    for key in ("AD", "FAD", "F1R2", "F2R1"):
         if key in d:
             d[key] = swap_two_value_array(d[key])
 
@@ -1423,6 +1429,30 @@ def flip_sample_fields(fmt, sample_value):
                     d["GT"] = "0/1" if sep == "/" else "0|1"
 
     return ":".join(d.get(k, ".") for k in keys)
+
+
+def flip_safe_info_fields(info, info_meta):
+    if info in (".", ""):
+        return info
+    out = []
+    for item in info.split(";"):
+        if "=" not in item:
+            out.append(item)
+            continue
+        key, value = item.split("=", 1)
+        meta = info_meta.get(key, {})
+        # Number=R INFO arrays are REF,ALT ordered and can be reversed safely for
+        # biallelic flips. Number=A values do not carry the old REF value, so leave
+        # them unchanged rather than manufacturing unsupported allele-specific data.
+        if meta.get("Number") == "R" and value not in (".", ""):
+            vals = value.split(",")
+            if len(vals) == 2:
+                value = ",".join([vals[1], vals[0]])
+        out.append(f"{key}={value}")
+    return ";".join(out) if out else "."
+
+def is_simple_biallelic_snv(ref, alt):
+    return len(ref) == 1 and len(alt) == 1 and ref in "ACGTN" and alt in "ACGTN"
 
 
 def parse_vcf_records(path):
@@ -1513,9 +1543,14 @@ with skipped_overlap_tsv.open("w") as sk:
 
 # Header lines.
 header = []
+info_meta = {}
 with open_text(round2_vcf) as handle:
     for line in handle:
         if line.startswith("##"):
+            if line.startswith("##INFO=<ID="):
+                m = re.match(r'##INFO=<ID=([^,>]+),Number=([^,>]+),Type=([^,>]+)', line.rstrip("\n"))
+                if m:
+                    info_meta[m.group(1)] = {"Number": m.group(2), "Type": m.group(3)}
             if line.startswith("##contig=<ID="):
                 # Replace contig length with the original reference length.
                 m = re.match(r"##contig=<ID=([^,>]+).*", line.rstrip("\\n"))
@@ -1528,6 +1563,7 @@ with open_text(round2_vcf) as handle:
             header.append('##INFO=<ID=CONS_REF,Number=1,Type=String,Description="REF allele of this record on the sample-specific consensus reference before lift-back">\\n')
             header.append('##INFO=<ID=CONS_ALT,Number=1,Type=String,Description="ALT allele of this record on the sample-specific consensus reference before lift-back">\\n')
             header.append('##INFO=<ID=LIFTBACK_STATUS,Number=1,Type=String,Description="How the consensus-coordinate record was converted to original-reference coordinates">\\n')
+            header.append('##INFO=<ID=LIFTOVER_ALLELE_STATUS,Number=1,Type=String,Description="REF/ALT relationship between source alleles and the target reference during coordinate lift-over">\\n')
             header.append(line)
             break
 
@@ -1557,7 +1593,7 @@ with out_vcf.open("w") as out, unresolved_tsv.open("w") as unres:
 
             if len(alts) != 1:
                 stats["unresolved_multiallelic"] += 1
-                unres.write(f"{sample}\\t{chrom}\\t{pos}\\t{cref}\\t{calt}\\tmultiallelic_round2_record\\t.\\t.\\n")
+                unres.write(f"{sample}\\t{chrom}\\t{pos}\\t{cref}\\t{calt}\\tFLIP_UNSUPPORTED_VARIANT_TYPE_multiallelic_round2_record\\t.\\t.\\n")
                 continue
             if pos < 1 or pos + len(cref) - 1 > cons_len:
                 stats["unresolved_out_of_consensus_range"] += 1
@@ -1591,27 +1627,28 @@ with out_vcf.open("w") as out, unresolved_tsv.open("w") as unres:
             flip = False
 
             if orig_ref_candidate == cref:
-                status = "REF_MATCH_SHIFT_ONLY"
+                status = "NO_FLIP"
                 new_ref = orig_ref_candidate
                 new_alt = allele_alt
                 flip = False
             elif orig_ref_candidate == allele_alt:
-                status = "REF_ALT_FLIP"
-                new_ref = orig_ref_candidate
-                new_alt = cref
-                flip = True
-            else:
-                # For pure insertion into the consensus, the original REF is often the anchor base,
-                # which can match the ALT allele after flipping.
-                if allele_alt == orig_ref_candidate:
+                if enable_ref_alt_flip and is_simple_biallelic_snv(cref, allele_alt):
                     status = "REF_ALT_FLIP"
                     new_ref = orig_ref_candidate
                     new_alt = cref
                     flip = True
                 else:
-                    stats["unresolved_original_ref_not_in_round2_alleles"] += 1
-                    unres.write(f"{sample}\\t{chrom}\\t{pos}\\t{cref}\\t{calt}\\toriginal_ref_not_in_round2_alleles\\t{start_orig}\\t{orig_ref_candidate}\\n")
+                    status = "FLIP_UNSUPPORTED_VARIANT_TYPE"
+                    stats["unresolved_flip_unsupported_variant_type"] += 1
+                    unres.write(f"{sample}\t{chrom}\t{pos}\t{cref}\t{calt}\t{status}\t{start_orig}\t{orig_ref_candidate}\n")
                     continue
+            else:
+                status = "TARGET_REF_NOT_SOURCE_REF_OR_ALT"
+                stats["unresolved_target_ref_not_source_ref_or_alt"] += 1
+                unres.write(f"{sample}\t{chrom}\t{pos}\t{cref}\t{calt}\t{status}\t{start_orig}\t{orig_ref_candidate}\n")
+                if fail_on_unresolvable_target_ref:
+                    raise SystemExit(f"ERROR: target REF is neither source REF nor ALT at {chrom}:{pos} lifted to {start_orig}; source={cref}>{allele_alt}, target={orig_ref_candidate}")
+                continue
 
             # Final REF sanity check against original FASTA.
             if orig_seq[new_pos-1:new_pos-1+len(new_ref)] != new_ref:
@@ -1623,7 +1660,9 @@ with out_vcf.open("w") as out, unresolved_tsv.open("w") as unres:
             f[1] = str(new_pos)
             f[3] = new_ref
             f[4] = new_alt
-            f[7] = add_info(info, [f"CONS_POS={pos}", f"CONS_REF={cref}", f"CONS_ALT={allele_alt}", f"LIFTBACK_STATUS={status}"])
+            if flip:
+                info = flip_safe_info_fields(info, info_meta)
+            f[7] = add_info(info, [f"CONS_POS={pos}", f"CONS_REF={cref}", f"CONS_ALT={allele_alt}", f"LIFTBACK_STATUS={status}", f"LIFTOVER_ALLELE_STATUS={status}"])
 
             if flip and len(f) >= 10:
                 f[9] = flip_sample_fields(f[8], f[9])
