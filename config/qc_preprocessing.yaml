@@ -3,7 +3,7 @@
 
 collect_variant_calling:
   # Root directory with one subdirectory per sample.
-  input_root: /path/to/variant_calling_root
+  input_root: /home/lt692/scratch_pi_njl27/lt692/primate_results_test/new
 
   # Destination for standardized collected inputs and reports.
   outdir: outputs/qc/collected_variant_calling_results
