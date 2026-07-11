@@ -7,6 +7,14 @@ SAMTOOLS_COMMAND=${SAMTOOLS_COMMAND:-samtools}
 CURL_COMMAND=${CURL_COMMAND:-curl}
 EFETCH_COMMAND=${EFETCH_COMMAND:-efetch}
 mkdir -p "$(dirname "$OUT")"
+if [[ -s "$OUT" ]]; then
+  echo "[SKIP] using existing chrM FASTA: $OUT" >&2
+  "$SAMTOOLS_COMMAND" faidx "$OUT"
+  len=$(awk 'NR==1{print $2}' "$OUT.fai")
+  [[ "$len" -ge "$MIN_LEN" && "$len" -le "$MAX_LEN" ]] || { echo -e "failure\tlength_outside_${MIN_LEN}_${MAX_LEN}\t$len" >&2; exit 1; }
+  echo -e "success\t$ACC\t$len"
+  exit 0
+fi
 if [[ -n "$LOCAL" && -f "$LOCAL" ]]; then
   "$SAMTOOLS_COMMAND" faidx "$LOCAL" || true
   if [[ -f "$LOCAL.fai" ]] && awk -v a="$ACC" '$1==a{found=1} END{exit !found}' "$LOCAL.fai"; then "$SAMTOOLS_COMMAND" faidx "$LOCAL" "$ACC" > "$OUT"; fi
