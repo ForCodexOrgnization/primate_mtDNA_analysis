@@ -285,9 +285,40 @@ use_raw_discovery_summary_without_review() {
 EOFMSG
 }
 
+ensure_species_reference_summary_for_materialization() {
+  if [[ -s "$SPECIES_REFERENCE_SUMMARY" ]]; then
+    return 0
+  fi
+
+  local raw_summary="${REFERENCE_DISCOVERY_OUTDIR}/species_reference_chrM_summary.tsv"
+  if [[ -s "$raw_summary" ]]; then
+    cat >&2 <<EOFMSG
+[preprocessing] WARNING: reviewed species reference summary is missing or empty:
+  ${SPECIES_REFERENCE_SUMMARY}
+[preprocessing] Falling back to the raw reference-discovery summary:
+  ${raw_summary}
+[preprocessing] This skips manual reference review. Review the generated materialization
+[preprocessing] manifest before using these references for final analyses.
+EOFMSG
+    use_raw_discovery_summary_without_review
+    return 0
+  fi
+
+  cat >&2 <<EOFMSG
+ERROR: missing or empty reviewed species reference summary: ${SPECIES_REFERENCE_SUMMARY}
+No raw reference-discovery summary was available at:
+  ${raw_summary}
+Run reference discovery first:
+  bash preprocessing/scripts/run_preprocessing.sh reference_discovery ${CONFIG}
+Then either review/copy the summary to ${SPECIES_REFERENCE_SUMMARY}, or run all_steps
+to explicitly allow the unreviewed discovery summary to flow into materialization.
+EOFMSG
+  exit 1
+}
+
 run_reference_materialization() {
   echo "[preprocessing] Building reference materialization manifest from: $SPECIES_REFERENCE_SUMMARY" >&2
-  require_nonempty_file "$SPECIES_REFERENCE_SUMMARY" "reviewed species reference summary"
+  ensure_species_reference_summary_for_materialization
   check_reference_materialization_environment
   "$RSCRIPT_COMMAND" preprocessing/scripts/build_reference_materialization_manifest.R \
     "$SPECIES_REFERENCE_SUMMARY" \
