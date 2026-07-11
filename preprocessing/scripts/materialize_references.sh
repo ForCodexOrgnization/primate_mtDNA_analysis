@@ -33,6 +33,9 @@ def run_with_output(cmd):
 
 def download_file(url, out_path):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+        print(f"[SKIP] using existing download: {out_path}", file=sys.stderr)
+        return
     tmp = out_path + ".download"
     if os.path.exists(tmp):
         os.remove(tmp)
@@ -146,6 +149,53 @@ def ensure_indexable_wg_fasta(wg_path, src_url):
     gunzip_to_fasta(gz_path, fasta_path)
     run([os.environ.get("SAMTOOLS_COMMAND", "samtools"), "faidx", fasta_path])
     return fasta_path
+
+
+def set_wg_from_ncbi_row(row, ncbi_row, reason):
+    """Point a manifest row's WG reference at an NCBI assembly row."""
+    asm = ncbi_row.get("assembly_accession", "")
+    ftp = ncbi_row.get("ftp_path", "")
+    if not asm or not ftp or ftp in ("na", "-"):
+        raise RuntimeError(f"{reason}_missing_ftp_or_accession")
+    row["final_wg_ref_species"] = row.get("final_chrM_species", "") or row.get("final_wg_ref_species", "")
+    row["final_wg_ref_source"] = ncbi_row.get("refseq_category", "") or ncbi_row.get("source_database", "") or "NCBI"
+    row["final_wg_assembly_accession"] = asm
+    row["final_wg_assembly_level"] = ncbi_row.get("assembly_level", row.get("final_wg_assembly_level", ""))
+    row["final_wg_ftp_path"] = ftp
+    row["wg_expected_output_fasta"] = f"references/wg/{asm}/{asm}.genome.fa"
+    append_manual_reason(row, reason)
+
+
+def align_wg_to_cross_species_chrM(row):
+    """Avoid same-species WG paired with cross-species chrM when a matched cross WG is known."""
+    status = reference_pairing_status(
+        row.get("target_species", ""),
+        row.get("final_wg_ref_species", ""),
+        row.get("final_chrM_species", ""),
+    )
+    if status != "same_species_wg_cross_species_chrM":
+        return False
+    chr_species = row.get("final_chrM_species", "")
+    if is_dnazoo_source(row.get("final_chrM_source", "")) or is_dnazoo_source(row.get("final_wg_ref_source", "")):
+        token = dna_zoo_token_for_row(row, chr_species or row.get("target_species", ""))
+        stable_id = f"DNAZoo_{token}"
+        row["final_wg_ref_species"] = chr_species or token
+        row["final_wg_ref_source"] = "DNA Zoo"
+        row["final_wg_assembly_accession"] = stable_id
+        row["final_wg_ftp_path"] = ""
+        row["wg_expected_output_fasta"] = f"references/wg/{stable_id}/{stable_id}.genome.fa"
+        append_manual_reason(row, "same_species_wg_cross_species_chrM_avoided_by_dnazoo_cross_species_wg")
+        return True
+    for accession in manifest_assembly_accessions(row):
+        try:
+            ncbi_row = find_ncbi_assembly_row(accession)
+        except Exception:
+            ncbi_row = None
+        if ncbi_row:
+            set_wg_from_ncbi_row(row, ncbi_row, "same_species_wg_cross_species_chrM_avoided_by_chrM_assembly_wg")
+            return True
+    append_manual_reason(row, "same_species_wg_cross_species_chrM_no_cross_species_wg_available")
+    return False
 
 
 def clean_path(path):
@@ -366,6 +416,7 @@ def materialize_wg_from_row(row):
 
 rows = list(csv.DictReader(open(man), delimiter="\t"))
 for r in rows:
+    align_wg_to_cross_species_chrM(r)
     asm = r.get("final_wg_assembly_accession", "")
     ftp = r.get("final_wg_ftp_path", "")
     target = r.get("target_species", "")
@@ -455,6 +506,10 @@ for r in rows:
                         r["chrM_source_assembly_accession"] = paired_asm
                         r["final_chrM_assembly_accession"] = paired_asm
                         r["chrM_expected_output_fasta"] = paired_chrout
+                        paired_species = r.get("final_chrM_species", "")
+                        if paired_species and normalize_species(paired_species) != normalize_species(target):
+                            set_wg_from_ncbi_row(r, paired_row, "cross_species_chrM_recovered_from_paired_assembly_so_wg_switched_to_same_cross_species")
+                            asm, wg, report = paired_asm, paired_wg, paired_report
                         ctx = r["chrM_reference_context"]
                         chrout = paired_chrout
                         estatus = "success"
@@ -477,6 +532,12 @@ for r in rows:
                         r["chrM_source_assembly_accession"] = src_asm
                         r["final_chrM_assembly_accession"] = src_asm
                         r["chrM_expected_output_fasta"] = src_chrout
+                        src_species = r.get("final_chrM_species", "")
+                        if src_species and normalize_species(src_species) != normalize_species(target):
+                            src_rowinfo = find_ncbi_assembly_row(src_asm)
+                            if src_rowinfo:
+                                set_wg_from_ncbi_row(r, src_rowinfo, "cross_species_chrM_recovered_from_manifest_assembly_so_wg_switched_to_same_cross_species")
+                                asm, wg, report = src_asm, src_wg, src_report
                         chrout = src_chrout
                         estatus = "success"
                         emsg = "; ".join(fallback_notes + [f"recovered_with_manifest_assembly:{src_asm}"])
