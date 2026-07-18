@@ -24,6 +24,7 @@ DNA = set("ACGTNacgtn")
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+from qc_analysis.lib.mt_anchor_utils import derive_reference_id, sequence_sha256
 from qc_analysis.lib.vcf_allele_flip import (
     ALT_REF_FLIP,
     FLIP_UNSUPPORTED_VARIANT_TYPE,
@@ -62,6 +63,8 @@ class Sample:
     rotate_anchor: Optional[int] = None
     target_sequence: Optional[str] = None
     species: Optional[str] = None
+    family: Optional[str] = None
+    reference_id: Optional[str] = None
     missing_files: List[str] = field(default_factory=list)
 
 
@@ -86,6 +89,14 @@ class SampleStats:
     unsupported_flip_count: int = 0
     final_ref_mismatch_count: int = 0
     anchor_source: str = ""
+    reference_id: str = ""
+    reference_sequence_sha256: str = ""
+    anchor_method: str = ""
+    species_anchor_position: str = ""
+    human_anchor_position: str = ""
+    anchor_alignment_column: str = ""
+    anchor_qc_status: str = ""
+    pairwise_anchor_fallback_used: bool = False
     notes: List[str] = field(default_factory=list)
 
 
@@ -527,6 +538,8 @@ def sample_from_row(row: dict, cfg: configparser.ConfigParser) -> Sample:
         int(row["rotate_anchor"]) if row.get("rotate_anchor") else None,
         row.get("target_sequence") or None,
         species,
+        row.get("family") or None,
+        row.get("reference_id") or None,
         missing_files,
     )
 
@@ -556,12 +569,54 @@ def load_anchor_positions(cfg: configparser.ConfigParser) -> Dict[str, dict]:
     anchors: Dict[str, dict] = {}
     with anchor_path.open(newline="") as handle:
         for row in csv.DictReader(handle, delimiter="\t"):
-            sample = row.get("sample", "").strip()
-            if not sample:
+            key = (row.get("reference_id") or row.get("sample") or "").strip()
+            if not key:
                 continue
-            anchors[sample] = row
+            if key in anchors and anchors[key].get("sequence_sha256") != row.get("sequence_sha256"):
+                row["_collision"] = "1"
+            anchors[key] = row
     return anchors
 
+
+def select_runtime_anchor(sample: Sample, species_seq: str, human_seq: str, cfg: configparser.ConfigParser, anchors: Dict[str, dict], human_anchor_cfg: str) -> tuple[int, int, str, str, str, bool, str]:
+    seq_hash = sequence_sha256(species_seq)
+    ref_id = sample.reference_id or derive_reference_id(sample.species or sample.name, sample.species_fasta, seq_hash)
+    allow_pairwise = cfg.getboolean("anchor", "allow_pairwise_anchor_fallback", fallback=True)
+    allow_pos1 = cfg.getboolean("anchor", "allow_anchor_position_one_fallback", fallback=False)
+    verify_hash = cfg.getboolean("anchor", "verify_sequence_sha256", fallback=False)
+    require_validated = cfg.getboolean("anchor", "require_validated_anchor", fallback=False)
+    if sample.rotate_anchor:
+        human_anchor = int(human_anchor_cfg) if human_anchor_cfg else 1
+        return sample.rotate_anchor, human_anchor, "SAMPLE_OVERRIDE", ref_id, seq_hash, False, "SAMPLE_OVERRIDE"
+    row = anchors.get(ref_id)
+    if not row:
+        status = "ANCHOR_NOT_FOUND"
+    elif row.get("_collision") == "1":
+        status = "ANCHOR_REFERENCE_ID_COLLISION"
+    elif verify_hash and row.get("sequence_sha256") and row.get("sequence_sha256") != seq_hash:
+        status = "ANCHOR_REFERENCE_HASH_MISMATCH"
+    elif row.get("sequence_length") and int(row["sequence_length"]) != len(species_seq):
+        status = "ANCHOR_REFERENCE_LENGTH_MISMATCH"
+    else:
+        species_anchor = int(row.get("anchor_original_position") or row.get("species_anchor_pos") or 0)
+        if not (1 <= species_anchor <= len(species_seq)):
+            status = "ANCHOR_POSITION_OUT_OF_RANGE"
+        elif row.get("anchor_qc_status", "PASS") not in {"PASS", "VALID", "OK"}:
+            status = row.get("anchor_qc_status") or "ANCHOR_NOT_FOUND"
+        elif row.get("anchor_method") not in {"GLOBAL_MSA_ANCHOR", "FAMILY_MSA_ANCHOR", ""}:
+            status = "ANCHOR_NOT_FOUND"
+        else:
+            human_anchor = int(human_anchor_cfg) if human_anchor_cfg else int(row.get("human_anchor_original_position") or row.get("human_anchor_pos") or 1)
+            return species_anchor, human_anchor, row.get("anchor_method") or "GLOBAL_MSA_ANCHOR", ref_id, seq_hash, False, row.get("anchor_qc_status", "PASS")
+    if allow_pairwise:
+        species_anchor, sf = infer_anchor_with_status(species_seq, human_seq)
+        human_anchor = int(human_anchor_cfg) if human_anchor_cfg else infer_anchor_with_status(human_seq, species_seq)[0]
+        if sf and not allow_pos1:
+            raise ValueError(status)
+        return species_anchor, human_anchor, "PAIRWISE_FALLBACK", ref_id, seq_hash, True, status
+    if require_validated or not allow_pos1:
+        raise ValueError(status)
+    return 1, int(human_anchor_cfg) if human_anchor_cfg else 1, "PAIRWISE_FALLBACK", ref_id, seq_hash, True, status
 
 def anchor_int(row: dict, key: str, sample: str) -> int:
     value = row.get(key, "")
@@ -593,6 +648,8 @@ def load_samples(cfg: configparser.ConfigParser, sample_filter: Optional[str]) -
                 "species_chrom": cfg.get(sec, "species_chrom", fallback="chrM"),
                 "rotate_anchor": cfg.get(sec, "rotate_anchor", fallback=""),
                 "target_sequence": cfg.get(sec, "target_sequence", fallback=""),
+                "family": cfg.get(sec, "family", fallback=""),
+                "reference_id": cfg.get(sec, "reference_id", fallback=""),
             }
             samples.append(sample_from_row(row, cfg))
     rotate_overrides = load_rotate_overrides(cfg)
@@ -826,31 +883,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         species_prepared = dirs["prepared_fastas"] / f"{sample.name}.prepared.fa"
         write_fasta(species_prepared, species_name, species_raw.seq)
 
-        anchor_source = ""
-        species_fallback = False
-        human_fallback = False
-        if sample.name in anchor_positions:
-            anchor_row = anchor_positions[sample.name]
-            species_anchor = anchor_int(anchor_row, "species_anchor_pos", sample.name)
-            human_anchor = int(human_anchor_cfg) if human_anchor_cfg else anchor_int(anchor_row, "human_anchor_pos", sample.name)
-            anchor_source = "global_anchor_file"
-        else:
-            if sample.rotate_anchor:
-                species_anchor = sample.rotate_anchor
-                anchor_source = "sample_override"
-            else:
-                species_anchor, species_fallback = infer_anchor_with_status(species_raw.seq, human_raw.seq)
-                anchor_source = "fallback_to_1" if species_fallback else "inferred_pairwise"
-            if human_anchor_cfg:
-                human_anchor = int(human_anchor_cfg)
-            else:
-                human_anchor, human_fallback = infer_anchor_with_status(human_raw.seq, species_raw.seq)
-                if human_fallback:
-                    anchor_source = "fallback_to_1"
-        if species_fallback:
-            print(f"WARNING: sample {sample.name}: species infer_anchor found no shared k-mer; falling back to anchor=1", file=sys.stderr)
-        if human_fallback:
-            print(f"WARNING: sample {sample.name}: human infer_anchor found no shared k-mer; falling back to anchor=1", file=sys.stderr)
+        try:
+            species_anchor, human_anchor, anchor_method, ref_id, ref_hash, pairwise_used, anchor_qc_status = select_runtime_anchor(sample, species_raw.seq, human_raw.seq, cfg, anchor_positions, human_anchor_cfg)
+        except ValueError as exc:
+            stats = SampleStats(sample.name, status="skipped_anchor_validation")
+            stats.anchor_qc_status = str(exc)
+            stats.notes.append(f"liftover_skipped={exc}")
+            write_report(stats, dirs["reports"] / f"{sample.name}.coordinate_liftover_qc.tsv")
+            summaries.append(stats)
+            continue
+        anchor_source = anchor_method
         species_rotated = dirs["rotated_fastas"] / f"{sample.name}.rotated.fa"
         human_rotated = dirs["rotated_fastas"] / f"{sample.name}.human.rotated.fa"
         write_fasta(species_rotated, species_name, rotate_sequence(species_raw.seq, species_anchor))
@@ -860,6 +902,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         run_alignment(species_rotated, human_rotated, aln, cfg)
         map_path = dirs["maps"] / f"{sample.name}.coordinate_map.tsv"
         pos_map, stats = build_map(sample, aln, map_path, species_anchor, human_anchor, human_len, restore_offset)
+        stats.reference_id = ref_id
+        stats.reference_sequence_sha256 = ref_hash
+        stats.anchor_method = anchor_method
+        stats.species_anchor_position = str(species_anchor)
+        stats.human_anchor_position = str(human_anchor)
+        if ref_id in anchor_positions:
+            stats.anchor_alignment_column = anchor_positions[ref_id].get("anchor_alignment_column", "")
+        stats.anchor_qc_status = anchor_qc_status
+        stats.pairwise_anchor_fallback_used = pairwise_used
         stats.notes.append(f"species_rotate_anchor={species_anchor}")
         stats.notes.append(f"human_rotate_anchor={human_anchor}")
         stats.anchor_source = anchor_source
@@ -888,6 +939,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         writer.writeheader()
         for s in summaries:
             writer.writerow({f: getattr(s, f) for f in fields})
+    cohort_path = dirs["reports"] / "coordinate_liftover_cohort_anchor_summary.tsv"
+    valid_refs = {s.reference_id for s in summaries if s.reference_id and s.anchor_method in {"GLOBAL_MSA_ANCHOR", "FAMILY_MSA_ANCHOR"}}
+    with cohort_path.open("w") as out:
+        rows = {
+            "samples_using_global_anchor": sum(1 for s in summaries if s.anchor_method == "GLOBAL_MSA_ANCHOR"),
+            "samples_using_family_anchor": sum(1 for s in summaries if s.anchor_method == "FAMILY_MSA_ANCHOR"),
+            "samples_using_pairwise_fallback": sum(1 for s in summaries if s.anchor_method == "PAIRWISE_FALLBACK"),
+            "samples_failed_anchor_validation": sum(1 for s in summaries if s.status == "skipped_anchor_validation"),
+            "unique_references_using_global_anchor": len({s.reference_id for s in summaries if s.anchor_method == "GLOBAL_MSA_ANCHOR" and s.reference_id}),
+            "unique_references_without_valid_anchor": len({s.reference_id for s in summaries if s.reference_id and s.reference_id not in valid_refs}),
+        }
+        for k, v in rows.items():
+            out.write(f"{k}\t{v}\n")
     return 0
 
 
