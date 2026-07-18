@@ -58,6 +58,10 @@ The primary sequence identity is:
 sha256(sequence.upper().encode()).hexdigest()
 ```
 
+## IUPAC ambiguity handling
+
+Discovery accepts `ACGTRYSWKMBDHVN` case-insensitively. It preserves the original normalized IUPAC reference for SHA256, length, and anchor-table identity, but replaces ambiguous bases with `N` only in the coarse/global MAFFT input. Exact shared k-mers are restricted to `ACGT` bases. The unique-reference manifest and anchor tables report `ambiguous_base_count`, `ambiguous_base_fraction`, and `ambiguous_base_types`. A reference remains eligible when ambiguity is away from the selected anchor; if the selected original base is ambiguous, discovery records `GLOBAL_ANCHOR_AMBIGUOUS_BASE` and uses normal configured fallback behavior.
+
 Whitespace is removed before hashing. If a manifest row supplies `reference_id`, that ID is used. Otherwise, the stable ID is derived from species, FASTA basename, and the first 12 characters of the sequence SHA256. This same helper is used by discovery and runtime liftover.
 
 ## Candidate windows and ranking

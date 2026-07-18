@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-DNA = set("ACGTNacgtn")
+from qc_analysis.lib.mt_anchor_utils import mask_ambiguity_for_alignment, validate_iupac_sequence
 FASTA_EXTENSIONS = (".fa", ".fasta", ".fna", ".fas")
 
 
@@ -69,14 +69,15 @@ def read_fasta(path: Path, target: Optional[str] = None) -> FastaRecord:
         if len(mt) != 1:
             raise ValueError(f"{path} contains multiple records; set a target sequence")
         rec = mt[0]
-    bad = set(rec.seq) - DNA
-    if bad:
-        raise ValueError(f"Unexpected FASTA bases in {path}: {''.join(sorted(bad))}")
+    try:
+        rec.seq = validate_iupac_sequence(rec.seq)
+    except ValueError as exc:
+        raise ValueError(f"{exc} in {path}") from None
     return rec
 
 
 def reverse_complement(seq: str) -> str:
-    return seq.translate(str.maketrans("ACGTNacgtn", "TGCANtgcan"))[::-1].upper()
+    return mask_ambiguity_for_alignment(seq).translate(str.maketrans("ACGTN", "TGCAN"))[::-1]
 
 
 def local_align(query: str, target: str, strand: str, match: int = 2, mismatch: int = -1, gap: int = -3) -> LocalHit:
@@ -207,7 +208,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     for start0 in range(0, len(human.seq) - args.window_length + 1, args.step_size):
         start = start0 + 1
         end = start0 + args.window_length
-        query = human.seq[start0:end]
+        query = mask_ambiguity_for_alignment(human.seq[start0:end])
         hits: Dict[str, Tuple[LocalHit, LocalHit]] = {}
         identities: List[float] = []
         lengths: List[int] = []
@@ -215,7 +216,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         gap_rates: List[float] = []
         found = 0
         for species, rec in species_records.items():
-            best, second = best_local_hits(query, rec.seq)
+            best, second = best_local_hits(query, mask_ambiguity_for_alignment(rec.seq))
             hits[species] = (best, second)
             found_here = best.identity >= args.min_identity and best.aligned_length >= args.window_length * args.min_aligned_fraction
             found += int(found_here)

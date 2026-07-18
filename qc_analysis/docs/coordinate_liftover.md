@@ -90,6 +90,12 @@ coordinate_liftover:
 
 Per-sample QC includes `reference_id`, `reference_sequence_sha256`, `anchor_method`, `species_anchor_position`, `human_anchor_position`, `anchor_alignment_column`, `anchor_qc_status`, and `pairwise_anchor_fallback_used`. The cohort summary reports counts of samples using global, family, or pairwise anchors and counts of failed anchor validation.
 
+## IUPAC ambiguity handling
+
+FASTA validation accepts the complete standard IUPAC DNA alphabet, case-insensitively: `ACGTRYSWKMBDHVN`. The normalized original sequence is retained for reference identity, length, SHA256 validation, and source-coordinate tracking; hashes are never calculated from an alignment-masked copy.
+
+Only temporary MAFFT inputs are masked: every ambiguous symbol (`RYSWKMBDHVN`) becomes `N`, preserving sequence length. Exact shared k-mer rotation anchors require `A`, `C`, `G`, or `T` at every position. Per-sample QC reports the number of ambiguous reference positions and variants overlapping them. Such variants are written to the unresolved report as `SOURCE_REFERENCE_AMBIGUOUS` (including the original FASTA base), while other records in the sample continue through liftover.
+
 ## Downstream annotation handoff
 
 Coordinate liftover remains coordinate-only. Its raw lifted VCF handoff files in

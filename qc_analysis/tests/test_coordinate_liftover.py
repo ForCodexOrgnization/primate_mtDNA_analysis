@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 
 from qc_analysis.scripts.run_coordinate_liftover import (
-    Sample, SampleStats, _validate_input_file, find_sample_file, lift_vcf, sample_from_row,
+    Sample, SampleStats, _validate_input_file, find_sample_file, lift_vcf, read_fasta, sample_from_row,
 )
+from qc_analysis.lib.mt_anchor_utils import IUPAC_DNA, mask_ambiguity_for_alignment, sequence_sha256
 
 
 def mapped(pos):
@@ -14,7 +15,7 @@ def mapped(pos):
 
 
 class CoordinateLiftoverTests(unittest.TestCase):
-    def run_one(self, body, human="G", pos_map=None, fail=False):
+    def run_one(self, body, human="G", pos_map=None, fail=False, source_reference_seq=""):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             vcf = d / "in.vcf.gz"
@@ -35,7 +36,7 @@ class CoordinateLiftoverTests(unittest.TestCase):
             stats = SampleStats("S")
             out = d / "out.vcf"
             unresolved = d / "unresolved.tsv"
-            lift_vcf(sample, pos_map or mapped(1), out, human, "chrM", True, fail, stats, unresolved, True)
+            lift_vcf(sample, pos_map or mapped(1), out, human, "chrM", True, fail, stats, unresolved, True, source_reference_seq)
             return out.read_text(), unresolved.read_text(), stats
 
     def records(self, text):
@@ -105,6 +106,37 @@ class CoordinateLiftoverTests(unittest.TestCase):
         self.assertEqual(stats.alt_ref_flip_count, 1)
         self.assertEqual(stats.unresolved_ref_mismatch_count, 1)
         self.assertEqual(stats.unsupported_flip_count, 0)
+
+    def test_ambiguous_source_reference_variant_is_unresolved_but_other_record_lifts(self):
+        body = "chrS\t1\t.\tY\tA\t.\tPASS\t.\tGT\t0/1\nchrS\t2\t.\tG\tA\t.\tPASS\t.\tGT\t0/1\n"
+        out, unresolved, stats = self.run_one(body, "GG", mapped(1) | mapped(2), source_reference_seq="YG")
+        self.assertEqual(len(self.records(out)), 1)
+        self.assertIn("SOURCE_REFERENCE_AMBIGUOUS", unresolved)
+        self.assertIn("\tY\tSOURCE_REFERENCE_AMBIGUOUS", unresolved)
+        self.assertEqual(stats.variants_overlapping_ambiguous_reference, 1)
+
+
+class IupacFastaTests(unittest.TestCase):
+    def test_all_standard_iupac_codes_are_accepted_and_masked(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "iupac.fa"; path.write_text(">chrM\nACGTRYSWKMBDHVN\n")
+            rec = read_fasta(path)
+        self.assertEqual(set(rec.seq), IUPAC_DNA)
+        self.assertEqual(mask_ambiguity_for_alignment(rec.seq), "ACGT" + "N" * 11)
+        self.assertEqual(len(mask_ambiguity_for_alignment(rec.seq)), len(rec.seq))
+
+    def test_y_and_r_are_accepted_and_hash_original_sequence(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "Cercopithecus_mitis.fa"; path.write_text(">chrM\nacgtyr\n")
+            rec = read_fasta(path)
+        self.assertEqual(rec.seq, "ACGTYR")
+        self.assertNotEqual(sequence_sha256(rec.seq), sequence_sha256(mask_ambiguity_for_alignment(rec.seq)))
+
+    def test_non_iupac_fasta_base_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "bad.fa"; path.write_text(">chrM\nACGTX\n")
+            with self.assertRaisesRegex(ValueError, "X"):
+                read_fasta(path)
 
 
 class CoordinateLiftoverInputTests(unittest.TestCase):

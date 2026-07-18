@@ -20,11 +20,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-DNA = set("ACGTNacgtn")
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from qc_analysis.lib.mt_anchor_utils import derive_reference_id, sequence_sha256
+from qc_analysis.lib.mt_anchor_utils import (
+    AMBIGUOUS_DNA, UNAMBIGUOUS_DNA, derive_reference_id,
+    mask_ambiguity_for_alignment, sequence_sha256, validate_iupac_sequence,
+)
 from qc_analysis.lib.vcf_allele_flip import (
     ALT_REF_FLIP,
     FLIP_UNSUPPORTED_VARIANT_TYPE,
@@ -88,6 +90,8 @@ class SampleStats:
     unresolved_ref_mismatch_count: int = 0
     unsupported_flip_count: int = 0
     final_ref_mismatch_count: int = 0
+    source_reference_ambiguous_positions: int = 0
+    variants_overlapping_ambiguous_reference: int = 0
     anchor_source: str = ""
     reference_id: str = ""
     reference_sequence_sha256: str = ""
@@ -222,9 +226,10 @@ def read_fasta(path: Path, target: Optional[str] = None) -> FastaRecord:
         if len(mt) != 1:
             raise ValueError(f"{path} contains multiple records; set target_sequence/human_target_sequence")
         rec = mt[0]
-    bad = set(rec.seq) - DNA
-    if bad:
-        raise ValueError(f"Unexpected FASTA bases in {path}: {''.join(sorted(bad))}")
+    try:
+        rec.seq = validate_iupac_sequence(rec.seq)
+    except ValueError as exc:
+        raise ValueError(f"{exc} in {path}") from None
     return rec
 
 
@@ -265,7 +270,7 @@ def infer_anchor_with_status(species_seq: str, human_seq: str) -> Tuple[int, boo
     for k in (31, 25, 21, 15):
         for start in range(0, max(1, len(upper_human) - k + 1), max(1, k // 3)):
             kmer = upper_human[start : start + k]
-            if len(kmer) == k and "N" not in kmer:
+            if len(kmer) == k and set(kmer) <= UNAMBIGUOUS_DNA:
                 hit = upper_species.find(kmer)
                 if hit >= 0:
                     return hit + 1, False
@@ -685,7 +690,7 @@ def open_vcf_text(path: Path):
     return gzip.open(path, "rt") if path.suffix == ".gz" else path.open()
 
 
-def write_unresolved(unresolved, sample_name: str, src_chrom: str, src_pos: str, src_ref: str, src_alt: str, target_chrom: str, target_pos: str, target_ref: str, reason: str) -> None:
+def write_unresolved(unresolved, sample_name: str, src_chrom: str, src_pos: str, src_ref: str, src_alt: str, target_chrom: str, target_pos: str, target_ref: str, reason: str, source_reference_base: str = "") -> None:
     unresolved.writerow({
         "sample": sample_name,
         "src_chrom": src_chrom,
@@ -695,6 +700,7 @@ def write_unresolved(unresolved, sample_name: str, src_chrom: str, src_pos: str,
         "target_chrom": target_chrom,
         "target_pos": target_pos,
         "target_ref": target_ref,
+        "source_reference_base": source_reference_base,
         "reason": reason,
     })
 
@@ -710,10 +716,11 @@ def lift_vcf(
     stats: SampleStats,
     unresolved_tsv: Path,
     enable_ref_alt_flip: bool = True,
+    source_reference_seq: str = "",
 ) -> None:
     info_numbers: Dict[str, str] = {}
     format_numbers: Dict[str, str] = {}
-    unresolved_fields = ["sample", "src_chrom", "src_pos", "src_ref", "src_alt", "target_chrom", "target_pos", "target_ref", "reason"]
+    unresolved_fields = ["sample", "src_chrom", "src_pos", "src_ref", "src_alt", "target_chrom", "target_pos", "target_ref", "source_reference_base", "reason"]
     with open_vcf_text(sample.vcf) as inp, out_vcf.open("w") as out, unresolved_tsv.open("w", newline="") as unresolved_handle:
         unresolved = csv.DictWriter(unresolved_handle, fieldnames=unresolved_fields, delimiter="\t")
         unresolved.writeheader()
@@ -760,6 +767,18 @@ def lift_vcf(
                 write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, target_chrom, "", "", "UNMAPPED")
                 continue
             pos = int(row["human_pos_canonical"])
+            ambiguous_bases = ""
+            if source_reference_seq:
+                ambiguous_bases = "".join(
+                    source_reference_seq[(src_pos_int - 1 + offset) % len(source_reference_seq)]
+                    for offset in range(len(ref))
+                    if source_reference_seq[(src_pos_int - 1 + offset) % len(source_reference_seq)] in AMBIGUOUS_DNA
+                )
+            if ambiguous_bases:
+                stats.vcf_variants_failed_liftover += 1
+                stats.variants_overlapping_ambiguous_reference += 1
+                write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, target_chrom, str(pos), "", "SOURCE_REFERENCE_AMBIGUOUS", ambiguous_bases)
+                continue
             if "," in alt:
                 stats.vcf_variants_failed_liftover += 1
                 write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, target_chrom, str(pos), "", "MULTIALLELIC")
@@ -913,8 +932,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         anchor_source = anchor_method
         species_rotated = dirs["rotated_fastas"] / f"{sample.name}.rotated.fa"
         human_rotated = dirs["rotated_fastas"] / f"{sample.name}.human.rotated.fa"
-        write_fasta(species_rotated, species_name, rotate_sequence(species_raw.seq, species_anchor))
-        write_fasta(human_rotated, human_name, rotate_sequence(human_raw.seq, human_anchor))
+        # Preserve the prepared FASTAs as supplied; only MAFFT inputs mask ambiguity.
+        write_fasta(species_rotated, species_name, rotate_sequence(mask_ambiguity_for_alignment(species_raw.seq), species_anchor))
+        write_fasta(human_rotated, human_name, rotate_sequence(mask_ambiguity_for_alignment(human_raw.seq), human_anchor))
 
         aln = dirs["alignments"] / f"{sample.name}.species_to_human.aligned.fa"
         run_alignment(species_rotated, human_rotated, aln, cfg)
@@ -929,6 +949,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             stats.anchor_alignment_column = anchor_positions[ref_id].get("anchor_alignment_column", "")
         stats.anchor_qc_status = anchor_qc_status
         stats.pairwise_anchor_fallback_used = pairwise_used
+        stats.source_reference_ambiguous_positions = sum(base in AMBIGUOUS_DNA for base in species_raw.seq)
         stats.notes.append(f"species_rotate_anchor={species_anchor}")
         stats.notes.append(f"human_rotate_anchor={human_anchor}")
         stats.anchor_source = anchor_source
@@ -945,6 +966,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             stats,
             dirs["reports"] / f"{sample.name}.coordinate_liftover_unresolved.tsv",
             enable_ref_alt_flip,
+            species_raw.seq,
         )
         lift_cov(sample, pos_map, dirs["cov_lifted"] / f"{sample.name}.lifted.cov", target_chrom, stats)
         write_report(stats, dirs["reports"] / f"{sample.name}.coordinate_liftover_qc.tsv")
