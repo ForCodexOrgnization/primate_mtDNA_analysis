@@ -88,6 +88,15 @@ coordinate_liftover:
 
   liftover:
     check_ref_against_human_fasta: true
+
+    # Automatically swap REF/ALT for simple split biallelic SNVs when
+    # the target human reference allele equals the source ALT.
+    enable_ref_alt_flip: true
+
+    # Stop the workflow when target REF is neither source REF nor source ALT.
+    fail_on_unresolvable_target_ref: false
+
+    # Deprecated compatibility option. Keep reading this if present.
     fail_on_ref_mismatch: false
 
   # Optional explicit per-sample entries when paths.samples is set. Example:

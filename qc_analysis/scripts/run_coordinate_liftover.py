@@ -21,6 +21,20 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 DNA = set("ACGTNacgtn")
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+from qc_analysis.lib.vcf_allele_flip import (
+    ALT_REF_FLIP,
+    FLIP_UNSUPPORTED_VARIANT_TYPE,
+    REF_MATCH,
+    classify_ref_alt_relationship,
+    flip_sample_fields,
+    format_info,
+    parse_info,
+    split_meta,
+    transform_info_fields,
+)
 OUTDIRS = [
     "prepared_fastas",
     "rotated_fastas",
@@ -67,6 +81,10 @@ class SampleStats:
     cov_positions_failed_liftover: int = 0
     ref_match_count: int = 0
     ref_mismatch_count: int = 0
+    alt_ref_flip_count: int = 0
+    unresolved_ref_mismatch_count: int = 0
+    unsupported_flip_count: int = 0
+    final_ref_mismatch_count: int = 0
     anchor_source: str = ""
     notes: List[str] = field(default_factory=list)
 
@@ -588,9 +606,55 @@ def load_samples(cfg: configparser.ConfigParser, sample_filter: Optional[str]) -
     return samples
 
 
-def lift_vcf(sample: Sample, pos_map: Dict[int, dict], out_vcf: Path, human_seq: str, target_chrom: str, check_ref: bool, fail_on_mismatch: bool, stats: SampleStats) -> None:
-    with gzip.open(sample.vcf, "rt") as inp, out_vcf.open("w") as out:
+def open_vcf_text(path: Path):
+    return gzip.open(path, "rt") if path.suffix == ".gz" else path.open()
+
+
+def write_unresolved(unresolved, sample_name: str, src_chrom: str, src_pos: str, src_ref: str, src_alt: str, target_chrom: str, target_pos: str, target_ref: str, reason: str) -> None:
+    unresolved.writerow({
+        "sample": sample_name,
+        "src_chrom": src_chrom,
+        "src_pos": src_pos,
+        "src_ref": src_ref,
+        "src_alt": src_alt,
+        "target_chrom": target_chrom,
+        "target_pos": target_pos,
+        "target_ref": target_ref,
+        "reason": reason,
+    })
+
+
+def lift_vcf(
+    sample: Sample,
+    pos_map: Dict[int, dict],
+    out_vcf: Path,
+    human_seq: str,
+    target_chrom: str,
+    check_ref: bool,
+    fail_on_unresolvable_target_ref: bool,
+    stats: SampleStats,
+    unresolved_tsv: Path,
+    enable_ref_alt_flip: bool = True,
+) -> None:
+    info_numbers: Dict[str, str] = {}
+    format_numbers: Dict[str, str] = {}
+    unresolved_fields = ["sample", "src_chrom", "src_pos", "src_ref", "src_alt", "target_chrom", "target_pos", "target_ref", "reason"]
+    with open_vcf_text(sample.vcf) as inp, out_vcf.open("w") as out, unresolved_tsv.open("w", newline="") as unresolved_handle:
+        unresolved = csv.DictWriter(unresolved_handle, fieldnames=unresolved_fields, delimiter="\t")
+        unresolved.writeheader()
         for line in inp:
+            if line.startswith("##INFO="):
+                meta = split_meta(line)
+                if "ID" in meta and "Number" in meta:
+                    info_numbers[meta["ID"]] = meta["Number"]
+                out.write(line)
+                continue
+            if line.startswith("##FORMAT="):
+                meta = split_meta(line)
+                if "ID" in meta and "Number" in meta:
+                    format_numbers[meta["ID"]] = meta["Number"]
+                out.write(line)
+                continue
             if line.startswith("##"):
                 out.write(line)
                 continue
@@ -599,29 +663,81 @@ def lift_vcf(sample: Sample, pos_map: Dict[int, dict], out_vcf: Path, human_seq:
                 out.write('##INFO=<ID=SRC_POS,Number=1,Type=Integer,Description="Original species position">\n')
                 out.write('##INFO=<ID=SRC_REF,Number=1,Type=String,Description="Original species REF allele">\n')
                 out.write('##INFO=<ID=SRC_ALT,Number=.,Type=String,Description="Original species ALT allele(s)">\n')
+                out.write('##INFO=<ID=LIFTOVER_ALLELE_STATUS,Number=1,Type=String,Description="REF/ALT relationship between the source record and target human reference">\n')
+                out.write('##INFO=<ID=LIFTOVER_DROPPED_INFO_FIELDS,Number=.,Type=String,Description="Allele-specific INFO fields removed because they could not be safely transformed after REF/ALT flip">\n')
                 out.write(line)
                 continue
             parts = line.rstrip("\n").split("\t")
             if len(parts) < 8:
+                stats.vcf_variants_failed_liftover += 1
+                write_unresolved(unresolved, sample.name, parts[0] if parts else "", parts[1] if len(parts) > 1 else "", parts[3] if len(parts) > 3 else "", parts[4] if len(parts) > 4 else "", "", "", "", "MALFORMED_RECORD")
                 continue
             src_chrom, src_pos, _id, ref, alt = parts[:5]
-            row = pos_map.get(int(src_pos))
+            try:
+                src_pos_int = int(src_pos)
+            except ValueError:
+                stats.vcf_variants_failed_liftover += 1
+                write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, "", "", "", "MALFORMED_RECORD")
+                continue
+            row = pos_map.get(src_pos_int)
             if not row or row["map_status"] != "mapped":
                 stats.vcf_variants_failed_liftover += 1
+                write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, target_chrom, "", "", "UNMAPPED")
                 continue
             pos = int(row["human_pos_canonical"])
-            human_ref = human_seq[pos - 1 : pos - 1 + len(ref)]
-            mismatch = check_ref and human_ref.upper() != ref.upper()
-            stats.ref_mismatch_count += int(mismatch)
-            stats.ref_match_count += int(not mismatch)
-            if mismatch and fail_on_mismatch:
+            if "," in alt:
                 stats.vcf_variants_failed_liftover += 1
+                write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, target_chrom, str(pos), "", "MULTIALLELIC")
                 continue
-            info = parts[7] if parts[7] not in {"", "."} else ""
-            src_info = f"SRC_CHROM={src_chrom};SRC_POS={src_pos};SRC_REF={ref};SRC_ALT={alt}"
+            if alt.startswith("<") or alt == "*" or ref == "*":
+                stats.vcf_variants_failed_liftover += 1
+                write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, target_chrom, str(pos), "", "SYMBOLIC_ALLELE")
+                continue
+            target_ref = human_seq[pos - 1 : pos - 1 + len(ref)].upper()
+            target_alt_len_ref = human_seq[pos - 1 : pos - 1 + len(alt)].upper()
+            if check_ref and target_ref.upper() != ref.upper() and target_alt_len_ref.upper() == alt.upper():
+                status = classify_ref_alt_relationship(ref, alt, target_alt_len_ref, enable_ref_alt_flip)
+                target_ref_for_report = target_alt_len_ref
+            else:
+                status = classify_ref_alt_relationship(ref, alt, target_ref, enable_ref_alt_flip) if check_ref else REF_MATCH
+                target_ref_for_report = target_ref
+            new_ref, new_alt = ref, alt
+            if status == REF_MATCH:
+                stats.ref_match_count += 1
+            else:
+                stats.ref_mismatch_count += 1
+                if status == ALT_REF_FLIP:
+                    stats.alt_ref_flip_count += 1
+                    new_ref, new_alt = alt, ref
+                    parts[3], parts[4] = new_ref, new_alt
+                    parts[7], _dropped = transform_info_fields(parts[7], info_numbers)
+                    if len(parts) > 8:
+                        keys = parts[8].split(":")
+                        for i in range(9, len(parts)):
+                            parts[i], cleared = flip_sample_fields(keys, parts[i], format_numbers)
+                elif status == FLIP_UNSUPPORTED_VARIANT_TYPE:
+                    stats.unsupported_flip_count += 1
+                    stats.vcf_variants_failed_liftover += 1
+                    write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, target_chrom, str(pos), target_ref_for_report, status)
+                    continue
+                else:
+                    stats.unresolved_ref_mismatch_count += 1
+                    stats.vcf_variants_failed_liftover += 1
+                    write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, target_chrom, str(pos), target_ref_for_report, status)
+                    if fail_on_unresolvable_target_ref:
+                        raise ValueError(f"Unresolvable target REF for {sample.name}:{src_chrom}:{src_pos} {ref}>{alt}; target {target_chrom}:{pos} has {target_ref}")
+                    continue
+            final_ref = human_seq[pos - 1 : pos - 1 + len(new_ref)].upper()
+            if check_ref and final_ref != new_ref.upper():
+                stats.final_ref_mismatch_count += 1
+                stats.vcf_variants_failed_liftover += 1
+                write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, target_chrom, str(pos), final_ref, "FINAL_REF_MISMATCH")
+                continue
+            info = parse_info(parts[7])
+            info.update({"SRC_CHROM": src_chrom, "SRC_POS": src_pos, "SRC_REF": ref, "SRC_ALT": alt, "LIFTOVER_ALLELE_STATUS": status})
             parts[0] = target_chrom
             parts[1] = str(pos)
-            parts[7] = src_info if not info else info + ";" + src_info
+            parts[7] = format_info(info)
             out.write("\t".join(parts) + "\n")
             stats.vcf_variants_lifted += 1
 
@@ -683,7 +799,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     restore_offset = cfg.getint("coordinates", "human_restore_offset", fallback=0)
     target_chrom = cfg.get("coordinates", "target_chrom", fallback="chrM")
     check_ref = cfg.getboolean("liftover", "check_ref_against_human_fasta", fallback=True)
-    fail_ref = cfg.getboolean("liftover", "fail_on_ref_mismatch", fallback=False)
+    enable_ref_alt_flip = cfg.getboolean("liftover", "enable_ref_alt_flip", fallback=True)
+    fail_ref = cfg.getboolean(
+        "liftover",
+        "fail_on_unresolvable_target_ref",
+        fallback=cfg.getboolean("liftover", "fail_on_ref_mismatch", fallback=False),
+    )
     human_anchor_cfg = cfg.get("coordinates", "human_rotate_anchor", fallback="").strip()
     anchor_positions = load_anchor_positions(cfg)
 
@@ -744,7 +865,18 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         stats.anchor_source = anchor_source
         stats.notes.append(f"anchor_source={anchor_source}")
 
-        lift_vcf(sample, pos_map, dirs["vcf_lifted_raw"] / f"{sample.name}.lifted.raw.vcf", human_raw.seq, target_chrom, check_ref, fail_ref, stats)
+        lift_vcf(
+            sample,
+            pos_map,
+            dirs["vcf_lifted_raw"] / f"{sample.name}.lifted.raw.vcf",
+            human_raw.seq,
+            target_chrom,
+            check_ref,
+            fail_ref,
+            stats,
+            dirs["reports"] / f"{sample.name}.coordinate_liftover_unresolved.tsv",
+            enable_ref_alt_flip,
+        )
         lift_cov(sample, pos_map, dirs["cov_lifted"] / f"{sample.name}.lifted.cov", target_chrom, stats)
         write_report(stats, dirs["reports"] / f"{sample.name}.coordinate_liftover_qc.tsv")
         summaries.append(stats)
