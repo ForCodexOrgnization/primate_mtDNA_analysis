@@ -1,9 +1,12 @@
+import configparser
 import gzip
 import tempfile
 import unittest
 from pathlib import Path
 
-from qc_analysis.scripts.run_coordinate_liftover import Sample, SampleStats, lift_vcf
+from qc_analysis.scripts.run_coordinate_liftover import (
+    Sample, SampleStats, _validate_input_file, find_sample_file, lift_vcf, sample_from_row,
+)
 
 
 def mapped(pos):
@@ -102,6 +105,113 @@ class CoordinateLiftoverTests(unittest.TestCase):
         self.assertEqual(stats.alt_ref_flip_count, 1)
         self.assertEqual(stats.unresolved_ref_mismatch_count, 1)
         self.assertEqual(stats.unsupported_flip_count, 0)
+
+
+class CoordinateLiftoverInputTests(unittest.TestCase):
+    sample = "ERS12091931"
+    vcf_stem = "ERS12091931.round2.original_coords.clean.final.split"
+    cov_name = "ERS12091931.merged.max_depth.per_base_coverage.tsv"
+
+    def config(self, directory: Path) -> configparser.ConfigParser:
+        cfg = configparser.ConfigParser()
+        cfg["paths"] = {
+            "vcf_dir": str(directory / "vcf"),
+            "vcf_pattern": "{sample}.round2.original_coords.clean.final.split.vcf.gz,{sample}.round2.original_coords.clean.final.split.vcf",
+            "cov_dir": str(directory / "cov"),
+            "cov_pattern": "{sample}.merged.max_depth.per_base_coverage.tsv",
+            "species_fasta_dir": str(directory / "fasta"),
+        }
+        return cfg
+
+    def touch(self, path: Path, text="x") -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def vcf(self, directory: Path, suffix: str) -> Path:
+        return self.touch(directory / "vcf" / f"{self.vcf_stem}{suffix}")
+
+    def test_only_compressed_vcf_is_selected(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td); cfg = self.config(directory)
+            compressed = self.vcf(directory, ".vcf.gz")
+            self.assertEqual(find_sample_file(self.sample, cfg, "vcf_dir", "vcf_pattern", "VCF"), compressed)
+
+    def test_only_uncompressed_vcf_is_selected_and_accepted(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td); cfg = self.config(directory)
+            uncompressed = self.vcf(directory, ".vcf")
+            self.assertEqual(find_sample_file(self.sample, cfg, "vcf_dir", "vcf_pattern", "VCF"), uncompressed)
+            self.assertEqual(_validate_input_file(uncompressed, "VCF"), [])
+
+    def test_compressed_vcf_has_priority_when_both_exist(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td); cfg = self.config(directory)
+            compressed = self.vcf(directory, ".vcf.gz")
+            self.vcf(directory, ".vcf")
+            self.assertEqual(find_sample_file(self.sample, cfg, "vcf_dir", "vcf_pattern", "VCF"), compressed)
+
+    def test_broken_compressed_symlink_uses_uncompressed_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td); cfg = self.config(directory)
+            broken = directory / "vcf" / f"{self.vcf_stem}.vcf.gz"
+            broken.parent.mkdir(parents=True)
+            broken.symlink_to(directory / "missing.vcf.gz")
+            uncompressed = self.vcf(directory, ".vcf")
+            selected = find_sample_file(self.sample, cfg, "vcf_dir", "vcf_pattern", "VCF")
+            self.assertEqual(selected, uncompressed)
+            self.assertEqual(_validate_input_file(selected, "VCF"), [])
+
+    def test_broken_compressed_symlink_without_fallback_is_diagnostic(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td); cfg = self.config(directory)
+            broken = directory / "vcf" / f"{self.vcf_stem}.vcf.gz"
+            broken.parent.mkdir(parents=True)
+            target = directory / "old" / "missing.vcf.gz"
+            broken.symlink_to(target)
+            with self.assertRaisesRegex(FileNotFoundError, r"BROKEN_SYMLINK: .*\.vcf\.gz -> .*missing\.vcf\.gz") as raised:
+                find_sample_file(self.sample, cfg, "vcf_dir", "vcf_pattern", "VCF")
+            self.assertIn(f"{self.vcf_stem}.vcf", str(raised.exception))
+
+    def test_valid_compressed_symlink_is_accepted(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td); cfg = self.config(directory)
+            target = self.touch(directory / "target.vcf.gz")
+            link = directory / "vcf" / f"{self.vcf_stem}.vcf.gz"
+            link.parent.mkdir(parents=True)
+            link.symlink_to(target)
+            self.assertEqual(find_sample_file(self.sample, cfg, "vcf_dir", "vcf_pattern", "VCF"), link)
+
+    def test_only_merged_coverage_is_selected(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td); cfg = self.config(directory)
+            merged = self.touch(directory / "cov" / self.cov_name)
+            self.touch(directory / "cov" / f"{self.sample}.round2.original_coords.per_base_coverage.tsv")
+            self.assertEqual(find_sample_file(self.sample, cfg, "cov_dir", "cov_pattern", "COV"), merged)
+
+    def test_original_coverage_is_not_a_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td); cfg = self.config(directory)
+            self.touch(directory / "cov" / f"{self.sample}.round2.original_coords.per_base_coverage.tsv")
+            with self.assertRaisesRegex(FileNotFoundError, "No merged coverage file found"):
+                find_sample_file(self.sample, cfg, "cov_dir", "cov_pattern", "COV")
+
+    def test_missing_vcf_reports_both_candidates(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td); cfg = self.config(directory)
+            with self.assertRaisesRegex(FileNotFoundError, r"\.vcf\.gz.*\.vcf"):
+                find_sample_file(self.sample, cfg, "vcf_dir", "vcf_pattern", "VCF")
+
+    def test_sample_loading_accepts_uncompressed_vcf_and_merged_coverage(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td); cfg = self.config(directory)
+            self.touch(directory / "fasta" / "species.fa", ">chrM\nACGT\n")
+            vcf = self.vcf(directory, ".vcf")
+            cov = self.touch(directory / "cov" / self.cov_name)
+            sample = sample_from_row({"sample": self.sample, "species": "species"}, cfg)
+            self.assertEqual(sample.vcf, vcf)
+            self.assertEqual(sample.cov, cov)
+            self.assertEqual(sample.missing_files, [])
 
 
 if __name__ == "__main__":
