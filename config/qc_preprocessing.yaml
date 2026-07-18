@@ -140,3 +140,88 @@ coordinate_liftover:
   #     vcf: /path/to/sample.vcf.gz
   #     cov: /path/to/sample.coverage.tsv
   samples_by_name: {}
+
+codon_match:
+  paths:
+    input_vcf_dir: results/qc/coordinate_liftover/vcf_lifted_raw
+    output_dir: results/qc/codon_match
+    reports_dir: results/qc/codon_match/reports
+    all_primate_position_codon_table: data/reference_tables/all_primate_position_codon_table.tsv
+    human_codon_table: data/reference_tables/human_codon_table.tsv
+  settings:
+    enabled: true
+    strict_phase_match: true
+    input_vcf_pattern: "{sample}.lifted.raw.vcf"
+    output_suffix: ".lifted.codon.vcf"
+    write_summary: true
+    pass_only: false
+trna_match:
+  paths:
+    input_vcf_dir: results/qc/codon_match/vcf_codon
+    fallback_input_vcf_dir: results/qc/coordinate_liftover/vcf_lifted_raw
+    output_dir: results/qc/trna_match
+    reports_dir: results/qc/trna_match/reports
+    coordinate_map_dir: results/qc/coordinate_liftover/maps
+    human_trna_index: data/reference_tables/human.trna_position_index.tsv.gz
+    species_trna_index_dir: results/qc/trna_match/trna_index
+    species_trna_index_template: "{species_trna_index_dir}/{sample}.trna_position_index.tsv.gz"
+    human_trnascan_out: data/reference_tables/human.trnascan.out
+    human_trnascan_ss: data/reference_tables/human.trnascan.ss
+    species_trnascan_out_template: results/qc/trna_match/trnascan/{sample}.trnascan.out
+    species_trnascan_ss_template: results/qc/trna_match/trnascan/{sample}.trnascan.ss
+    species_trnascan_prefix_template: results/qc/trna_match/trnascan/{sample}
+  settings:
+    enabled: true
+    input_vcf_pattern: "{sample}.lifted.codon.vcf"
+    fallback_input_vcf_pattern: "{sample}.lifted.raw.vcf"
+    output_suffix: ".lifted.codon.trna.vcf"
+    run_trnascan_if_missing: false
+    trnascan_bin: tRNAscan-SE
+    trnascan_mode: mito_mammal
+    trnascan_threads: 4
+    trnascan_extra_args: ""
+    species_trna_coord_space: original
+    species_trna_chrom_norm: none
+    human_trna_chrom_norm: none
+    species_vcf_chrom_norm: none
+    human_vcf_chrom_norm: none
+    species_trna_lookup_ignore_chrom: false
+    human_trna_lookup_ignore_chrom: false
+    run_trna_gene_qc: true
+    write_summary: true
+    pass_only: false
+rrna_match:
+  paths:
+    input_vcf_dir: results/qc/trna_match/vcf_trna
+    fallback_codon_vcf_dir: results/qc/codon_match/vcf_codon
+    fallback_raw_vcf_dir: results/qc/coordinate_liftover/vcf_lifted_raw
+    output_dir: results/qc/rrna_match
+    reports_dir: results/qc/rrna_match/reports
+    coordinate_map_dir: results/qc/coordinate_liftover/maps
+    human_rrna_table: data/reference_tables/human_rrna_regions.tsv
+    species_rrna_table: data/reference_tables/species_rrna_regions.tsv
+  settings:
+    enabled: true
+    input_vcf_pattern: "{sample}.lifted.codon.trna.vcf"
+    fallback_codon_vcf_pattern: "{sample}.lifted.codon.vcf"
+    fallback_raw_vcf_pattern: "{sample}.lifted.raw.vcf"
+    output_suffix: ".lifted.codon.trna.rrna.vcf"
+    require_same_rrna_gene: true
+    require_region_overlap: true
+    use_rrna_structure_table: false
+    human_rrna_structure_table: ""
+    species_rrna_structure_table: ""
+    write_summary: true
+    pass_only: false
+environment:
+  mafft:
+    module_load: miniconda/24.11.3
+    conda_env: mafft_env
+    executable: mafft
+  trnascan:
+    module_load: miniconda/24.11.3
+    conda_env: trnascan_env
+    executable: tRNAscan-SE
+  python:
+    executable: python
+    required_version: ">=3.9"

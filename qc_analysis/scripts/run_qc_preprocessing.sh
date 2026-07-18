@@ -11,14 +11,17 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  bash qc_analysis/scripts/run_qc_preprocessing.sh [--submit] <step> [config/qc_preprocessing.yaml]
+  bash qc_analysis/scripts/run_qc_preprocessing.sh [--submit] [--sample SAMPLE] <step> [config/qc_preprocessing.yaml]
   sbatch qc_analysis/scripts/run_qc_preprocessing.sh <step> [config/qc_preprocessing.yaml]
 
 Steps:
   collect_variant_calling_results  Collect and standardize variant-calling outputs only.
   discover_global_anchor           Discover reference-level global MSA anchors only.
   coordinate_liftover              Run coordinate liftover only.
-  all                              Run collect_variant_calling_results, discover_global_anchor, then coordinate_liftover.
+  codon_match                      Annotate lifted VCFs with codon matching.
+  trna_match                       Annotate VCFs with tRNA matching.
+  rrna_match                       Annotate VCFs with rRNA matching.
+  all                              Run all preprocessing and downstream annotation steps.
 
 Run modes:
   --submit                         Submit this wrapper to Slurm from a login/frontend node.
@@ -50,6 +53,12 @@ if [[ "${1:-}" == "--submit" ]]; then
   shift
 fi
 
+if [[ "${1:-}" == "--sample" ]]; then
+  SAMPLE="$2"
+  export SAMPLE
+  shift 2
+fi
+
 if [[ $# -lt 1 || $# -gt 2 ]]; then
   usage >&2
   exit 2
@@ -63,7 +72,7 @@ case "$STEP" in
     usage
     exit 0
     ;;
-  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|all)
+  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|codon_match|trna_match|rrna_match|all)
     ;;
   *)
     echo "ERROR: unknown step: $STEP" >&2
@@ -117,6 +126,9 @@ fi
 PYTHON="${PYTHON:-python3}"
 COLLECT_SCRIPT="qc_analysis/scripts/collect_variant_calling_results.py"
 LIFTOVER_SCRIPT="qc_analysis/scripts/run_coordinate_liftover.py"
+CODON_SCRIPT="qc_analysis/scripts/run_codon_match.py"
+TRNA_SCRIPT="qc_analysis/scripts/run_trna_match.py"
+RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
 GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
 
 run_collect_variant_calling_results() {
@@ -138,6 +150,14 @@ run_coordinate_liftover() {
   "${cmd[@]}"
 }
 
+run_annotation() {
+  local name="$1" script="$2"
+  echo "[qc_preprocessing] Running ${name} with config: ${CONFIG}" >&2
+  local cmd=("$PYTHON" "$script" --config "$CONFIG")
+  [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
+  "${cmd[@]}"
+}
+
 case "$STEP" in
   collect_variant_calling_results)
     run_collect_variant_calling_results
@@ -148,9 +168,15 @@ case "$STEP" in
   coordinate_liftover)
     run_coordinate_liftover
     ;;
+  codon_match) run_annotation codon_match "$CODON_SCRIPT" ;;
+  trna_match) run_annotation trna_match "$TRNA_SCRIPT" ;;
+  rrna_match) run_annotation rrna_match "$RRNA_SCRIPT" ;;
   all)
     run_collect_variant_calling_results
     run_discover_global_anchor
     run_coordinate_liftover
+    run_annotation codon_match "$CODON_SCRIPT"
+    run_annotation trna_match "$TRNA_SCRIPT"
+    run_annotation rrna_match "$RRNA_SCRIPT"
     ;;
 esac
