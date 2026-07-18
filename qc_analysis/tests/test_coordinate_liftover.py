@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 from qc_analysis.scripts.run_coordinate_liftover import (
-    Sample, SampleStats, _validate_input_file, find_sample_file, lift_vcf, read_fasta, sample_from_row,
+    Sample, SampleStats, _validate_input_file, build_map, find_sample_file, lift_vcf,
+    load_anchor_positions, read_fasta, restore_human_pos, sample_from_row,
 )
 from qc_analysis.lib.mt_anchor_utils import IUPAC_DNA, mask_ambiguity_for_alignment, sequence_sha256
 
@@ -114,6 +115,32 @@ class CoordinateLiftoverTests(unittest.TestCase):
         self.assertIn("SOURCE_REFERENCE_AMBIGUOUS", unresolved)
         self.assertIn("\tY\tSOURCE_REFERENCE_AMBIGUOUS", unresolved)
         self.assertEqual(stats.variants_overlapping_ambiguous_reference, 1)
+
+
+class HumanCoordinateRestorationTests(unittest.TestCase):
+    def test_rotated_human_boundary_positions_restore_from_anchor(self):
+        self.assertEqual(restore_human_pos(1, 3059, 16568, 0), 3059)
+        self.assertEqual(restore_human_pos(2, 3059, 16568, 0), 3060)
+        self.assertEqual(restore_human_pos(13511, 3059, 16568, 0), 1)
+
+    def test_rotated_human_alignment_matches_unrotated_canonical_map(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            sample = Sample("synthetic", Path("species.fa"), Path("in.vcf"), Path("in.cov"))
+            canonical = "ACGTACGT"
+            # The pairwise alignment is deliberately ungapped: this isolates
+            # coordinate restoration from alignment scoring.
+            unrotated = d / "unrotated.fa"
+            unrotated.write_text(f">species\n{canonical}\n>human\n{canonical}\n")
+            rotated = d / "rotated.fa"
+            rotated_human = canonical[2:] + canonical[:2]
+            rotated.write_text(f">species\n{rotated_human}\n>human\n{rotated_human}\n")
+            canonical_map, _ = build_map(sample, unrotated, d / "canonical.tsv", 1, 1, len(canonical), 0)
+            rotated_map, _ = build_map(sample, rotated, d / "rotated.tsv", 3, 3, len(canonical), 0)
+            self.assertEqual(
+                {pos: row["human_pos_canonical"] for pos, row in canonical_map.items()},
+                {pos: row["human_pos_canonical"] for pos, row in rotated_map.items()},
+            )
 
 
 class IupacFastaTests(unittest.TestCase):
@@ -250,6 +277,29 @@ if __name__ == "__main__":
     unittest.main()
 
 class AnchorValidationTests(unittest.TestCase):
+    def test_sequence_sha256_alias_reuses_validated_anchor(self):
+        from qc_analysis.scripts.run_coordinate_liftover import select_runtime_anchor, read_workflow_config
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td); cfgp = d / 'c.yaml'; af = d / 'anchors.tsv'
+            seq = 'ACGT'
+            sha = sequence_sha256(seq)
+            af.write_text(
+                'reference_id\tsequence_sha256\tsequence_length\tanchor_original_position\thuman_anchor_original_position\tanchor_method\tanchor_qc_status\n'
+                f'ref_primary\t{sha}\t4\t2\t3\tGLOBAL_MSA_ANCHOR\tPASS\n'
+            )
+            cfgp.write_text(
+                f'coordinate_liftover:\n  coordinates:\n    anchor_positions_file: {af}\n'
+                '  anchor:\n    require_validated_anchor: true\n    verify_sequence_sha256: true\n'
+                '    allow_pairwise_anchor_fallback: false\n    allow_anchor_position_one_fallback: false\n'
+            )
+            cfg = read_workflow_config(cfgp)
+            by_ref, by_sha = load_anchor_positions(cfg)
+            for ref_id, expected_method in [('ref_primary', 'REFERENCE_ID'), ('ref_alias', 'SEQUENCE_SHA256_ALIAS')]:
+                sample = Sample('S', Path('ref.fa'), Path('x.vcf.gz'), Path('x.cov'), reference_id=ref_id)
+                got = select_runtime_anchor(sample, seq, seq, cfg, by_ref, '', by_sha)
+                self.assertEqual(got[0:2], (2, 3))
+                self.assertEqual(got[-1], expected_method)
+
     def test_sequence_hash_mismatch_rejected(self):
         import tempfile, csv
         from qc_analysis.scripts.run_coordinate_liftover import select_runtime_anchor, read_workflow_config

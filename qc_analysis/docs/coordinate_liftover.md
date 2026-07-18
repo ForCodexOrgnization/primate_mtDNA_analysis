@@ -11,8 +11,8 @@ Core principle:
 Runtime anchor priority is:
 
 1. `SAMPLE_OVERRIDE` from a sample-specific `rotate_anchor`;
-2. validated `GLOBAL_MSA_ANCHOR` from `reference_anchor_positions.tsv`;
-3. validated `FAMILY_MSA_ANCHOR` from the same table when available;
+2. a validated `reference_id` match from `reference_anchor_positions.tsv`;
+3. a validated `sequence_sha256` alias match from the same table;
 4. `PAIRWISE_FALLBACK`, only when explicitly enabled;
 5. failure with manual-review QC.
 
@@ -21,6 +21,15 @@ The global anchor determines only how circular references are cut before pairwis
 ## Reference-level anchor reuse
 
 Anchors are keyed by stable `reference_id` and `sequence_sha256`, not by sample name. Samples sharing one identical mtDNA reference sequence reuse the same species anchor. Liftover still runs per sample because VCF and coverage files are sample-specific.
+
+The QC report records `anchor_lookup_method=REFERENCE_ID` for a direct match
+and `anchor_lookup_method=SEQUENCE_SHA256_ALIAS` when an alias reuses an
+identical-sequence anchor. Alias selection requires an exact SHA256 match,
+matching sequence length, an in-range anchor position, and `PASS` anchor QC.
+
+Human rotated coordinate 1 always restores to the selected
+`human_anchor_original_position`. The optional `human_restore_offset` is
+applied only after that anchor-based restoration for legacy adjustments.
 
 ## Sequence verification
 
