@@ -412,8 +412,8 @@ def require_existing_file(path: Path, label: str) -> Path:
 
 
 def require_gzipped_vcf(path: Path) -> Path:
-    if not path.name.endswith(".vcf.gz"):
-        raise ValueError(f"Input VCF must end with .vcf.gz: {path}")
+    if not (path.name.endswith(".vcf.gz") or path.name.endswith(".vcf")):
+        raise ValueError(f"Input VCF must end with .vcf.gz or .vcf: {path}")
     return require_existing_file(path, "VCF")
 
 
@@ -437,16 +437,34 @@ def find_sample_file(sample: str, cfg: configparser.ConfigParser, dir_key: str, 
     if not base_dir:
         raise ValueError(f"Configure paths.{dir_key} to resolve {label} files from sample names")
     patterns = [p.strip() for p in cfg.get("paths", pattern_key, fallback=f"{{sample}}*").split(",") if p.strip()]
-    matches: List[Path] = []
+    rendered_patterns: List[Path] = []
+    broken_links: List[Tuple[Path, Path]] = []
     for pattern in patterns:
-        matches.extend(sorted(base_dir.glob(pattern.format(sample=sample))))
-    unique = sorted({p for p in matches if p.is_file()})
-    if len(unique) == 1:
-        return unique[0]
-    if not unique:
-        rendered = ", ".join(str(base_dir / p.format(sample=sample)) for p in patterns)
-        raise FileNotFoundError(f"No {label} file found for sample {sample!r}; tried: {rendered}")
-    raise ValueError(f"Multiple {label} files found for sample {sample!r}: {unique}")
+        rendered_patterns.append(base_dir / pattern.format(sample=sample))
+        matches = sorted(base_dir.glob(pattern.format(sample=sample)))
+        valid_files = [path for path in matches if path.is_file()]
+        broken_links.extend(
+            (path, path.readlink())
+            for path in matches
+            if path.is_symlink() and not path.exists()
+        )
+        if len(valid_files) == 1:
+            return valid_files[0]
+        if len(valid_files) > 1:
+            raise ValueError(f"Multiple {label} files found for sample {sample!r}: {valid_files}")
+
+    if label == "COV":
+        message = f"No merged coverage file found for sample {sample!r}"
+    else:
+        message = f"No valid {label} file found for sample {sample!r}"
+    if broken_links:
+        diagnostics = "; ".join(
+            f"BROKEN_SYMLINK: {link} -> {target}" for link, target in broken_links
+        )
+        tried = ", ".join(str(path) for path in rendered_patterns)
+        raise FileNotFoundError(f"{message}; broken candidate: {diagnostics}; tried fallback: {tried}")
+    tried = ", ".join(str(path) for path in rendered_patterns)
+    raise FileNotFoundError(f"{message}; tried: {tried}")
 
 
 def _looks_like_header(fields: Sequence[str]) -> bool:
@@ -498,8 +516,8 @@ def _missing_path_note(label: str, path: Path) -> str:
 def _validate_input_file(path: Path, label: str) -> List[str]:
     if not path.exists() or not path.is_file():
         return [_missing_path_note(label, path)]
-    if label == "VCF" and not path.name.endswith(".vcf.gz"):
-        return [f"VCF invalid file extension (expected .vcf.gz): {path}"]
+    if label == "VCF" and not (path.name.endswith(".vcf.gz") or path.name.endswith(".vcf")):
+        return [f"VCF invalid file extension (expected .vcf.gz or .vcf): {path}"]
     return []
 
 

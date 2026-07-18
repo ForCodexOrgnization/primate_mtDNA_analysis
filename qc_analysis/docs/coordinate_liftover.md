@@ -44,6 +44,19 @@ sample  species
 
 It can also include optional columns: `family`, `reference_id`, `species_fasta`, `vcf`, `cov`, `species_chrom`, `target_sequence`, and `rotate_anchor`.
 
+## Input files
+
+The source VCF may be either an uncompressed `.vcf` file or a compressed
+`.vcf.gz` file. When both configured candidates are present, configured pattern
+order defines the selection priority; the standard configuration lists `.vcf.gz`
+first, so it is preferred. A broken `.vcf.gz` symlink is reported in diagnostics
+but does not prevent selection of a valid uncompressed `.vcf` fallback.
+
+Coordinate liftover requires exactly the collection-step merged maximum-depth
+coverage input named `{sample}.merged.max_depth.per_base_coverage.tsv`. The
+original `{sample}.round2.original_coords.per_base_coverage.tsv` file is not
+used directly.
+
 ## Running with preprocessing
 
 Run global anchor discovery before coordinate liftover with the preprocessing wrapper:

@@ -72,9 +72,9 @@ coordinate_liftover:
     species_fasta_dir: /home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM
     species_fasta_extensions: .fa,.fasta,.fna
     vcf_dir: results/qc/collected_variant_calling_results/collected_vcf
-    vcf_pattern: "{sample}*.vcf.gz"
+    vcf_pattern: "{sample}.round2.original_coords.clean.final.split.vcf.gz,{sample}.round2.original_coords.clean.final.split.vcf"
     cov_dir: results/qc/collected_variant_calling_results/collected_cov
-    cov_pattern: "{sample}*.tsv"
+    cov_pattern: "{sample}.merged.max_depth.per_base_coverage.tsv"
 
     # Alternative to sample_ref_file: comma-separated sample names plus per-sample
     # sections under coordinate_liftover.samples_by_name.
