@@ -12,7 +12,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from qc_analysis.lib.mt_anchor_utils import derive_reference_id, rotate_sequence, rotated_to_original, sequence_sha256
-from qc_analysis.scripts.run_coordinate_liftover import read_simple_yaml, read_fasta, write_fasta, iter_sample_ref_rows, find_species_fasta, infer_anchor_with_status
+from qc_analysis.scripts.run_coordinate_liftover import read_simple_yaml, read_workflow_config, read_fasta, write_fasta, iter_sample_ref_rows, find_species_fasta, infer_anchor_with_status
 
 BASES = set("ACGT")
 DNA = set("ACGTN")
@@ -116,22 +116,49 @@ def select_column(aln, human_name, window, cfg):
     if not best: raise RuntimeError('No eligible global anchor column')
     return best[1], best[2]
 
+def write_exclusions(out: Path, manifest_fields: List[str], refs: List[Ref], unresolved_rows: List[dict]) -> None:
+    with (out/'excluded_references.tsv').open('w',newline='') as h:
+        w=csv.DictWriter(h,fieldnames=manifest_fields,delimiter='\t',extrasaction='ignore')
+        w.writeheader()
+        for row in unresolved_rows:
+            w.writerow({
+                'reference_id':row.get('reference_id',''),
+                'species':row.get('species') or row.get('sample',''),
+                'species_fasta':row.get('species_fasta',''),
+                'sequence_sha256':'',
+                'sequence_length':'',
+                'n_fraction':'',
+                'sample_count':1 if row.get('sample') else '',
+                'sample_names':row.get('sample',''),
+                'discovery_eligible':False,
+                'exclusion_reason':row.get('exclusion_reason',''),
+                'coarse_anchor_position':'',
+                'coarse_anchor_method':'',
+                'coarse_anchor_kmer_length':'',
+                'coarse_anchor_status':'NOT_RUN',
+            })
+        for r in refs:
+            if not r.eligible:
+                w.writerow({'reference_id':r.reference_id,'species':r.species,'species_fasta':r.species_fasta,'sequence_sha256':r.sha,'sequence_length':len(r.seq),'n_fraction':r.seq.count('N')/len(r.seq) if r.seq else 1,'sample_count':len(r.samples),'sample_names':','.join(sorted(r.samples)),'discovery_eligible':r.eligible,'exclusion_reason':r.reason,'coarse_anchor_position':r.coarse_anchor,'coarse_anchor_method':r.coarse_method,'coarse_anchor_kmer_length':r.coarse_k,'coarse_anchor_status':r.coarse_status})
+
 def main(argv=None):
     ap=argparse.ArgumentParser(description=__doc__); ap.add_argument('--config',required=True); args=ap.parse_args(argv)
-    data=read_simple_yaml(Path(args.config)); cfg=cfg_section(data,'global_anchor_discovery')
+    config_path=Path(args.config)
+    data=read_simple_yaml(config_path); cfg=cfg_section(data,'global_anchor_discovery')
+    liftover_cfg=read_workflow_config(config_path)
     out=Path(cfg_get(cfg,'output_dir','results/qc/global_anchor')); out.mkdir(parents=True,exist_ok=True)
     human=read_fasta(Path(cfg_get(cfg,'human_fasta','data/reference_tables/human_chrM.fa')))
     human_sha=sequence_sha256(human.seq)
     minlen,maxlen=cfg_int(cfg,'min_reference_length',14000),cfg_int(cfg,'max_reference_length',19000); maxn=cfg_float(cfg,'max_n_fraction',0.02)
-    bysha: Dict[str,Ref]={}; exclusions=[]
+    bysha: Dict[str,Ref]={}; exclusions=[]; manifest_rows=0; resolved_sample_rows=0
     for row in iter_sample_ref_rows(Path(cfg_get(cfg,'sample_ref_file','config/sample_ref_file.tsv'))):
+        manifest_rows += 1
         sp=row.get('species') or row.get('sample') or ''
-        if not row.get('species_fasta'):
-            exclusions.append({**row,'exclusion_reason':'species_fasta missing; configure explicit species_fasta for global discovery'})
-            continue
-        fasta=Path(row.get('species_fasta'))
-        try: rec=read_fasta(fasta,row.get('target_sequence') or None); seq=rec.seq; sha=sequence_sha256(seq); rid=(row.get('reference_id') or derive_reference_id(sp,fasta,sha))
-        except Exception as e: exclusions.append({**row,'exclusion_reason':str(e)}); continue
+        try:
+            fasta=Path(row.get('species_fasta')) if row.get('species_fasta') else find_species_fasta(sp, liftover_cfg)
+            rec=read_fasta(fasta,row.get('target_sequence') or None); seq=rec.seq; sha=sequence_sha256(seq); rid=(row.get('reference_id') or derive_reference_id(sp,fasta,sha))
+            resolved_sample_rows += 1
+        except Exception as e: exclusions.append({**row,'species':sp,'species_fasta':row.get('species_fasta',''),'exclusion_reason':str(e)}); continue
         if sha not in bysha: bysha[sha]=Ref(rid,sp,row.get('family') or '',fasta,seq,sha,[row.get('sample','')],row.get('target_sequence') or None)
         else: bysha[sha].samples.append(row.get('sample',''))
     refs=sorted(bysha.values(), key=lambda r:(r.reference_id,r.sha))
@@ -148,6 +175,12 @@ def main(argv=None):
         if len(dup_ids[r.reference_id])>1: reasons.append('ANCHOR_REFERENCE_ID_COLLISION')
         r.reason=';'.join(reasons); r.eligible=not reasons
     manifest_fields='reference_id species species_fasta sequence_sha256 sequence_length n_fraction sample_count sample_names discovery_eligible exclusion_reason coarse_anchor_position coarse_anchor_method coarse_anchor_kmer_length coarse_anchor_status'.split()
+    unresolved_sample_rows=len(exclusions)
+    if not refs:
+        with (out/'unique_reference_manifest.tsv').open('w',newline='') as h:
+            csv.DictWriter(h,fieldnames=manifest_fields,delimiter='\t').writeheader()
+        write_exclusions(out, manifest_fields, refs, exclusions)
+        raise RuntimeError("No species references were resolved from sample_ref_file")
     human_anchor=1
     rotated=[]
     for r in refs:
@@ -159,9 +192,13 @@ def main(argv=None):
     with (out/'unique_reference_manifest.tsv').open('w',newline='') as h:
         w=csv.DictWriter(h,fieldnames=manifest_fields,delimiter='\t'); w.writeheader()
         for r in refs: w.writerow({'reference_id':r.reference_id,'species':r.species,'species_fasta':r.species_fasta,'sequence_sha256':r.sha,'sequence_length':len(r.seq),'n_fraction':r.seq.count('N')/len(r.seq) if r.seq else 1,'sample_count':len(r.samples),'sample_names':','.join(sorted(r.samples)),'discovery_eligible':r.eligible,'exclusion_reason':r.reason,'coarse_anchor_position':r.coarse_anchor,'coarse_anchor_method':r.coarse_method,'coarse_anchor_kmer_length':r.coarse_k,'coarse_anchor_status':r.coarse_status})
-    with (out/'excluded_references.tsv').open('w',newline='') as h:
-        w=csv.DictWriter(h,fieldnames=manifest_fields,delimiter='\t'); w.writeheader(); [w.writerow({'reference_id':r.reference_id,'species':r.species,'species_fasta':r.species_fasta,'sequence_sha256':r.sha,'sequence_length':len(r.seq),'n_fraction':r.seq.count('N')/len(r.seq) if r.seq else 1,'sample_count':len(r.samples),'sample_names':','.join(sorted(r.samples)),'discovery_eligible':r.eligible,'exclusion_reason':r.reason,'coarse_anchor_position':r.coarse_anchor,'coarse_anchor_method':r.coarse_method,'coarse_anchor_kmer_length':r.coarse_k,'coarse_anchor_status':r.coarse_status}) for r in refs if not r.eligible]
+    write_exclusions(out, manifest_fields, refs, exclusions)
+    if not rotated:
+        raise RuntimeError("No eligible species references remained after QC")
     infa=out/'unique_references.coarse_rotated.fa'; write_multi_fasta(infa, [('human_chrM',rotate_sequence(human.seq,human_anchor)), *rotated])
+    msa_records=[('human_chrM',rotate_sequence(human.seq,human_anchor)), *rotated]
+    if len(msa_records) < 2:
+        raise RuntimeError("Global anchor MSA requires human plus at least one species reference")
     alnfa=out/'all_references.aligned.fa'; run_msa(infa,alnfa,cfg); aln=read_alignment(alnfa)
     candidates=score_candidates(aln,'human_chrM',cfg); selected=next((r for r in candidates if r['candidate_status']=='PASS'), None)
     if not selected: raise RuntimeError('No PASS candidate windows')
@@ -185,6 +222,20 @@ def main(argv=None):
     with (out/'reference_anchor_failures.tsv').open('w',newline='') as h:
         w=csv.DictWriter(h,fieldnames=['reference_id','anchor_qc_status','anchor_qc_notes'],delimiter='\t'); w.writeheader(); w.writerows(fails)
     (out/'family_anchor_candidates.tsv').write_text('family\tstatus\tnote\nALL\tNOT_RUN\tglobal_anchor_available_or_no_family_fallback_needed\n')
-    (out/'global_anchor_summary.tsv').write_text(f'unique_references\t{len(refs)}\neligible_references\t{len(rotated)}\nselected_anchor_column\t{col}\n')
+    summary={
+        'manifest_rows':manifest_rows,
+        'resolved_sample_rows':resolved_sample_rows,
+        'unresolved_sample_rows':unresolved_sample_rows,
+        'unique_references':len(refs),
+        'eligible_references':len(rotated),
+        'coarse_anchor_failed_references':sum(1 for r in refs if r.coarse_status == 'FAILED'),
+        'msa_sequence_count':len(msa_records),
+        'reference_anchors_written':len(rows),
+        'reference_anchor_failures':len(fails),
+        'selected_anchor_column':col,
+    }
+    (out/'global_anchor_summary.tsv').write_text(''.join(f'{k}\t{v}\n' for k,v in summary.items()))
+    if not rows:
+        raise RuntimeError("Global anchor was selected, but it could not be projected onto any species reference")
     return 0
 if __name__=='__main__': sys.exit(main())
