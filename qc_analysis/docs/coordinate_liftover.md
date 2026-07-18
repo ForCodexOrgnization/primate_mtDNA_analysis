@@ -76,3 +76,9 @@ coordinate_liftover:
 ## QC reports
 
 Per-sample QC includes `reference_id`, `reference_sequence_sha256`, `anchor_method`, `species_anchor_position`, `human_anchor_position`, `anchor_alignment_column`, `anchor_qc_status`, and `pairwise_anchor_fallback_used`. The cohort summary reports counts of samples using global, family, or pairwise anchors and counts of failed anchor validation.
+
+## Downstream annotation handoff
+
+Coordinate liftover remains coordinate-only. Its raw lifted VCF handoff files in
+`results/qc/coordinate_liftover/vcf_lifted_raw` are consumed by `codon_match`,
+`tRNA_match`, and `rRNA_match`; maps in `maps` retain source-to-human relationships.
