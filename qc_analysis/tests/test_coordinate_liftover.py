@@ -106,3 +106,25 @@ class CoordinateLiftoverTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class AnchorValidationTests(unittest.TestCase):
+    def test_sequence_hash_mismatch_rejected(self):
+        import tempfile, csv
+        from qc_analysis.scripts.run_coordinate_liftover import select_runtime_anchor, read_workflow_config
+        with tempfile.TemporaryDirectory() as td:
+            d=Path(td); cfgp=d/'c.yaml'; af=d/'anchors.tsv'
+            af.write_text('reference_id\tsequence_sha256\tsequence_length\tanchor_original_position\thuman_anchor_original_position\tanchor_method\tanchor_qc_status\nref1\tbad\t4\t2\t1\tGLOBAL_MSA_ANCHOR\tPASS\n')
+            cfgp.write_text(f'coordinate_liftover:\n  coordinates:\n    anchor_positions_file: {af}\n  anchor:\n    require_validated_anchor: true\n    verify_sequence_sha256: true\n    allow_pairwise_anchor_fallback: false\n    allow_anchor_position_one_fallback: false\n')
+            cfg=read_workflow_config(cfgp); anchors={'ref1': next(csv.DictReader(af.open(), delimiter='\t'))}
+            s=Sample('S', Path('ref.fa'), Path('x.vcf.gz'), Path('x.cov'), reference_id='ref1')
+            with self.assertRaisesRegex(ValueError, 'ANCHOR_REFERENCE_HASH_MISMATCH'):
+                select_runtime_anchor(s, 'ACGT', 'ACGT', cfg, anchors, '')
+
+    def test_sample_override_backward_compatible(self):
+        from qc_analysis.scripts.run_coordinate_liftover import select_runtime_anchor, read_workflow_config
+        with tempfile.TemporaryDirectory() as td:
+            cfgp=Path(td)/'c.yaml'; cfgp.write_text('coordinate_liftover:\n  anchor:\n    require_validated_anchor: true\n    allow_pairwise_anchor_fallback: false\n')
+            cfg=read_workflow_config(cfgp)
+            s=Sample('S', Path('ref.fa'), Path('x.vcf.gz'), Path('x.cov'), rotate_anchor=3)
+            got=select_runtime_anchor(s, 'ACGT', 'ACGT', cfg, {}, '')
+            self.assertEqual(got[0],3); self.assertEqual(got[2], 'SAMPLE_OVERRIDE')
