@@ -16,8 +16,9 @@ Usage:
 
 Steps:
   collect_variant_calling_results  Collect and standardize variant-calling outputs only.
+  discover_global_anchor           Discover reference-level global MSA anchors only.
   coordinate_liftover              Run coordinate liftover only.
-  all                              Run collect_variant_calling_results, then coordinate_liftover.
+  all                              Run collect_variant_calling_results, discover_global_anchor, then coordinate_liftover.
 
 Run modes:
   --submit                         Submit this wrapper to Slurm from a login/frontend node.
@@ -36,6 +37,7 @@ Environment overrides:
 Examples:
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit all config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit collect_variant_calling_results config/qc_preprocessing.yaml
+  bash qc_analysis/scripts/run_qc_preprocessing.sh --submit discover_global_anchor config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
   SAMPLE=SAMPLE_NAME bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
   sbatch qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yaml
@@ -61,7 +63,7 @@ case "$STEP" in
     usage
     exit 0
     ;;
-  collect_variant_calling_results|coordinate_liftover|all)
+  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|all)
     ;;
   *)
     echo "ERROR: unknown step: $STEP" >&2
@@ -115,10 +117,16 @@ fi
 PYTHON="${PYTHON:-python3}"
 COLLECT_SCRIPT="qc_analysis/scripts/collect_variant_calling_results.py"
 LIFTOVER_SCRIPT="qc_analysis/scripts/run_coordinate_liftover.py"
+GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
 
 run_collect_variant_calling_results() {
   echo "[qc_preprocessing] Running collect_variant_calling_results with config: ${CONFIG}" >&2
   "$PYTHON" "$COLLECT_SCRIPT" --config "$CONFIG"
+}
+
+run_discover_global_anchor() {
+  echo "[qc_preprocessing] Running discover_global_anchor with config: ${CONFIG}" >&2
+  "$PYTHON" "$GLOBAL_ANCHOR_SCRIPT" --config "$CONFIG"
 }
 
 run_coordinate_liftover() {
@@ -134,11 +142,15 @@ case "$STEP" in
   collect_variant_calling_results)
     run_collect_variant_calling_results
     ;;
+  discover_global_anchor)
+    run_discover_global_anchor
+    ;;
   coordinate_liftover)
     run_coordinate_liftover
     ;;
   all)
     run_collect_variant_calling_results
+    run_discover_global_anchor
     run_coordinate_liftover
     ;;
 esac

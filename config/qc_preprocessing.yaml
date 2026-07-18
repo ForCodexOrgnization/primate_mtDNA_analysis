@@ -29,6 +29,30 @@ collect_variant_calling:
   mtcn_nuclear_column:
   mtcn_mtcn_column:
 
+global_anchor_discovery:
+  output_dir: results/qc/global_anchor
+  sample_ref_file: config/sample_ref_file.tsv
+  human_fasta: data/reference_tables/human_chrM.fa
+
+  min_reference_length: 14000
+  max_reference_length: 19000
+  max_n_fraction: 0.02
+
+  candidate_window_size: 31
+  min_anchor_column_occupancy: 0.98
+  min_window_mean_occupancy: 0.95
+  max_window_gap_fraction: 0.05
+  max_homopolymer_run: 6
+
+  aligner: mafft
+  aligner_options: "--auto --quiet"
+  threads: 8
+  allow_simple_alignment_fallback: false
+
+  enable_family_fallback: true
+  family_column: family
+  min_family_reference_count: 2
+
 coordinate_liftover:
   paths:
     # Directory for all generated coordinate-liftover outputs.
@@ -64,9 +88,18 @@ coordinate_liftover:
     human_restore_offset: 0
     target_chrom: chrM
 
-    # Optional 1-based anchor for human rotation. If empty, the script infers an
-    # anchor by sequence matching to each species; if matching fails, position 1 is used.
+    # Production reference-level anchor table produced by discover_global_liftover_anchor.py.
+    anchor_positions_file: results/qc/global_anchor/reference_anchor_positions.tsv
+
+    # Optional 1-based anchor for human rotation. Empty normally uses the
+    # human_anchor_original_position from the validated anchor table.
     human_rotate_anchor: ""
+
+  anchor:
+    require_validated_anchor: true
+    verify_sequence_sha256: true
+    allow_pairwise_anchor_fallback: false
+    allow_anchor_position_one_fallback: false
 
   fasta:
     # Optional sequence identifier to select from multi-record human FASTA.
