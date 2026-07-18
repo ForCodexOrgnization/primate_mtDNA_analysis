@@ -44,6 +44,20 @@ sample  species
 
 It can also include optional columns: `family`, `reference_id`, `species_fasta`, `vcf`, `cov`, `species_chrom`, `target_sequence`, and `rotate_anchor`.
 
+## Running with preprocessing
+
+Run global anchor discovery before coordinate liftover with the preprocessing wrapper:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh discover_global_anchor config/qc_preprocessing.yaml
+```
+
+For an end-to-end preprocessing run, `all` executes collection, global-anchor discovery, and coordinate liftover in order:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yaml
+```
+
 ## Configuration
 
 Use `coordinate_liftover.coordinates.anchor_positions_file` to point at the global discovery table. Recommended production anchor settings are:

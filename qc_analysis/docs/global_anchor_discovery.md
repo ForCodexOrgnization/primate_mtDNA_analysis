@@ -12,7 +12,25 @@ The old per-sample helper found the first exact k-mer shared with human and used
 
 ## Workflow
 
-Run before coordinate liftover:
+Run before coordinate liftover. The recommended entry point is the QC preprocessing wrapper:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh discover_global_anchor config/qc_preprocessing.yaml
+```
+
+To submit the same step to Slurm from a login node, use:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit discover_global_anchor config/qc_preprocessing.yaml
+```
+
+The `all` preprocessing step now includes global-anchor discovery between collection and coordinate liftover:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yaml
+```
+
+You can also call the discovery script directly when debugging:
 
 ```bash
 python3 qc_analysis/scripts/discover_global_liftover_anchor.py --config config/qc_preprocessing.yaml
