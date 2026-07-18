@@ -47,6 +47,9 @@ global_anchor_discovery:
   aligner: mafft
   aligner_options: "--auto --quiet"
   threads: 8
+  use_conda_env: true
+  module_load: miniconda/24.11.3
+  conda_env: mafft_env
   allow_simple_alignment_fallback: false
 
   enable_family_fallback: true
@@ -111,6 +114,7 @@ coordinate_liftover:
   alignment:
     aligner: mafft
     aligner_options: --auto --quiet
+    threads: 8
     # Try loading the optional HPC conda environment before running the aligner.
     use_conda_env: true
     module_load: miniconda/24.11.3

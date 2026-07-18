@@ -2,7 +2,7 @@
 """Discover reproducible reference-level mtDNA liftover anchors from a multi-reference MSA."""
 from __future__ import annotations
 
-import argparse, csv, math, shlex, shutil, subprocess, sys
+import argparse, csv, math, shlex, sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,11 +11,9 @@ from typing import Dict, Iterable, List, Optional
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from qc_analysis.lib.mt_anchor_utils import derive_reference_id, rotate_sequence, rotated_to_original, sequence_sha256
+from qc_analysis.lib.mt_anchor_utils import AMBIGUOUS_DNA, mask_ambiguity_for_alignment, derive_reference_id, rotate_sequence, rotated_to_original, sequence_sha256
+from qc_analysis.lib.alignment_runner import check_aligner_environment, run_aligner
 from qc_analysis.scripts.run_coordinate_liftover import read_simple_yaml, read_workflow_config, read_fasta, write_fasta, iter_sample_ref_rows, find_species_fasta, infer_anchor_with_status
-
-BASES = set("ACGT")
-DNA = set("ACGTN")
 
 @dataclass
 class Ref:
@@ -36,6 +34,15 @@ def cfg_bool(c,k,d):
     v=cfg_get(c,k,d)
     return v if isinstance(v,bool) else str(v).lower() in {"1","true","yes","on"}
 
+def ambiguity_qc(seq: str) -> dict:
+    types = sorted(set(seq) & AMBIGUOUS_DNA)
+    count = sum(base in AMBIGUOUS_DNA for base in seq)
+    return {
+        'ambiguous_base_count': count,
+        'ambiguous_base_fraction': count / len(seq) if seq else 0,
+        'ambiguous_base_types': ''.join(types),
+    }
+
 def read_alignment(path: Path) -> Dict[str,str]:
     recs={}; name=None; chunks=[]
     for line in path.read_text().splitlines():
@@ -49,10 +56,12 @@ def read_alignment(path: Path) -> Dict[str,str]:
 
 def run_msa(in_fa: Path, out_fa: Path, cfg: dict) -> None:
     aligner=str(cfg_get(cfg,'aligner','mafft')); opts=shlex.split(str(cfg_get(cfg,'aligner_options','--auto --quiet')))
-    if shutil.which(aligner):
-        with out_fa.open('w') as out: subprocess.run([aligner,*opts,str(in_fa)], check=True, stdout=out)
+    try:
+        run_aligner(aligner, opts, in_fa, out_fa, cfg_int(cfg, 'threads', 1), cfg_bool(cfg, 'use_conda_env', True), str(cfg_get(cfg, 'module_load', 'miniconda/24.11.3')), str(cfg_get(cfg, 'conda_env', 'mafft_env')))
         return
-    if cfg_bool(cfg,'allow_simple_alignment_fallback',False):
+    except RuntimeError:
+        if not cfg_bool(cfg,'allow_simple_alignment_fallback',False):
+            raise
         recs=[]; n=None; ch=[]
         for l in in_fa.read_text().splitlines():
             if l.startswith('>'):
@@ -63,7 +72,6 @@ def run_msa(in_fa: Path, out_fa: Path, cfg: dict) -> None:
         m=max(len(s) for _,s in recs)
         write_multi_fasta(out_fa, [(n, s.ljust(m, '-')) for n, s in recs])
         return
-    raise RuntimeError(f"Aligner {aligner!r} not found and fallback disabled")
 
 def write_multi_fasta(path: Path, records: Iterable[tuple[str,str]]) -> None:
     with path.open('w') as out:
@@ -127,7 +135,7 @@ def write_exclusions(out: Path, manifest_fields: List[str], refs: List[Ref], unr
                 'species_fasta':row.get('species_fasta',''),
                 'sequence_sha256':'',
                 'sequence_length':'',
-                'n_fraction':'',
+                'n_fraction':'', 'ambiguous_base_count':'', 'ambiguous_base_fraction':'', 'ambiguous_base_types':'',
                 'sample_count':1 if row.get('sample') else '',
                 'sample_names':row.get('sample',''),
                 'discovery_eligible':False,
@@ -139,12 +147,17 @@ def write_exclusions(out: Path, manifest_fields: List[str], refs: List[Ref], unr
             })
         for r in refs:
             if not r.eligible:
-                w.writerow({'reference_id':r.reference_id,'species':r.species,'species_fasta':r.species_fasta,'sequence_sha256':r.sha,'sequence_length':len(r.seq),'n_fraction':r.seq.count('N')/len(r.seq) if r.seq else 1,'sample_count':len(r.samples),'sample_names':','.join(sorted(r.samples)),'discovery_eligible':r.eligible,'exclusion_reason':r.reason,'coarse_anchor_position':r.coarse_anchor,'coarse_anchor_method':r.coarse_method,'coarse_anchor_kmer_length':r.coarse_k,'coarse_anchor_status':r.coarse_status})
+                w.writerow({'reference_id':r.reference_id,'species':r.species,'species_fasta':r.species_fasta,'sequence_sha256':r.sha,'sequence_length':len(r.seq),'n_fraction':r.seq.count('N')/len(r.seq) if r.seq else 1,**ambiguity_qc(r.seq),'sample_count':len(r.samples),'sample_names':','.join(sorted(r.samples)),'discovery_eligible':r.eligible,'exclusion_reason':r.reason,'coarse_anchor_position':r.coarse_anchor,'coarse_anchor_method':r.coarse_method,'coarse_anchor_kmer_length':r.coarse_k,'coarse_anchor_status':r.coarse_status})
 
 def main(argv=None):
-    ap=argparse.ArgumentParser(description=__doc__); ap.add_argument('--config',required=True); args=ap.parse_args(argv)
+    ap=argparse.ArgumentParser(description=__doc__); ap.add_argument('--config',required=True); ap.add_argument('--check-environment', action='store_true'); args=ap.parse_args(argv)
     config_path=Path(args.config)
     data=read_simple_yaml(config_path); cfg=cfg_section(data,'global_anchor_discovery')
+    if args.check_environment:
+        info = check_aligner_environment(str(cfg_get(cfg, 'aligner', 'mafft')), shlex.split(str(cfg_get(cfg, 'aligner_options', '--auto --quiet'))), cfg_int(cfg, 'threads', 1), cfg_bool(cfg, 'use_conda_env', True), str(cfg_get(cfg, 'module_load', 'miniconda/24.11.3')), str(cfg_get(cfg, 'conda_env', 'mafft_env')))
+        for key in ('aligner', 'resolved_executable', 'version', 'threads', 'environment', 'status'):
+            print(f'{key}={info[key]}')
+        return 0
     liftover_cfg=read_workflow_config(config_path)
     out=Path(cfg_get(cfg,'output_dir','results/qc/global_anchor')); out.mkdir(parents=True,exist_ok=True)
     human=read_fasta(Path(cfg_get(cfg,'human_fasta','data/reference_tables/human_chrM.fa')))
@@ -165,16 +178,15 @@ def main(argv=None):
     dup_ids=defaultdict(set)
     for r in refs: dup_ids[r.reference_id].add(r.sha)
     for r in refs:
-        bad=set(r.seq)-DNA; nfrac=r.seq.count('N')/len(r.seq) if r.seq else 1
+        nfrac=r.seq.count('N')/len(r.seq) if r.seq else 1
         reasons=[]
         if not r.seq: reasons.append('EMPTY_SEQUENCE')
         if len(r.seq)<minlen: reasons.append('REFERENCE_TOO_SHORT')
         if len(r.seq)>maxlen: reasons.append('REFERENCE_TOO_LONG')
         if nfrac>maxn: reasons.append('HIGH_N_FRACTION')
-        if bad: reasons.append('INVALID_BASES')
         if len(dup_ids[r.reference_id])>1: reasons.append('ANCHOR_REFERENCE_ID_COLLISION')
         r.reason=';'.join(reasons); r.eligible=not reasons
-    manifest_fields='reference_id species species_fasta sequence_sha256 sequence_length n_fraction sample_count sample_names discovery_eligible exclusion_reason coarse_anchor_position coarse_anchor_method coarse_anchor_kmer_length coarse_anchor_status'.split()
+    manifest_fields='reference_id species species_fasta sequence_sha256 sequence_length n_fraction ambiguous_base_count ambiguous_base_fraction ambiguous_base_types sample_count sample_names discovery_eligible exclusion_reason coarse_anchor_position coarse_anchor_method coarse_anchor_kmer_length coarse_anchor_status'.split()
     unresolved_sample_rows=len(exclusions)
     if not refs:
         with (out/'unique_reference_manifest.tsv').open('w',newline='') as h:
@@ -188,15 +200,15 @@ def main(argv=None):
             if any(s.strip() for s in r.samples): pass
             r.coarse_anchor, fb = infer_anchor_with_status(r.seq,human.seq); r.coarse_method='PAIRWISE_SHARED_KMER'; r.coarse_k='31,25,21,15'; r.coarse_status='FAILED' if fb else 'PASS'
             if fb: r.eligible=False; r.reason=(r.reason+';' if r.reason else '')+'COARSE_ANCHOR_FAILED'
-            else: rotated.append((r.reference_id, rotate_sequence(r.seq,r.coarse_anchor)))
+            else: rotated.append((r.reference_id, rotate_sequence(mask_ambiguity_for_alignment(r.seq),r.coarse_anchor)))
     with (out/'unique_reference_manifest.tsv').open('w',newline='') as h:
         w=csv.DictWriter(h,fieldnames=manifest_fields,delimiter='\t'); w.writeheader()
-        for r in refs: w.writerow({'reference_id':r.reference_id,'species':r.species,'species_fasta':r.species_fasta,'sequence_sha256':r.sha,'sequence_length':len(r.seq),'n_fraction':r.seq.count('N')/len(r.seq) if r.seq else 1,'sample_count':len(r.samples),'sample_names':','.join(sorted(r.samples)),'discovery_eligible':r.eligible,'exclusion_reason':r.reason,'coarse_anchor_position':r.coarse_anchor,'coarse_anchor_method':r.coarse_method,'coarse_anchor_kmer_length':r.coarse_k,'coarse_anchor_status':r.coarse_status})
+        for r in refs: w.writerow({'reference_id':r.reference_id,'species':r.species,'species_fasta':r.species_fasta,'sequence_sha256':r.sha,'sequence_length':len(r.seq),'n_fraction':r.seq.count('N')/len(r.seq) if r.seq else 1,**ambiguity_qc(r.seq),'sample_count':len(r.samples),'sample_names':','.join(sorted(r.samples)),'discovery_eligible':r.eligible,'exclusion_reason':r.reason,'coarse_anchor_position':r.coarse_anchor,'coarse_anchor_method':r.coarse_method,'coarse_anchor_kmer_length':r.coarse_k,'coarse_anchor_status':r.coarse_status})
     write_exclusions(out, manifest_fields, refs, exclusions)
     if not rotated:
         raise RuntimeError("No eligible species references remained after QC")
-    infa=out/'unique_references.coarse_rotated.fa'; write_multi_fasta(infa, [('human_chrM',rotate_sequence(human.seq,human_anchor)), *rotated])
-    msa_records=[('human_chrM',rotate_sequence(human.seq,human_anchor)), *rotated]
+    infa=out/'unique_references.coarse_rotated.fa'; write_multi_fasta(infa, [('human_chrM',rotate_sequence(mask_ambiguity_for_alignment(human.seq),human_anchor)), *rotated])
+    msa_records=[('human_chrM',rotate_sequence(mask_ambiguity_for_alignment(human.seq),human_anchor)), *rotated]
     if len(msa_records) < 2:
         raise RuntimeError("Global anchor MSA requires human plus at least one species reference")
     alnfa=out/'all_references.aligned.fa'; run_msa(infa,alnfa,cfg); aln=read_alignment(alnfa)
@@ -208,15 +220,16 @@ def main(argv=None):
         w=csv.DictWriter(h,fieldnames=cfields,delimiter='\t',extrasaction='ignore'); w.writeheader(); w.writerows(candidates)
     with (out/'global_anchor_selection.tsv').open('w',newline='') as h:
         w=csv.DictWriter(h,fieldnames=cfields+['selection_criteria'],delimiter='\t'); w.writeheader(); w.writerow({**selected,'selection_criteria':'deterministic occupancy/conservation/gap/entropy/edge/column ranking'})
-    pos_fields='reference_id species species_fasta sequence_sha256 sequence_length anchor_original_position anchor_alignment_column anchor_base human_anchor_original_position anchor_method anchor_window_start anchor_window_end anchor_column_occupancy anchor_window_mean_occupancy anchor_window_gap_fraction anchor_window_conservation anchor_qc_status anchor_qc_notes'.split()
+    pos_fields='reference_id species species_fasta sequence_sha256 sequence_length ambiguous_base_count ambiguous_base_fraction ambiguous_base_types anchor_original_position anchor_alignment_column anchor_base human_anchor_original_position anchor_method anchor_window_start anchor_window_end anchor_column_occupancy anchor_window_mean_occupancy anchor_window_gap_fraction anchor_window_conservation anchor_qc_status anchor_qc_notes'.split()
     rows=[]; fails=[]; human_rot=sum(1 for b in aln['human_chrM'][:col] if b!='-'); human_orig=rotated_to_original(human_rot,human_anchor,len(human.seq))
     for r in refs:
         if not r.eligible or r.reference_id not in aln:
             fails.append({'reference_id':r.reference_id,'anchor_qc_status':'DISCOVERY_EXCLUDED','anchor_qc_notes':r.reason}); continue
         base=aln[r.reference_id][col-1]
-        if base=='-' or base=='N': fails.append({'reference_id':r.reference_id,'anchor_qc_status':'GLOBAL_ANCHOR_UNAVAILABLE','anchor_qc_notes':'gap_or_N_at_selected_column'}); continue
-        rot=sum(1 for b in aln[r.reference_id][:col] if b!='-'); orig=rotated_to_original(rot,r.coarse_anchor,len(r.seq))
-        rows.append({'reference_id':r.reference_id,'species':r.species,'species_fasta':r.species_fasta,'sequence_sha256':r.sha,'sequence_length':len(r.seq),'anchor_original_position':orig,'anchor_alignment_column':col,'anchor_base':base,'human_anchor_original_position':human_orig,'anchor_method':'GLOBAL_MSA_ANCHOR','anchor_window_start':selected['alignment_start'],'anchor_window_end':selected['alignment_end'],'anchor_column_occupancy':cm['occupancy'],'anchor_window_mean_occupancy':selected['mean_occupancy'],'anchor_window_gap_fraction':selected['total_gap_fraction'],'anchor_window_conservation':selected['mean_major_allele_fraction'],'anchor_qc_status':'PASS','anchor_qc_notes':''})
+        if base=='-': fails.append({'reference_id':r.reference_id,'anchor_qc_status':'GLOBAL_ANCHOR_UNAVAILABLE','anchor_qc_notes':'gap_at_selected_column'}); continue
+        rot=sum(1 for b in aln[r.reference_id][:col] if b!='-'); orig=rotated_to_original(rot,r.coarse_anchor,len(r.seq)); original_base=r.seq[orig-1]
+        if original_base in AMBIGUOUS_DNA: fails.append({'reference_id':r.reference_id,'anchor_qc_status':'GLOBAL_ANCHOR_AMBIGUOUS_BASE','anchor_qc_notes':f'ambiguous_base={original_base}'}); continue
+        rows.append({'reference_id':r.reference_id,'species':r.species,'species_fasta':r.species_fasta,'sequence_sha256':r.sha,'sequence_length':len(r.seq),**ambiguity_qc(r.seq),'anchor_original_position':orig,'anchor_alignment_column':col,'anchor_base':original_base,'human_anchor_original_position':human_orig,'anchor_method':'GLOBAL_MSA_ANCHOR','anchor_window_start':selected['alignment_start'],'anchor_window_end':selected['alignment_end'],'anchor_column_occupancy':cm['occupancy'],'anchor_window_mean_occupancy':selected['mean_occupancy'],'anchor_window_gap_fraction':selected['total_gap_fraction'],'anchor_window_conservation':selected['mean_major_allele_fraction'],'anchor_qc_status':'PASS','anchor_qc_notes':''})
     for fn in ['reference_anchor_positions.tsv','family_anchor_positions.tsv']:
         with (out/fn).open('w',newline='') as h: w=csv.DictWriter(h,fieldnames=pos_fields,delimiter='\t'); w.writeheader(); w.writerows(rows)
     with (out/'reference_anchor_failures.tsv').open('w',newline='') as h:

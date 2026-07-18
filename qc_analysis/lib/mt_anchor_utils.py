@@ -6,15 +6,32 @@ import re
 from pathlib import Path
 from typing import Optional
 
-DNA = set("ACGTNacgtn")
+IUPAC_DNA = set("ACGTRYSWKMBDHVN")
+UNAMBIGUOUS_DNA = set("ACGT")
+AMBIGUOUS_DNA = IUPAC_DNA - UNAMBIGUOUS_DNA
 
 
 def normalize_sequence(seq: str) -> str:
     return "".join(str(seq).split()).upper()
 
 
+def validate_iupac_sequence(seq: str) -> str:
+    """Normalize and validate a sequence against the standard IUPAC alphabet."""
+    seq = normalize_sequence(seq)
+    bad = set(seq) - IUPAC_DNA
+    if bad:
+        raise ValueError(f"Unexpected FASTA bases: {''.join(sorted(bad))}")
+    return seq
+
+
+def mask_ambiguity_for_alignment(seq: str) -> str:
+    """Replace IUPAC ambiguity codes with N without changing sequence length."""
+    seq = validate_iupac_sequence(seq)
+    return "".join(base if base in UNAMBIGUOUS_DNA else "N" for base in seq)
+
+
 def sequence_sha256(seq: str) -> str:
-    return hashlib.sha256(normalize_sequence(seq).encode()).hexdigest()
+    return hashlib.sha256(validate_iupac_sequence(seq).encode()).hexdigest()
 
 
 def safe_token(value: object) -> str:
