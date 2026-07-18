@@ -12,6 +12,7 @@ import argparse
 import configparser
 import csv
 import gzip
+import shutil
 import shlex
 import sys
 from dataclasses import dataclass, field
@@ -46,6 +47,10 @@ OUTDIRS = [
     "cov_lifted",
     "reports",
 ]
+
+# These are derived exclusively by this workflow and are cleared before each
+# run so stale maps or lifted records cannot be consumed as current results.
+FRESH_RUN_OUTDIRS = set(OUTDIRS)
 
 
 @dataclass
@@ -99,6 +104,7 @@ class SampleStats:
     human_anchor_position: str = ""
     anchor_alignment_column: str = ""
     anchor_qc_status: str = ""
+    anchor_lookup_method: str = ""
     pairwise_anchor_fallback_used: bool = False
     notes: List[str] = field(default_factory=list)
 
@@ -254,8 +260,14 @@ def original_to_rotated(pos: int, anchor: int, length: int) -> int:
     return ((pos - anchor) % length) + 1
 
 
-def restore_human_pos(rotated_pos: int, human_len: int, restore_offset: int) -> int:
-    return ((rotated_pos + restore_offset - 1) % human_len) + 1
+def restore_human_pos(rotated_pos: int, human_anchor: int, human_len: int, restore_offset: int) -> int:
+    """Restore a rotated human coordinate to canonical coordinates.
+
+    Position 1 in the rotated sequence is the original ``human_anchor``.
+    ``restore_offset`` is an optional, explicitly post-anchor canonical offset
+    retained for configurations that require a legacy coordinate adjustment.
+    """
+    return ((rotated_pos + human_anchor + restore_offset - 2) % human_len) + 1
 
 
 def infer_anchor_with_status(species_seq: str, human_seq: str) -> Tuple[int, bool]:
@@ -357,7 +369,9 @@ def build_map(sample: Sample, aln: Path, map_path: Path, species_anchor: int, hu
         human_canonical = ""
         status = "unmapped_gap" if h_base == "-" else "mapped"
         if h_base != "-":
-            human_canonical_i = restore_human_pos(human_rot, human_len, restore_offset)
+            human_canonical_i = restore_human_pos(
+                human_rot, human_anchor, human_len, restore_offset
+            )
             if not (1 <= human_canonical_i <= human_len):
                 raise ValueError(f"Restored human position out of bounds: {human_canonical_i}")
             human_canonical = str(human_canonical_i)
@@ -556,26 +570,32 @@ def load_rotate_overrides(cfg: configparser.ConfigParser) -> Dict[str, int]:
 
 
 
-def load_anchor_positions(cfg: configparser.ConfigParser) -> Dict[str, dict]:
+def load_anchor_positions(cfg: configparser.ConfigParser) -> tuple[Dict[str, dict], Dict[str, dict]]:
     path = cfg.get("coordinates", "anchor_positions_file", fallback="").strip()
     if not path:
-        return {}
+        return {}, {}
     anchor_path = Path(path)
     if not anchor_path.exists():
         raise FileNotFoundError(f"anchor_positions_file not found: {anchor_path}")
-    anchors: Dict[str, dict] = {}
+    anchors_by_reference_id: Dict[str, dict] = {}
+    anchors_by_sequence_sha256: Dict[str, dict] = {}
     with anchor_path.open(newline="") as handle:
         for row in csv.DictReader(handle, delimiter="\t"):
             key = (row.get("reference_id") or row.get("sample") or "").strip()
             if not key:
                 continue
-            if key in anchors and anchors[key].get("sequence_sha256") != row.get("sequence_sha256"):
+            if key in anchors_by_reference_id and anchors_by_reference_id[key].get("sequence_sha256") != row.get("sequence_sha256"):
                 row["_collision"] = "1"
-            anchors[key] = row
-    return anchors
+            anchors_by_reference_id[key] = row
+            sequence_hash = (row.get("sequence_sha256") or "").strip()
+            if sequence_hash:
+                # Global discovery emits one anchor per distinct sequence.  Keep
+                # the first row so any reference-ID aliases reuse that anchor.
+                anchors_by_sequence_sha256.setdefault(sequence_hash, row)
+    return anchors_by_reference_id, anchors_by_sequence_sha256
 
 
-def select_runtime_anchor(sample: Sample, species_seq: str, human_seq: str, cfg: configparser.ConfigParser, anchors: Dict[str, dict], human_anchor_cfg: str) -> tuple[int, int, str, str, str, bool, str]:
+def select_runtime_anchor(sample: Sample, species_seq: str, human_seq: str, cfg: configparser.ConfigParser, anchors_by_reference_id: Dict[str, dict], human_anchor_cfg: str, anchors_by_sequence_sha256: Optional[Dict[str, dict]] = None) -> tuple[int, int, str, str, str, bool, str, str]:
     seq_hash = sequence_sha256(species_seq)
     ref_id = sample.reference_id or derive_reference_id(sample.species or sample.name, sample.species_fasta, seq_hash)
     allow_pairwise = cfg.getboolean("anchor", "allow_pairwise_anchor_fallback", fallback=True)
@@ -584,12 +604,25 @@ def select_runtime_anchor(sample: Sample, species_seq: str, human_seq: str, cfg:
     require_validated = cfg.getboolean("anchor", "require_validated_anchor", fallback=False)
     if sample.rotate_anchor:
         human_anchor = int(human_anchor_cfg) if human_anchor_cfg else 1
-        return sample.rotate_anchor, human_anchor, "SAMPLE_OVERRIDE", ref_id, seq_hash, False, "SAMPLE_OVERRIDE"
-    row = anchors.get(ref_id)
+        return sample.rotate_anchor, human_anchor, "SAMPLE_OVERRIDE", ref_id, seq_hash, False, "SAMPLE_OVERRIDE", "SAMPLE_OVERRIDE"
+    # Keep the optional argument for callers using the original reference-ID
+    # mapping API, while production always passes both indexes.
+    if anchors_by_sequence_sha256 is None:
+        anchors_by_sequence_sha256 = {
+            row.get("sequence_sha256", ""): row
+            for row in anchors_by_reference_id.values() if row.get("sequence_sha256")
+        }
+    row = anchors_by_reference_id.get(ref_id)
+    lookup_method = "REFERENCE_ID"
+    if row is None:
+        row = anchors_by_sequence_sha256.get(seq_hash)
+        lookup_method = "SEQUENCE_SHA256_ALIAS"
     if not row:
         status = "ANCHOR_NOT_FOUND"
     elif row.get("_collision") == "1":
         status = "ANCHOR_REFERENCE_ID_COLLISION"
+    elif lookup_method == "SEQUENCE_SHA256_ALIAS" and row.get("sequence_sha256") != seq_hash:
+        status = "ANCHOR_REFERENCE_HASH_MISMATCH"
     elif verify_hash and row.get("sequence_sha256") and row.get("sequence_sha256") != seq_hash:
         status = "ANCHOR_REFERENCE_HASH_MISMATCH"
     elif row.get("sequence_length") and int(row["sequence_length"]) != len(species_seq):
@@ -598,22 +631,22 @@ def select_runtime_anchor(sample: Sample, species_seq: str, human_seq: str, cfg:
         species_anchor = int(row.get("anchor_original_position") or row.get("species_anchor_pos") or 0)
         if not (1 <= species_anchor <= len(species_seq)):
             status = "ANCHOR_POSITION_OUT_OF_RANGE"
-        elif row.get("anchor_qc_status", "PASS") not in {"PASS", "VALID", "OK"}:
+        elif row.get("anchor_qc_status", "PASS") != "PASS":
             status = row.get("anchor_qc_status") or "ANCHOR_NOT_FOUND"
         elif row.get("anchor_method") not in {"GLOBAL_MSA_ANCHOR", "FAMILY_MSA_ANCHOR", ""}:
             status = "ANCHOR_NOT_FOUND"
         else:
             human_anchor = int(human_anchor_cfg) if human_anchor_cfg else int(row.get("human_anchor_original_position") or row.get("human_anchor_pos") or 1)
-            return species_anchor, human_anchor, row.get("anchor_method") or "GLOBAL_MSA_ANCHOR", ref_id, seq_hash, False, row.get("anchor_qc_status", "PASS")
+            return species_anchor, human_anchor, row.get("anchor_method") or "GLOBAL_MSA_ANCHOR", ref_id, seq_hash, False, row.get("anchor_qc_status", "PASS"), lookup_method
     if allow_pairwise:
         species_anchor, sf = infer_anchor_with_status(species_seq, human_seq)
         human_anchor = int(human_anchor_cfg) if human_anchor_cfg else infer_anchor_with_status(human_seq, species_seq)[0]
         if sf and not allow_pos1:
             raise ValueError(status)
-        return species_anchor, human_anchor, "PAIRWISE_FALLBACK", ref_id, seq_hash, True, status
+        return species_anchor, human_anchor, "PAIRWISE_FALLBACK", ref_id, seq_hash, True, status, "PAIRWISE_FALLBACK"
     if require_validated or not allow_pos1:
         raise ValueError(status)
-    return 1, int(human_anchor_cfg) if human_anchor_cfg else 1, "PAIRWISE_FALLBACK", ref_id, seq_hash, True, status
+    return 1, int(human_anchor_cfg) if human_anchor_cfg else 1, "PAIRWISE_FALLBACK", ref_id, seq_hash, True, status, "PAIRWISE_FALLBACK"
 
 def anchor_int(row: dict, key: str, sample: str) -> int:
     value = row.get(key, "")
@@ -846,6 +879,17 @@ def write_report(stats: SampleStats, path: Path) -> None:
             out.write(f"note\t{note}\n")
 
 
+def reset_liftover_outputs(dirs: Dict[str, Path]) -> None:
+    """Remove prior derived artifacts before rebuilding coordinate liftover."""
+    for name in FRESH_RUN_OUTDIRS:
+        directory = dirs[name]
+        for path in directory.iterdir():
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True)
@@ -857,6 +901,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     dirs = {d: outdir / d for d in OUTDIRS}
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
+    reset_liftover_outputs(dirs)
 
     human_raw = read_fasta(Path(cfg["paths"]["human_fasta"]), cfg.get("fasta", "human_target_sequence", fallback="").strip() or None)
     human_name = cfg.get("fasta", "human_sequence_name", fallback="human_chrM")
@@ -874,7 +919,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         fallback=cfg.getboolean("liftover", "fail_on_ref_mismatch", fallback=False),
     )
     human_anchor_cfg = cfg.get("coordinates", "human_rotate_anchor", fallback="").strip()
-    anchor_positions = load_anchor_positions(cfg)
+    anchors_by_reference_id, anchors_by_sequence_sha256 = load_anchor_positions(cfg)
 
     summaries: List[SampleStats] = []
     for sample in load_samples(cfg, args.sample):
@@ -895,7 +940,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         write_fasta(species_prepared, species_name, species_raw.seq)
 
         try:
-            species_anchor, human_anchor, anchor_method, ref_id, ref_hash, pairwise_used, anchor_qc_status = select_runtime_anchor(sample, species_raw.seq, human_raw.seq, cfg, anchor_positions, human_anchor_cfg)
+            species_anchor, human_anchor, anchor_method, ref_id, ref_hash, pairwise_used, anchor_qc_status, anchor_lookup_method = select_runtime_anchor(
+                sample, species_raw.seq, human_raw.seq, cfg,
+                anchors_by_reference_id, human_anchor_cfg, anchors_by_sequence_sha256,
+            )
         except ValueError as exc:
             stats = SampleStats(sample.name, status="skipped_anchor_validation")
             stats.anchor_qc_status = str(exc)
@@ -919,9 +967,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         stats.anchor_method = anchor_method
         stats.species_anchor_position = str(species_anchor)
         stats.human_anchor_position = str(human_anchor)
-        if ref_id in anchor_positions:
-            stats.anchor_alignment_column = anchor_positions[ref_id].get("anchor_alignment_column", "")
+        selected_anchor = anchors_by_reference_id.get(ref_id) or anchors_by_sequence_sha256.get(ref_hash)
+        if selected_anchor:
+            stats.anchor_alignment_column = selected_anchor.get("anchor_alignment_column", "")
         stats.anchor_qc_status = anchor_qc_status
+        stats.anchor_lookup_method = anchor_lookup_method
         stats.pairwise_anchor_fallback_used = pairwise_used
         stats.source_reference_ambiguous_positions = sum(base in AMBIGUOUS_DNA for base in species_raw.seq)
         stats.notes.append(f"species_rotate_anchor={species_anchor}")
