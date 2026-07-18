@@ -2,7 +2,7 @@
 """Discover reproducible reference-level mtDNA liftover anchors from a multi-reference MSA."""
 from __future__ import annotations
 
-import argparse, csv, math, shlex, shutil, subprocess, sys
+import argparse, csv, math, shlex, sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +12,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from qc_analysis.lib.mt_anchor_utils import AMBIGUOUS_DNA, mask_ambiguity_for_alignment, derive_reference_id, rotate_sequence, rotated_to_original, sequence_sha256
+from qc_analysis.lib.alignment_runner import check_aligner_environment, run_aligner
 from qc_analysis.scripts.run_coordinate_liftover import read_simple_yaml, read_workflow_config, read_fasta, write_fasta, iter_sample_ref_rows, find_species_fasta, infer_anchor_with_status
 
 @dataclass
@@ -55,10 +56,12 @@ def read_alignment(path: Path) -> Dict[str,str]:
 
 def run_msa(in_fa: Path, out_fa: Path, cfg: dict) -> None:
     aligner=str(cfg_get(cfg,'aligner','mafft')); opts=shlex.split(str(cfg_get(cfg,'aligner_options','--auto --quiet')))
-    if shutil.which(aligner):
-        with out_fa.open('w') as out: subprocess.run([aligner,*opts,str(in_fa)], check=True, stdout=out)
+    try:
+        run_aligner(aligner, opts, in_fa, out_fa, cfg_int(cfg, 'threads', 1), cfg_bool(cfg, 'use_conda_env', True), str(cfg_get(cfg, 'module_load', 'miniconda/24.11.3')), str(cfg_get(cfg, 'conda_env', 'mafft_env')))
         return
-    if cfg_bool(cfg,'allow_simple_alignment_fallback',False):
+    except RuntimeError:
+        if not cfg_bool(cfg,'allow_simple_alignment_fallback',False):
+            raise
         recs=[]; n=None; ch=[]
         for l in in_fa.read_text().splitlines():
             if l.startswith('>'):
@@ -69,7 +72,6 @@ def run_msa(in_fa: Path, out_fa: Path, cfg: dict) -> None:
         m=max(len(s) for _,s in recs)
         write_multi_fasta(out_fa, [(n, s.ljust(m, '-')) for n, s in recs])
         return
-    raise RuntimeError(f"Aligner {aligner!r} not found and fallback disabled")
 
 def write_multi_fasta(path: Path, records: Iterable[tuple[str,str]]) -> None:
     with path.open('w') as out:
@@ -148,9 +150,14 @@ def write_exclusions(out: Path, manifest_fields: List[str], refs: List[Ref], unr
                 w.writerow({'reference_id':r.reference_id,'species':r.species,'species_fasta':r.species_fasta,'sequence_sha256':r.sha,'sequence_length':len(r.seq),'n_fraction':r.seq.count('N')/len(r.seq) if r.seq else 1,**ambiguity_qc(r.seq),'sample_count':len(r.samples),'sample_names':','.join(sorted(r.samples)),'discovery_eligible':r.eligible,'exclusion_reason':r.reason,'coarse_anchor_position':r.coarse_anchor,'coarse_anchor_method':r.coarse_method,'coarse_anchor_kmer_length':r.coarse_k,'coarse_anchor_status':r.coarse_status})
 
 def main(argv=None):
-    ap=argparse.ArgumentParser(description=__doc__); ap.add_argument('--config',required=True); args=ap.parse_args(argv)
+    ap=argparse.ArgumentParser(description=__doc__); ap.add_argument('--config',required=True); ap.add_argument('--check-environment', action='store_true'); args=ap.parse_args(argv)
     config_path=Path(args.config)
     data=read_simple_yaml(config_path); cfg=cfg_section(data,'global_anchor_discovery')
+    if args.check_environment:
+        info = check_aligner_environment(str(cfg_get(cfg, 'aligner', 'mafft')), shlex.split(str(cfg_get(cfg, 'aligner_options', '--auto --quiet'))), cfg_int(cfg, 'threads', 1), cfg_bool(cfg, 'use_conda_env', True), str(cfg_get(cfg, 'module_load', 'miniconda/24.11.3')), str(cfg_get(cfg, 'conda_env', 'mafft_env')))
+        for key in ('aligner', 'resolved_executable', 'version', 'threads', 'environment', 'status'):
+            print(f'{key}={info[key]}')
+        return 0
     liftover_cfg=read_workflow_config(config_path)
     out=Path(cfg_get(cfg,'output_dir','results/qc/global_anchor')); out.mkdir(parents=True,exist_ok=True)
     human=read_fasta(Path(cfg_get(cfg,'human_fasta','data/reference_tables/human_chrM.fa')))

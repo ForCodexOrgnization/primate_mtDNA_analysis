@@ -13,8 +13,6 @@ import configparser
 import csv
 import gzip
 import shlex
-import shutil
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +21,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+from qc_analysis.lib.alignment_runner import run_aligner
 from qc_analysis.lib.mt_anchor_utils import (
     AMBIGUOUS_DNA, UNAMBIGUOUS_DNA, derive_reference_id,
     mask_ambiguity_for_alignment, sequence_sha256, validate_iupac_sequence,
@@ -297,43 +296,18 @@ def write_simple_alignment(species_fa: Path, human_fa: Path, out_fa: Path) -> No
 
 def run_alignment(species_fa: Path, human_fa: Path, out_fa: Path, cfg: configparser.ConfigParser) -> None:
     aligner = cfg.get("alignment", "aligner", fallback="mafft")
-    opts = cfg.get("alignment", "aligner_options", fallback="--auto --quiet").split()
+    opts = shlex.split(cfg.get("alignment", "aligner_options", fallback="--auto --quiet"))
     fallback = cfg.getboolean("alignment", "allow_simple_alignment_fallback", fallback=True)
     use_conda_env = cfg.getboolean("alignment", "use_conda_env", fallback=True)
     module_load = cfg.get("alignment", "module_load", fallback="miniconda/24.11.3").strip()
     conda_env = cfg.get("alignment", "conda_env", fallback="mafft_env").strip()
+    threads = cfg.getint("alignment", "threads", fallback=1)
     tmp = out_fa.with_suffix(".input.fa")
     tmp.write_text(species_fa.read_text() + human_fa.read_text())
     try:
-        if use_conda_env:
-            quoted_cmd = " ".join([shlex.quote(aligner), *[shlex.quote(o) for o in opts], shlex.quote(str(tmp))])
-            quoted_aligner = shlex.quote(aligner)
-            shell_lines = ["source /etc/profile >/dev/null 2>&1 || true"]
-            if module_load:
-                shell_lines.append(f"module load {shlex.quote(module_load)} >/dev/null 2>&1 || true")
-            if conda_env:
-                shell_lines.extend(
-                    [
-                        "if command -v conda >/dev/null 2>&1; then",
-                        "  CONDA_BASE=$(conda info --base 2>/dev/null || true)",
-                        '  if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then',
-                        '    source "$CONDA_BASE/etc/profile.d/conda.sh" >/dev/null 2>&1 || true',
-                        f"    conda activate {shlex.quote(conda_env)} >/dev/null 2>&1 || true",
-                        "  fi",
-                        "fi",
-                    ]
-                )
-            shell_lines.append(f"if command -v {quoted_aligner} >/dev/null 2>&1; then {quoted_cmd}; else exit 127; fi")
-            with out_fa.open("w") as out:
-                subprocess.run("\n".join(shell_lines), check=True, stdout=out, shell=True, executable="/bin/bash")
-            return
-        if shutil.which(aligner):
-            with out_fa.open("w") as out:
-                subprocess.run([aligner, *opts, str(tmp)], check=True, stdout=out)
-            return
-        if not fallback:
-            raise RuntimeError(f"Aligner {aligner!r} not found")
-    except (subprocess.CalledProcessError, RuntimeError):
+        run_aligner(aligner, opts, tmp, out_fa, threads, use_conda_env, module_load, conda_env)
+        return
+    except RuntimeError:
         if not fallback:
             raise
     finally:

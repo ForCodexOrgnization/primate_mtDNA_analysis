@@ -138,6 +138,10 @@ run_collect_variant_calling_results() {
 
 run_discover_global_anchor() {
   echo "[qc_preprocessing] Running discover_global_anchor with config: ${CONFIG}" >&2
+  echo "[qc_preprocessing] MAFFT environment preflight:" >&2
+  "$PYTHON" "$GLOBAL_ANCHOR_SCRIPT" --config "$CONFIG" --check-environment | while IFS= read -r line; do
+    echo "[qc_preprocessing] ${line}" >&2
+  done
   "$PYTHON" "$GLOBAL_ANCHOR_SCRIPT" --config "$CONFIG"
 }
 

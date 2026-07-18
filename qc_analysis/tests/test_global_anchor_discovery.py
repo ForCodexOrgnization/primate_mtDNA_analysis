@@ -2,6 +2,7 @@ import csv, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
 from qc_analysis.lib.mt_anchor_utils import rotate_sequence, sequence_sha256
+from qc_analysis.lib.alignment_runner import check_aligner_environment, run_aligner, with_threads
 from qc_analysis.scripts.discover_global_liftover_anchor import main as discover_main
 
 
@@ -134,5 +135,50 @@ class GlobalAnchorDiscoveryTests(unittest.TestCase):
         failures=rows(out/'reference_anchor_failures.tsv')
         self.assertEqual(failures[0]['anchor_qc_status'], 'GLOBAL_ANCHOR_AMBIGUOUS_BASE')
         td.cleanup()
+
+
+class AlignmentRunnerTests(unittest.TestCase):
+    def fake_aligner(self, directory, exit_code=0):
+        executable = Path(directory) / 'fake_mafft'
+        executable.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo v7.525; exit 0; fi\necho stderr-message >&2\nfor arg; do last="$arg"; done\ncat "$last"\nexit ' + str(exit_code) + '\n')
+        executable.chmod(0o755)
+        return executable
+
+    def test_absolute_executable_threads_and_stdout_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            d=Path(td); executable=self.fake_aligner(d); source=d/'in.fa'; output=d/'out.fa'; source.write_text('>x\nACGT\n')
+            resolved, environment, command=run_aligner(str(executable), ['--auto'], source, output, 8, False, '', '')
+            self.assertEqual(resolved, str(executable)); self.assertEqual(environment, 'direct')
+            self.assertEqual(command[-3:], ['--thread', '8', str(source)])
+            self.assertEqual(output.read_text(), source.read_text())
+
+    def test_path_resolution_and_existing_thread_not_duplicated(self):
+        with tempfile.TemporaryDirectory() as td:
+            d=Path(td); executable=self.fake_aligner(d); source=d/'in.fa'; output=d/'out.fa'; source.write_text('>x\nACGT\n')
+            with patch.dict('os.environ', {'PATH': str(d)}, clear=False):
+                _, environment, command=run_aligner('fake_mafft', ['--thread', '2'], source, output, 8, False, '', '')
+            self.assertEqual(environment, 'PATH'); self.assertEqual(command.count('--thread'), 1)
+            self.assertEqual(with_threads(['--thread=2'], 8), ['--thread=2'])
+
+    def test_failure_has_diagnostics_and_nonzero_status_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            d=Path(td); source=d/'in.fa'; output=d/'out.fa'; source.write_text('>x\nACGT\n')
+            with self.assertRaisesRegex(RuntimeError, 'PATH=.*module=.*conda_env'):
+                run_aligner('definitely_missing_mafft', [], source, output, 8, False, 'miniconda/24.11.3', 'mafft_env')
+            with self.assertRaisesRegex(RuntimeError, 'exit status 9'):
+                run_aligner(str(self.fake_aligner(d, 9)), [], source, output, 8, False, '', '')
+
+    def test_check_environment_uses_fake_executable_without_msa(self):
+        with tempfile.TemporaryDirectory() as td:
+            info=check_aligner_environment(str(self.fake_aligner(td)), ['--auto'], 8, False, '', '')
+            self.assertEqual(info['version'], 'v7.525'); self.assertEqual(info['threads'], '8'); self.assertEqual(info['status'], 'PASS')
+
+    def test_discovery_check_environment_exits_before_msa(self):
+        with tempfile.TemporaryDirectory() as td:
+            d=Path(td); cfg=d/'cfg.yaml'; executable=self.fake_aligner(d)
+            cfg.write_text(f'global_anchor_discovery:\n  aligner: {executable}\n  aligner_options: --auto --quiet\n  threads: 8\n  use_conda_env: false\n  allow_simple_alignment_fallback: false\n')
+            with patch('sys.stdout') as stdout:
+                self.assertEqual(discover_main(['--config', str(cfg), '--check-environment']), 0)
+            self.assertIn('threads=8', ''.join(call.args[0] for call in stdout.write.call_args_list))
 
 if __name__=='__main__': unittest.main()
