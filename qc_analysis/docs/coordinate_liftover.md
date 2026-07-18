@@ -133,3 +133,115 @@ This module only produces coordinate-lifted raw VCF/COV files and liftover QC
 outputs. It intentionally does not perform codon annotation, tRNA annotation,
 codon matching, tRNA matching, or final filtering. Downstream codon/tRNA matching
 should consume this module's lifted raw outputs.
+
+## Allele orientation and ALT/REF flips
+
+Lifted VCF records are classified against the target human chrM reference before
+being written:
+
+- `REF_MATCH`: the target human REF equals the source REF. These records keep the
+  original REF, ALT, QUAL, FILTER, INFO annotations, FORMAT keys, and sample
+  values, except for lifted `CHROM`/`POS`, `SRC_*` provenance fields, and
+  `LIFTOVER_ALLELE_STATUS=REF_MATCH`.
+- `ALT_REF_FLIP`: the target human REF equals the source ALT and the record is a
+  split, biallelic, non-symbolic SNV with one A/C/G/T base in both REF and ALT.
+  The workflow swaps REF and ALT and rewrites allele-order-dependent fields.
+- `FLIP_UNSUPPORTED_VARIANT_TYPE`: the target human REF equals the source ALT,
+  but the variant is not currently safe to flip automatically, such as an indel
+  or other non-simple SNV.
+- `TARGET_REF_NOT_SOURCE_REF_OR_ALT`: the target human REF matches neither the
+  source REF nor the source ALT.
+- `UNMAPPED`: the source position has no mapped human coordinate.
+
+Only split biallelic SNVs are flipped in this first implementation. Multiallelic
+records, indels, symbolic alleles, `*` alleles, variants spanning alignment gaps,
+and records where the human REF is neither the source REF nor source ALT are not
+silently emitted with an incorrect REF. They are written to the unresolved report
+instead.
+
+Example:
+
+```text
+Species-oriented record:
+G>A, AF=0.10, AD=90,10
+
+Human-reference-oriented record:
+A>G, AF=0.90, AD=10,90
+```
+
+`AF` changes to `1-AF` because after the flip the new ALT is the old REF. When a
+valid two-value `AD` is available, the new AF is calculated from the original REF
+depth as `old_ref_depth / (old_ref_depth + old_alt_depth)`; otherwise a valid
+single AF in `[0,1]` is inverted.
+
+For `ALT_REF_FLIP`, the workflow transforms allele-order-dependent FORMAT fields:
+
+- `AD`, `FAD`, `F1R2`, and `F2R1` two-value arrays are swapped from `REF,ALT` to
+  `ALT,REF`.
+- `SB` is treated as Mutect-style `REF_FWD,REF_REV,ALT_FWD,ALT_REV` and becomes
+  `ALT_FWD,ALT_REV,REF_FWD,REF_REV`.
+- `GT` allele indexes are swapped (`0 -> 1`, `1 -> 0`) while preserving ploidy,
+  missing alleles, and `/` versus `|` separators. The workflow does not normalize
+  `1/0` back to `0/1`.
+- Header-declared `Number=R` FORMAT fields with two values are swapped.
+- Header-declared `Number=G` genotype-likelihood fields are permuted only for
+  supported haploid/diploid biallelic shapes; unsupported values are cleared to
+  `.` rather than retained with the wrong allele orientation.
+
+INFO fields are handled conservatively. Header-declared `Number=R` INFO fields
+with two values are swapped. Unknown `Number=A` and `Number=G` INFO annotations
+are removed after a flip because they describe the old ALT allele and usually do
+not contain a value for the old REF/new ALT; removed keys are listed in
+`LIFTOVER_DROPPED_INFO_FIELDS`.
+
+Before any successful record is written, the final REF allele is checked against
+the human FASTA at the lifted position. A failed final check is reported as
+`FINAL_REF_MISMATCH` and is not written to the lifted VCF, so the output VCF must
+not contain records whose REF disagrees with the human chrM FASTA.
+
+## Unresolved report
+
+Each sample writes unresolved VCF records to:
+
+```text
+reports/<sample>.coordinate_liftover_unresolved.tsv
+```
+
+The report includes `sample`, source allele fields, target coordinate/reference
+fields, and a standard `reason`, including `UNMAPPED`, `MULTIALLELIC`,
+`SYMBOLIC_ALLELE`, `FLIP_UNSUPPORTED_VARIANT_TYPE`,
+`TARGET_REF_NOT_SOURCE_REF_OR_ALT`, `FINAL_REF_MISMATCH`, and
+`MALFORMED_RECORD`.
+
+## Liftover configuration
+
+The `coordinate_liftover.liftover` section supports:
+
+```yaml
+liftover:
+  check_ref_against_human_fasta: true
+  enable_ref_alt_flip: true
+  fail_on_unresolvable_target_ref: false
+  fail_on_ref_mismatch: false
+```
+
+`enable_ref_alt_flip` controls automatic simple biallelic SNV flips.
+`fail_on_unresolvable_target_ref` stops the workflow when the target REF is
+neither the source REF nor source ALT. `fail_on_ref_mismatch` is a deprecated
+compatibility option used only as the fallback value for
+`fail_on_unresolvable_target_ref`; it no longer causes resolvable
+`ALT_REF_FLIP` records to be discarded.
+
+## QC summary allele-orientation fields
+
+`all_samples.coordinate_liftover_summary.tsv` and per-sample QC reports include:
+
+- `ref_match_count`: source REF equals target human REF.
+- `ref_mismatch_count`: source REF differs from target human REF, including both
+  resolved flips and unresolved mismatches.
+- `alt_ref_flip_count`: simple biallelic SNVs successfully fixed by ALT/REF flip.
+- `unresolved_ref_mismatch_count`: target REF matched neither source REF nor ALT.
+- `unsupported_flip_count`: target REF matched source ALT, but the variant type is
+  not currently flipped automatically.
+- `final_ref_mismatch_count`: transformed records that still failed the final REF
+  check and were withheld from the lifted VCF.
