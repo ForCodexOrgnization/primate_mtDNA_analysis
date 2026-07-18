@@ -1,5 +1,6 @@
 import csv, tempfile, unittest
 from pathlib import Path
+from unittest.mock import patch
 from qc_analysis.lib.mt_anchor_utils import rotate_sequence, sequence_sha256
 from qc_analysis.scripts.discover_global_liftover_anchor import main as discover_main
 
@@ -113,6 +114,25 @@ class GlobalAnchorDiscoveryTests(unittest.TestCase):
         self.assertEqual(s['eligible_references'],'1')
         self.assertEqual(s['msa_sequence_count'],'2')
         self.assertEqual(s['reference_anchors_written'],'1')
+        td.cleanup()
+
+    def test_ambiguity_outside_anchor_remains_eligible_and_is_reported(self):
+        refs={'iupac':'AAAACCCYG GGGTTTTAAAACCCCGGGGTTTT'.replace(' ', '')}
+        td,out,_=self.run_discovery([{'sample':'A','species':'iupac','reference_id':'iupac','species_fasta':'iupac'}], refs)
+        manifest=rows(out/'unique_reference_manifest.tsv')[0]
+        anchors=rows(out/'reference_anchor_positions.tsv')
+        self.assertEqual(manifest['ambiguous_base_count'], '1')
+        self.assertEqual(manifest['ambiguous_base_types'], 'Y')
+        self.assertEqual(len(anchors), 1)
+        self.assertEqual(anchors[0]['ambiguous_base_fraction'], str(1 / len(refs['iupac'])))
+        td.cleanup()
+
+    def test_ambiguity_at_selected_anchor_is_reported(self):
+        refs={'iupac':'YAAACCCCGGGGTTTTAAAACCCCGGGGTTTT'}
+        with patch('qc_analysis.scripts.discover_global_liftover_anchor.infer_anchor_with_status', return_value=(1, False)), patch('qc_analysis.scripts.discover_global_liftover_anchor.select_column', return_value=(1, {'occupancy': 1.0, 'major': 1.0})):
+            td,out,_=self.run_discovery([{'sample':'A','species':'iupac','reference_id':'iupac','species_fasta':'iupac'}], refs, expect_error='could not be projected')
+        failures=rows(out/'reference_anchor_failures.tsv')
+        self.assertEqual(failures[0]['anchor_qc_status'], 'GLOBAL_ANCHOR_AMBIGUOUS_BASE')
         td.cleanup()
 
 if __name__=='__main__': unittest.main()
