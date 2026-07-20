@@ -58,6 +58,32 @@ class MatchScriptSmokeTests(unittest.TestCase):
             self.assertEqual(info['MTCODON_PRIMATE_ALT_CODON'], 'ATG')
             self.assertEqual(info['MTCODON_STATUS'], 'PASS')
 
+    def test_negative_strand_codon_complements_genomic_source_alt(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td); primate = d / 'primate.tsv'; human = d / 'human.tsv'
+            # MT-ND6 codons are stored in coding orientation, but SRC_ALT is genomic.
+            primate.write_text('sample\tpos\tgene\tstrand\tcodon_seq\tcodon_pos_in_triplet\nS1\t10\tMT-ND6\t-\tACG\t2\n')
+            human.write_text('pos\tgene\tcodon_seq\tcodon_pos_in_triplet\n10\tMT-ND6\tATG\t2\n')
+            config = d / 'config.yaml'
+            config.write_text(f'''codon_match:
+  paths:
+    input_vcf_dir: {d}
+    output_dir: {d}
+    reports_dir: {d / 'reports'}
+    all_primate_position_codon_table: {primate}
+    human_codon_table: {human}
+  settings:
+    strict_phase_match: true
+    input_vcf_pattern: "{{sample}}.vcf"
+    output_suffix: ".out.vcf"
+''')
+            output = d / 'codon.vcf'
+            result = run_script('run_codon_match.py', config, 'S1', self.write_vcf(d, 'SRC_CHROM=species;SRC_POS=10;SRC_REF=G;SRC_ALT=A'), output)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            info = record_info(output)
+            self.assertEqual(info['MTCODON_PRIMATE_ALT_CODON'], 'ATG')
+            self.assertEqual(info['MTCODON_STATUS'], 'PASS')
+
     def test_trna_region_match_compares_structural_classes_not_ids(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td); human = d / 'human.tsv'; species = d / 'S1.tsv'
