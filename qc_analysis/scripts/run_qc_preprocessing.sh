@@ -30,6 +30,8 @@ Run modes:
 
 Environment overrides:
   PYTHON                           Python executable (default: python3).
+  BIOPYTHON_USE_MODULE             Load the configured Biopython module for build_primate_codon_table (default: 1).
+  BIOPYTHON_MODULE                 Biopython module to load (default: Biopython/1.83-foss-2022b).
   SAMPLE                           Optional sample name for coordinate_liftover.
   SLURM_PARTITION                  Optional partition/queue for --submit.
   SLURM_TIME                       Walltime for --submit (default: 24:00:00).
@@ -44,6 +46,7 @@ Examples:
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit discover_global_anchor config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
   SAMPLE=SAMPLE_NAME bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
+  BIOPYTHON_MODULE=Biopython/1.83-foss-2022b bash qc_analysis/scripts/run_qc_preprocessing.sh build_primate_codon_table config/qc_preprocessing.yaml
   sbatch qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yaml
 USAGE
 }
@@ -133,6 +136,43 @@ TRNA_SCRIPT="qc_analysis/scripts/run_trna_match.py"
 RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
 GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
 
+# Read the small, optional environment.biopython section without depending on
+# PyYAML (Biopython must be available before the build script can run).
+configured_biopython_value() {
+  local requested_key="$1"
+  awk -v requested_key="$requested_key" '
+    function indent(line) { match(line, /^[[:space:]]*/); return RLENGTH }
+    function trim(value) { sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); return value }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      if (line !~ /[^[:space:]]/) next
+      level = indent(line)
+      content = trim(line)
+
+      if (content == "environment:") { environment_indent = level; in_environment = 1; in_biopython = 0; next }
+      if (in_environment && level <= environment_indent) { in_environment = 0; in_biopython = 0 }
+      if (in_environment && content == "biopython:") { biopython_indent = level; in_biopython = 1; next }
+      if (in_biopython && level <= biopython_indent) in_biopython = 0
+      if (in_biopython && content ~ ("^" requested_key ":[[:space:]]*")) {
+        sub("^" requested_key ":[[:space:]]*", "", content)
+        print trim(content)
+        exit
+      }
+    }
+  ' "$CONFIG"
+}
+
+if [[ -z "${BIOPYTHON_USE_MODULE+x}" ]]; then
+  configured_use_module="$(configured_biopython_value use_module)"
+  case "${configured_use_module,,}" in
+    0|false|no) BIOPYTHON_USE_MODULE=0 ;;
+    *) BIOPYTHON_USE_MODULE=1 ;;
+  esac
+fi
+BIOPYTHON_MODULE="${BIOPYTHON_MODULE:-$(configured_biopython_value module_load)}"
+BIOPYTHON_MODULE="${BIOPYTHON_MODULE:-Biopython/1.83-foss-2022b}"
+
 run_collect_variant_calling_results() {
   echo "[qc_preprocessing] Running collect_variant_calling_results with config: ${CONFIG}" >&2
   "$PYTHON" "$COLLECT_SCRIPT" --config "$CONFIG"
@@ -158,6 +198,30 @@ run_coordinate_liftover() {
 
 run_build_primate_codon_table() {
   echo "[qc_preprocessing] Running build_primate_codon_table with config: ${CONFIG}" >&2
+  if [[ "${BIOPYTHON_USE_MODULE}" == "1" ]]; then
+    echo "[qc_preprocessing] Loading Biopython module: ${BIOPYTHON_MODULE}" >&2
+    if command -v module >/dev/null 2>&1; then
+      module load "${BIOPYTHON_MODULE}"
+    elif [[ -f /etc/profile.d/modules.sh ]]; then
+      # module is commonly initialized only for login shells on HPC systems.
+      source /etc/profile.d/modules.sh
+      module load "${BIOPYTHON_MODULE}"
+    else
+      echo "WARNING: BIOPYTHON_USE_MODULE=1 but module command is unavailable." >&2
+    fi
+  fi
+
+  if ! "$PYTHON" - <<'PY'
+from Bio import Entrez, SeqIO
+print("Biopython import OK")
+PY
+  then
+    echo "ERROR: Biopython is not importable after loading the configured module." >&2
+    echo "Tried module: ${BIOPYTHON_MODULE}" >&2
+    echo "Please check the HPC module name or set BIOPYTHON_USE_MODULE=0 if using a Python environment that already has Biopython." >&2
+    exit 1
+  fi
+
   local cmd=("$PYTHON" "$CODON_TABLE_SCRIPT" --config "$CONFIG")
   [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
   "${cmd[@]}"
