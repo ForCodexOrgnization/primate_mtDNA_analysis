@@ -8,6 +8,29 @@ python qc_analysis/scripts/build_primate_codon_table.py --config config/qc_prepr
 bash qc_analysis/scripts/run_qc_preprocessing.sh build_primate_codon_table config/qc_preprocessing.yaml
 ```
 
+On the HPC, the preprocessing wrapper loads the Biopython module only for the
+`build_primate_codon_table` step. The default configuration uses:
+
+```bash
+module load Biopython/1.83-foss-2022b
+```
+
+Override the module without editing the wrapper with `BIOPYTHON_MODULE`, or skip
+module loading with `BIOPYTHON_USE_MODULE=0` when the selected `PYTHON` already
+has Biopython installed:
+
+```bash
+BIOPYTHON_MODULE=Biopython/1.83-foss-2022b \
+  bash qc_analysis/scripts/run_qc_preprocessing.sh build_primate_codon_table config/qc_preprocessing.yaml
+
+BIOPYTHON_USE_MODULE=0 \
+  bash qc_analysis/scripts/run_qc_preprocessing.sh build_primate_codon_table config/qc_preprocessing.yaml
+```
+
+The wrapper performs a `from Bio import Entrez, SeqIO` preflight after any module
+load and before it downloads or parses GenBank records. `PYTHON` remains
+overrideable (for example, `PYTHON=/path/to/python`).
+
 `sample_ref_file` requires `sample`; a headerless two-column `sample, species` file
 is also supported for existing workflows. To build annotations, each sample needs an
 accession in the first populated configured column, by default `accession`,

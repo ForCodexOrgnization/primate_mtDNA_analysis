@@ -242,6 +242,11 @@ rrna_match:
     write_summary: true
     pass_only: false
 environment:
+  # Used only by the GenBank/codon-table build wrapper; this keeps Biopython
+  # separate from the MAFFT conda environment.
+  biopython:
+    use_module: true
+    module_load: Biopython/1.83-foss-2022b
   mafft:
     module_load: miniconda/24.11.3
     conda_env: mafft_env
