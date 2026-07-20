@@ -55,3 +55,39 @@ def inject_headers(header, fields, prefix):
  for i,x in enumerate(header):
   if x.startswith('#CHROM'): return header[:i]+out+header[i:]
  return header+out
+
+def normalize_rna_base(base):
+ """Return a single RNA base (DNA thymine is represented as uracil)."""
+ b=str(base or '').strip().upper().replace('T','U')
+ return b if b in {'A','C','G','U'} else None
+
+def pair_type(base1,base2):
+ a,b=normalize_rna_base(base1),normalize_rna_base(base2)
+ if not a or not b:return 'NA'
+ if (a,b) in {('A','U'),('U','A'),('G','C'),('C','G')}:return 'WC'
+ if (a,b) in {('G','U'),('U','G')}:return 'GU_wobble'
+ return 'non_WC'
+
+def pair_state(kind):
+ return 'NA' if kind in {'',None,'.','NA'} else ('paired' if kind in {'WC','GU_wobble','non_WC'} else str(kind))
+
+def pair_effect(ref_pair_type,alt_pair_type):
+ if ref_pair_type in {'',None,'.','NA'} or alt_pair_type in {'',None,'.','NA'}:return 'NA'
+ return 'unchanged' if ref_pair_type==alt_pair_type else f'{ref_pair_type}_to_{alt_pair_type}'
+
+def compare_values(a,b):
+ if a in {'',None,'.','NA'} or b in {'',None,'.','NA'}:return '.'
+ return 'yes' if str(a)==str(b) else 'no'
+
+def load_coordinate_map(path):
+ """Index an existing liftover map by original source position."""
+ result={}
+ if not path or not Path(path).exists():return result
+ for row in rows(path):
+  try: result[int(row.get('species_pos_original',row.get('source_pos','')))] = row.get('human_pos_canonical',row.get('human_pos',''))
+  except (TypeError,ValueError):pass
+ return result
+
+def lift_source_pos_to_human(pos,coordinate_map):
+ try:return str(coordinate_map.get(int(pos),'.') or '.')
+ except (TypeError,ValueError):return '.'

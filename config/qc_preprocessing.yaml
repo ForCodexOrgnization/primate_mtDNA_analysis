@@ -194,6 +194,7 @@ trna_match:
     run_trna_gene_qc: true
     write_summary: true
     pass_only: false
+    require_compensated_for_strict_stem: true
 rrna_match:
   paths:
     input_vcf_dir: results/qc/trna_match/vcf_trna
@@ -212,9 +213,12 @@ rrna_match:
     output_suffix: ".lifted.codon.trna.rrna.vcf"
     require_same_rrna_gene: true
     require_region_overlap: true
-    use_rrna_structure_table: false
-    human_rrna_structure_table: ""
+    # Enable after supplying this human-reference-guided table. Missing table is
+    # a clear error while enabled; set false to retain interval-only annotation.
+    use_rrna_structure_table: true
+    human_rrna_structure_table: data/reference_tables/human_rrna_structure.tsv
     species_rrna_structure_table: ""
+    require_pair_pos_match_for_high_conf_stem: true
     write_summary: true
     pass_only: false
 environment:
