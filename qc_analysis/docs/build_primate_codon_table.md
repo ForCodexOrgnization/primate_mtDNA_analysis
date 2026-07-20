@@ -32,11 +32,51 @@ load and before it downloads or parses GenBank records. `PYTHON` remains
 overrideable (for example, `PYTHON=/path/to/python`).
 
 `sample_ref_file` requires `sample`; a headerless two-column `sample, species` file
-is also supported for existing workflows. To build annotations, each sample needs an
-accession in the first populated configured column, by default `accession`,
-`accession_version`, `reference_id`, then `seq_name`. Useful optional fields are
-`species` and `family`. Several samples may use one accession and each receives its
-own rows so `run_codon_match.py` can look up `sample + pos`.
+is also supported for existing workflows. Useful optional fields are `species` and
+`family`. Several samples may use one accession and each receives its own rows so
+`run_codon_match.py` can look up `sample + pos`.
+
+## Inferring accession from reference manifests
+
+An accession in the first populated direct sample column is always preferred;
+by default those columns are `accession`, `accession_version`, `reference_id`, and
+`seq_name`. For a headerless two-column `sample_ref_file`, the script instead
+infers the mitochondrial accession from
+`references/manifests/reference_materialization_manifest.resolved.tsv` by matching
+`sample_ref` `species` to manifest `target_species`. Matching is case-insensitive
+and treats spaces and underscores equivalently (for example, `Cheracebus lugens`
+and `Cheracebus_lugens`).
+
+The preferred chrM annotation accession order is:
+
+1. `final_chrM_genbank_accn`
+2. `final_chrM_refseq_accn`
+3. `final_chrM_accession`
+4. `chrM_source_accession`
+
+If the resolved manifest has no usable match, the configured materialization and
+in-house manifests are tried next. The configured species FASTA directory is a
+last fallback: its filename or first header can supply an accession, but GenBank is
+still required to obtain CDS annotation. The summary table records the accession
+source, manifest match, and FASTA path for auditing.
+
+Validate mapping without downloading GenBank records:
+
+```bash
+module load Biopython/1.83-foss-2022b
+python qc_analysis/scripts/build_primate_codon_table.py \
+  --config config/qc_preprocessing.yaml \
+  --dry-run
+```
+
+Run the full preprocessing step with:
+
+```bash
+module load Biopython/1.83-foss-2022b
+bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  build_primate_codon_table \
+  config/qc_preprocessing.yaml
+```
 
 Downloaded records are cached in `data/reference_tables/primate_genbank/<accession>.gb`.
 The output `data/reference_tables/all_primate_position_codon_table.tsv` includes the
@@ -49,5 +89,5 @@ Failures are recorded without stopping other samples in
 `results/qc/codon_table_build/failed_genbank_downloads.tsv`; per-sample counts and
 sanity-check warnings are recorded in the matching summary table. Set the optional
 `build_primate_codon_table.settings.email` for NCBI Entrez requests. Use `--dry-run`
-to report planned downloads without creating the output table, or `--force-download`
-to refresh cached records.
+to resolve and audit every accession without downloading or parsing GenBank records,
+or `--force-download` to refresh cached records.

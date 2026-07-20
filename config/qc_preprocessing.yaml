@@ -153,8 +153,17 @@ build_primate_codon_table:
     output_table: data/reference_tables/all_primate_position_codon_table.tsv
     failed_downloads_table: results/qc/codon_table_build/failed_genbank_downloads.tsv
     summary_table: results/qc/codon_table_build/primate_codon_table_build_summary.tsv
+    reference_summary_file: references/manifests/reference_materialization_manifest.resolved.tsv
+    reference_summary_fallback_files: "references/manifests/reference_materialization_manifest.tsv,references/manifests/in_house_score_reference_inputs.tsv"
+    species_fasta_dir: /home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM
+    species_fasta_extensions: .fa,.fasta,.fna,.fa.gz,.fasta.gz,.fna.gz
   settings:
     accession_columns: "accession,accession_version,reference_id,seq_name"
+    reference_summary_species_columns: "target_species,final_chrM_species,preprint_REFERENCE_SPECIES,final_wg_ref_species"
+    reference_summary_accession_columns: "final_chrM_genbank_accn,final_chrM_refseq_accn,final_chrM_accession,chrM_source_accession"
+    reference_summary_path_columns: "chrM_expected_output_fasta,chrM_fasta_path,wg_expected_output_fasta,wg_fasta_path"
+    infer_accession_from_fasta: true
+    accession_regex: "([A-Z]{1,3}_[0-9]+(?:\\.[0-9]+)?)"
     species_column: species
     sample_column: sample
     email: ""
