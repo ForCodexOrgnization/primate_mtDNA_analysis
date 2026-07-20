@@ -215,7 +215,7 @@ rrna_match:
     require_region_overlap: true
     # Enable after supplying this human-reference-guided table. Missing table is
     # a clear error while enabled; set false to retain interval-only annotation.
-    use_rrna_structure_table: true
+    use_rrna_structure_table: false
     human_rrna_structure_table: data/reference_tables/human_rrna_structure.tsv
     species_rrna_structure_table: ""
     require_pair_pos_match_for_high_conf_stem: true

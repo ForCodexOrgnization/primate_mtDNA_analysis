@@ -15,7 +15,7 @@ def normalize_rrna_gene(gene):
 norm=normalize_rrna_gene
 def load(path,species=False): return rows(path)
 def load_rrna_structure_table(path):
- required={'rrna_gene','human_pos','local_pos','struct_class'}; data=rows(path)
+ required={'rrna_gene','human_pos','local_pos','base','struct_class','struct_element','paired_human_pos','paired_local_pos','paired_base','pair_type','pair_state'}; data=rows(path)
  if not data or not required.issubset(data[0]): raise ValueError(f'rRNA structure table {path} is missing required columns: {", ".join(sorted(required))}')
  result={}
  for row in data:
@@ -24,7 +24,9 @@ def load_rrna_structure_table(path):
  return result
 def hit(rs,pos,chrom='',sample=''):
  for r in rs:
-  if sample and r.get('sample',r.get('species','')) not in {'',sample}:continue
+  sample_columns=('sample','species','species_key','accession','reference_id')
+  identifiers=[r.get(column,'') for column in sample_columns if column in r and r.get(column,'')]
+  if sample and identifiers and sample not in identifiers:continue
   if chrom and r.get('chrom','') not in {'',chrom}:continue
   try:
    if int(r['start'])<=pos<=int(r['end']):return r
@@ -44,7 +46,7 @@ def map_for(directory,sample):
  return {}
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('--config',required=True);ap.add_argument('--sample');ap.add_argument('--input');ap.add_argument('--output');a=ap.parse_args();c=yaml(a.config);sec=c['rrna_match'];p,s=sec['paths'],sec['settings'];hs=load(p['human_rrna_table']);ss=load(p['species_rrna_table'])
- enabled=bool(s.get('use_rrna_structure_table',False)); spath=s.get('human_rrna_structure_table','');
+ enabled=bool(s.get('use_rrna_structure_table',False)); spath=s.get('human_rrna_structure_table',''); require_pair=bool(s.get('require_pair_pos_match_for_high_conf_stem',True))
  if enabled and (not spath or not Path(spath).exists()):raise SystemExit(f'rRNA structure annotation is enabled but human structure table is missing: {spath or "<unset>"}')
  structure=load_rrna_structure_table(spath) if enabled else {}
  samples=[a.sample] if a.sample else sample_names(c)
@@ -66,8 +68,10 @@ def main():
     klass=st.get('struct_class','.') or '.'; ppos=st.get('paired_human_pos','.') or '.'; plocal=st.get('paired_local_pos','.') or '.'; refpt=st.get('pair_type','.') or '.'; refpt=pair_type(st.get('base'),st.get('paired_base')) if refpt=='.' else refpt
     expected=infer_species_pair_pos_from_human_pair_local(sr,plocal) if sr else '.'; lifted=lift_source_pos_to_human(expected,cmap); pmatch=compare_values(lifted,ppos); lmatch=compare_values(sl,hl)
     altpt=pair_type(x[4],st.get('paired_base')) if klass=='stem' else '.'
-    structural.update({'MTRRNA_H_CLASS':klass,'MTRRNA_H_ELEMENT':st.get('struct_element','.') or '.','MTRRNA_H_PAIR_POS':ppos,'MTRRNA_H_PAIR_LOCAL':plocal,'MTRRNA_H_PAIR_TYPE':refpt,'MTRRNA_H_PAIR_STATE':st.get('pair_state','.') or pair_state(refpt),'MTRRNA_H_ALT_PAIR_TYPE':altpt,'MTRRNA_H_ALT_EFFECT':pair_effect(refpt,altpt) if klass=='stem' else '.','MTRRNA_S_PAIR_EXPECTED_POS':expected,'MTRRNA_S_PAIR_LIFTED_HPOS':lifted,'MTRRNA_PAIR_POS_MATCH':pmatch,'MTRRNA_LOCAL_MATCH':lmatch})
-    if status=='OK' and gm and lmatch=='yes' and klass=='stem': structural['MTRRNA_MATCH_TIER']='HIGH_CONF_STEM' if pmatch=='yes' else 'MODERATE_CONF_STEM'
+    pair_state_value=st.get('pair_state','.')
+    if pair_state_value in {'','.','NA'}: pair_state_value=pair_state(refpt)
+    structural.update({'MTRRNA_H_CLASS':klass,'MTRRNA_H_ELEMENT':st.get('struct_element','.') or '.','MTRRNA_H_PAIR_POS':ppos,'MTRRNA_H_PAIR_LOCAL':plocal,'MTRRNA_H_PAIR_TYPE':refpt,'MTRRNA_H_PAIR_STATE':pair_state_value,'MTRRNA_H_ALT_PAIR_TYPE':altpt,'MTRRNA_H_ALT_EFFECT':pair_effect(refpt,altpt) if klass=='stem' else '.','MTRRNA_S_PAIR_EXPECTED_POS':expected,'MTRRNA_S_PAIR_LIFTED_HPOS':lifted,'MTRRNA_PAIR_POS_MATCH':pmatch,'MTRRNA_LOCAL_MATCH':lmatch})
+    if status=='OK' and gm and lmatch=='yes' and klass=='stem': structural['MTRRNA_MATCH_TIER']='HIGH_CONF_STEM' if not require_pair or pmatch=='yes' else 'MODERATE_CONF_STEM'
     elif status=='OK' and gm and lmatch=='yes' and klass=='loop': structural['MTRRNA_MATCH_TIER']='HIGH_CONF_LOOP'
     else: structural['MTRRNA_MATCH_TIER']='LOW_CONF'
    v.update(structural);inf.update(v);x[7]=info_format(inf);body.append('\t'.join(x)+'\n');co[status]+=1
