@@ -5,6 +5,7 @@ import csv
 import re
 import sys
 import time
+import gzip
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -16,7 +17,7 @@ except ImportError:  # checked in main so importing helpers remains possible in 
     Entrez = SeqIO = None
 
 OUTPUT_FIELDS = "file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases".split()
-SUMMARY_FIELDS = "sample species accession_query accession_record genbank_file n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
+SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path accession_record genbank_file n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
 FAIL_FIELDS = "sample species accession_query reason".split()
 GENES = {'ND1':'MT-ND1','ND2':'MT-ND2','ND3':'MT-ND3','ND4':'MT-ND4','ND4L':'MT-ND4L','ND5':'MT-ND5','ND6':'MT-ND6','COX1':'MT-CO1','COI':'MT-CO1','COX2':'MT-CO2','COII':'MT-CO2','COX3':'MT-CO3','COIII':'MT-CO3','CYTB':'MT-CYB','ATP6':'MT-ATP6','ATP8':'MT-ATP8'}
 
@@ -28,7 +29,7 @@ def normalize_gene(raw):
     return GENES.get(key, raw)
 
 def species_key(species):
-    return re.sub(r'\s+', '_', species.strip())
+    return re.sub(r'_+', '_', re.sub(r'\s+', '_', species.strip().lower())).strip('_')
 
 def read_samples(path, sample_column, species_column):
     """Read normal header TSVs, while retaining legacy two-column sample/species files."""
@@ -44,6 +45,102 @@ def read_samples(path, sample_column, species_column):
 
 def accession_for(row, columns):
     return next((value(row, col) for col in columns if value(row, col)), '')
+
+def configured_columns(settings, name, defaults):
+    return [item.strip() for item in str(settings.get(name, defaults)).split(',') if item.strip()]
+
+def read_tsv(path):
+    path = Path(path)
+    if not path.exists():
+        return []
+    with path.open(newline='') as handle:
+        return list(csv.DictReader(handle, delimiter='\t'))
+
+def manifest_rows(paths, settings):
+    """Load the resolved manifest first, followed by optional fallback manifests."""
+    candidates = [paths.get('reference_summary_file', '')]
+    candidates.extend(str(paths.get('reference_summary_fallback_files', '')).split(','))
+    loaded = []
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if candidate:
+            loaded.append((candidate, read_tsv(candidate)))
+    return loaded
+
+def choose_manifest_match(matches, accession_columns):
+    """Choose the most review-ready chrM record without excluding usable rows."""
+    def score(row):
+        review = value(row, 'manual_review_required').lower()
+        pairing = value(row, 'reference_pairing_status').lower()
+        return (
+            review in ('false', 'no', '0'),
+            bool(value(row, accession_columns[0])),
+            any(word in pairing for word in ('usable', 'final', 'same')),
+            bool(value(row, 'final_reference_strategy')),
+        )
+    best = max(matches, key=score)
+    # Record ambiguity only when none of the stated preferences selected a row.
+    note = 'multiple_manifest_matches' if len(matches) > 1 and all(score(row) == score(best) for row in matches) else ''
+    return best, note
+
+def find_species_fasta(species, fasta_dir, extensions):
+    directory = Path(fasta_dir)
+    if not directory.is_dir():
+        return None
+    normalized_extensions = sorted((item.strip() for item in str(extensions).split(',') if item.strip()), key=len, reverse=True)
+    target = species_key(species)
+    for path in sorted(directory.iterdir()):
+        if not path.is_file():
+            continue
+        name = path.name
+        for extension in normalized_extensions:
+            if name.endswith(extension):
+                name = name[:-len(extension)]
+                break
+        if species_key(name) == target:
+            return path
+    return None
+
+def fasta_accession(path, regex):
+    pattern = re.compile(regex)
+    match = pattern.search(path.name)
+    if match:
+        return match.group(1), 'fasta_filename'
+    opener = gzip.open if path.name.endswith('.gz') else open
+    with opener(path, 'rt') as handle:
+        for line in handle:
+            if line.startswith('>'):
+                match = pattern.search(line)
+                return (match.group(1), 'fasta_header') if match else ('', '')
+    return '', ''
+
+def resolve_accession(metadata, direct_columns, manifests, settings, paths):
+    """Resolve direct sample metadata, then chrM manifests, then a species FASTA."""
+    direct = accession_for(metadata, direct_columns)
+    if direct:
+        return direct, 'sample_ref_file', '', '', '', ''
+    manifest_species_columns = configured_columns(settings, 'reference_summary_species_columns', 'target_species,final_chrM_species,preprint_REFERENCE_SPECIES,final_wg_ref_species')
+    manifest_accession_columns = configured_columns(settings, 'reference_summary_accession_columns', 'final_chrM_genbank_accn,final_chrM_refseq_accn,final_chrM_accession,chrM_source_accession')
+    target = species_key(metadata['species'])
+    for index, (manifest_file, rows) in enumerate(manifests):
+        matches = [row for row in rows if any(species_key(value(row, column)) == target for column in manifest_species_columns)]
+        if matches:
+            # An incomplete preferred row must not obscure a less-preferred row
+            # that actually supplies a chrM accession.
+            usable_matches = [row for row in matches if accession_for(row, manifest_accession_columns)]
+            if usable_matches:
+                selected, note = choose_manifest_match(usable_matches, manifest_accession_columns)
+                accession = accession_for(selected, manifest_accession_columns)
+                matched = next((value(selected, column) for column in manifest_species_columns if species_key(value(selected, column)) == target), '')
+                return accession, 'reference_manifest' if index == 0 else 'reference_manifest_fallback', note, manifest_file, matched, ''
+    if settings.get('infer_accession_from_fasta', False):
+        fasta_path = find_species_fasta(metadata['species'], paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna,.fa.gz,.fasta.gz,.fna.gz'))
+        if fasta_path:
+            accession, source = fasta_accession(fasta_path, settings.get('accession_regex', r'([A-Z]{1,3}_[0-9]+(?:\\.[0-9]+)?)'))
+            if accession:
+                return accession, source, '', '', '', str(fasta_path)
+            return '', 'unresolved', '', '', '', str(fasta_path)
+    return '', 'unresolved', '', '', '', ''
 
 def safe_filename(accession):
     return re.sub(r'[^A-Za-z0-9_.-]+', '_', accession) + '.gb'
@@ -116,7 +213,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True); parser.add_argument('--sample'); parser.add_argument('--force-download', action='store_true'); parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
-    if SeqIO is None: raise SystemExit('Biopython is required for GenBank download/parsing.')
     section = yaml(args.config).get('build_primate_codon_table')
     if not section: raise SystemExit('Missing build_primate_codon_table section in config.')
     paths, settings = section['paths'], section.get('settings', {})
@@ -124,21 +220,35 @@ def main():
     sample_rows = read_samples(paths['sample_ref_file'], sample_col, species_col)
     if args.sample: sample_rows = [r for r in sample_rows if value(r, sample_col) == args.sample]
     if not sample_rows: raise SystemExit('No samples selected.')
-    columns = [x.strip() for x in str(settings.get('accession_columns', '')).split(',') if x.strip()]
+    columns = configured_columns(settings, 'accession_columns', 'accession,accession_version,reference_id,seq_name')
+    manifests = manifest_rows(paths, settings)
+    if SeqIO is None and not args.dry_run:
+        raise SystemExit('Biopython is required for GenBank download/parsing.')
     failures, output, summary, cache = [], [], [], {}
     for raw_metadata in sample_rows:
         metadata = dict(raw_metadata); metadata['sample'] = value(metadata, sample_col); metadata['species'] = value(metadata, species_col)
-        accession = accession_for(metadata, columns); metadata['accession_query'] = accession
-        base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'accession_record':'', 'genbank_file':'', 'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'', 'max_pos':'', 'status':'failed', 'note':''}
+        accession, source, accession_note, manifest_file, matched_species, fasta_path = resolve_accession(metadata, columns, manifests, settings, paths)
+        metadata['accession_query'] = accession
+        base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession,
+                'accession_source':source, 'accession_note':accession_note,
+                'manifest_file':manifest_file, 'matched_manifest_species':matched_species,
+                'species_fasta_path':fasta_path, 'accession_record':'', 'genbank_file':'',
+                'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'',
+                'max_pos':'', 'status':'failed', 'note':''}
         if not accession:
-            failures.append({**base, 'reason':'No accession found in configured accession_columns.'}); base['note'] = 'No accession found in configured accession_columns.'; summary.append(base); continue
+            reason = 'No accession found from sample_ref_file, reference manifest, or FASTA.'
+            failures.append({**base, 'reason':reason}); base['note'] = reason
+            base['status'] = 'dry_run_unresolved' if args.dry_run else 'failed'
+            summary.append(base); continue
         gb = Path(paths['genbank_dir']) / safe_filename(accession); base['genbank_file'] = str(gb)
         try:
             force = args.force_download or bool(settings.get('force_download', False))
             if not args.dry_run and (force or not (gb.exists() and settings.get('skip_existing_genbank', True))):
                 download(accession, gb, settings); time.sleep(float(settings.get('sleep_seconds', 0.34)))
             if args.dry_run and not gb.exists():
-                base.update(status='dry_run', note='Would download GenBank record.'); summary.append(base); continue
+                base.update(status='dry_run_resolved', note='Would download GenBank record.'); summary.append(base); continue
+            if args.dry_run:
+                base.update(status='dry_run_resolved', note='Would reuse cached GenBank record.'); summary.append(base); continue
             if not gb.exists(): raise FileNotFoundError(f'GenBank file is missing: {gb}')
             if accession not in cache: cache[accession] = SeqIO.read(str(gb), 'genbank')
             parsed, n_cds = parse_record(cache[accession], metadata, gb); output.extend(parsed)
@@ -159,6 +269,12 @@ def main():
         for row in summary: row['note'] = '; '.join(filter(None, [row['note'], *global_notes]))
     if not args.dry_run: write_tsv(paths['output_table'], OUTPUT_FIELDS, output)
     write_tsv(paths['failed_downloads_table'], FAIL_FIELDS, failures); write_tsv(paths['summary_table'], SUMMARY_FIELDS, summary)
-    print(f'Built {len(output)} coding-position rows for {sum(r["status"] == "completed" for r in summary)} samples.')
+    if args.dry_run:
+        resolved = sum(row['status'] == 'dry_run_resolved' for row in summary)
+        unresolved = sum(row['status'] == 'dry_run_unresolved' for row in summary)
+        print(f'Resolved accessions for {resolved} samples.')
+        print(f'Unresolved accessions for {unresolved} samples.')
+    else:
+        print(f'Built {len(output)} coding-position rows for {sum(r["status"] == "completed" for r in summary)} samples.')
 
 if __name__ == '__main__': main()
