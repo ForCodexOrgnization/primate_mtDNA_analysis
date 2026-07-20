@@ -5,7 +5,15 @@ from collections import Counter
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.match_utils import yaml,rows,info_parse,info_format,source,human_pos,inject_headers,write_summary,sample_names
-FIELDS=[('MTCODON_STATUS','Codon match status'),('MTCODON_MATCH','Human codon matches source reference or alternate codon'),('MTCODON_STRICT_PHASE','Strict phase matching enabled'),('MTCODON_GENE_MATCH','Mitochondrial gene match'),('MTCODON_PHASE_MATCH','Codon phase match'),('MTCODON_PRIMATE_GENE','Source gene'),('MTCODON_PRIMATE_CODON','Source codon'),('MTCODON_PRIMATE_PHASE','Source codon phase'),('MTCODON_HUMAN_GENE','Human gene'),('MTCODON_HUMAN_CODON','Human codon'),('MTCODON_HUMAN_PHASE','Human codon phase')]
+FIELDS=[('MTCODON_STATUS','Codon match status'),('MTCODON_MATCH','Human codon matches source reference or alternate codon'),('MTCODON_STRICT_PHASE','Strict phase matching enabled'),('MTCODON_GENE_MATCH','Mitochondrial gene match'),('MTCODON_PHASE_MATCH','Codon phase match'),('MTCODON_PRIMATE_GENE','Source gene'),('MTCODON_PRIMATE_CODON','Source reference codon'),('MTCODON_PRIMATE_ALT_CODON','Source alternate codon constructed from SRC_ALT'),('MTCODON_PRIMATE_PHASE','Source codon phase'),('MTCODON_HUMAN_GENE','Human gene'),('MTCODON_HUMAN_CODON','Human codon'),('MTCODON_HUMAN_PHASE','Human codon phase')]
+def mutate_codon(codon,phase,alt_base):
+ if codon in {'',None,'.','NA'} or phase in {'',None,'.','NA'} or alt_base in {'',None,'.','NA'}: return '.'
+ try: phase=int(phase)
+ except (TypeError,ValueError): return '.'
+ bases=list(str(codon).upper()); alt=str(alt_base).upper()
+ if len(bases)!=3 or not 1<=phase<=3 or not alt: return '.'
+ bases[phase-1]=alt[0]
+ return ''.join(bases)
 def load(path,species=False):
  d={}; ident=None
  for r in rows(path):
@@ -28,7 +36,7 @@ def main():
   with inp.open() as f:
    for line in f:
     if line.startswith('#'): header.append(line);continue
-    x=line.rstrip('\n').split('\t'); inf=info_parse(x[7]); _,pos,_,_=source(inf); hp=human_pos(x,inf); sr=sp.get((sample,pos)) if pos else None
+    x=line.rstrip('\n').split('\t'); inf=info_parse(x[7]); source_chrom,pos,source_ref,source_alt=source(inf); hp=human_pos(x,inf); sr=sp.get((sample,pos)) if pos else None
     if sr is None and pos: # permit species aliases/table identifiers
      choices=[r for (key,k),r in sp.items() if k==pos and (key==sample or len({q for q,_ in sp})==1)] ; sr=choices[0] if choices else None
     hr=hu.get(('',hp)) if hp else None
@@ -37,10 +45,10 @@ def main():
     elif not sr: status='SKIPPED_NONCODING'
     elif not hr: status='NO_HUMAN_CODON'
     else:
-     gene=sr.get('gene',''); phase=str(sr.get('codon_pos_in_triplet','')); gm=gene==hr.get('gene',''); pm=phase==str(hr.get('codon_pos_in_triplet','')); match=hr.get('codon_seq','') in {sr.get('codon_seq',''),sr.get('alt_codon_seq','')}
+     gene=sr.get('gene',''); phase=str(sr.get('codon_pos_in_triplet','')); ref_codon=sr.get('codon_seq','.'); alt_codon=mutate_codon(ref_codon,phase,source_alt); gm=gene==hr.get('gene',''); pm=phase==str(hr.get('codon_pos_in_triplet','')); match=hr.get('codon_seq','') in {ref_codon,alt_codon}
      vals.update(MTCODON_GENE_MATCH='yes' if gm else 'no',MTCODON_PHASE_MATCH='yes' if pm else 'no',MTCODON_MATCH='yes' if match else 'no')
      status='GENE_MISMATCH' if strict and not gm else 'PHASE_MISMATCH' if strict and not pm else 'PASS' if match else 'MISMATCH'
-    vals.update(MTCODON_STATUS=status,MTCODON_PRIMATE_GENE=(sr or {}).get('gene','.'),MTCODON_PRIMATE_CODON=(sr or {}).get('codon_seq','.'),MTCODON_PRIMATE_PHASE=(sr or {}).get('codon_pos_in_triplet','.'),MTCODON_HUMAN_GENE=(hr or {}).get('gene','.'),MTCODON_HUMAN_CODON=(hr or {}).get('codon_seq','.'),MTCODON_HUMAN_PHASE=(hr or {}).get('codon_pos_in_triplet','.'))
+    vals.update(MTCODON_STATUS=status,MTCODON_PRIMATE_GENE=(sr or {}).get('gene','.'),MTCODON_PRIMATE_CODON=(sr or {}).get('codon_seq','.'),MTCODON_PRIMATE_ALT_CODON=mutate_codon((sr or {}).get('codon_seq'),(sr or {}).get('codon_pos_in_triplet'),source_alt),MTCODON_PRIMATE_PHASE=(sr or {}).get('codon_pos_in_triplet','.'),MTCODON_HUMAN_GENE=(hr or {}).get('gene','.'),MTCODON_HUMAN_CODON=(hr or {}).get('codon_seq','.'),MTCODON_HUMAN_PHASE=(hr or {}).get('codon_pos_in_triplet','.'))
     for k in ('MTCODON_MATCH','MTCODON_GENE_MATCH','MTCODON_PHASE_MATCH'): vals.setdefault(k,'no')
     inf.update(vals);x[7]=info_format(inf);body.append('\t'.join(x)+'\n');counts[status]+=1
   with out.open('w') as f:f.writelines(inject_headers(header,FIELDS,'MTCODON'));f.writelines(body)
