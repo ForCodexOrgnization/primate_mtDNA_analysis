@@ -31,3 +31,20 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh mitos2_annotation config/qc_pre
 bash qc_analysis/scripts/run_qc_preprocessing.sh build_primate_codon_table config/qc_preprocessing.yaml
 bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yaml
 ```
+
+## One-reference smoke test
+
+Run the validated MITOS2 command path for one materialized reference:
+
+```bash
+python qc_analysis/scripts/run_mitos2_annotation.py \
+  --config config/qc_preprocessing.yaml \
+  --reference Tarsius_lariang \
+  --force
+```
+
+This writes `results/qc/mitos2_annotation/all_mitos2_features.tsv`,
+`results/qc/mitos2_annotation/all_mitos2_position_codon_table.tsv`, and
+`results/qc/mitos2_annotation/mitos2_annotation_summary.tsv`. A completed
+Tarsius run contains approximately 13 CDS intervals and 11,000 coding-position
+rows.

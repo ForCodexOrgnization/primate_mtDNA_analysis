@@ -46,9 +46,11 @@ def test_mitos2_command_templates_invoke_runmitos():
 
     assert all(command.startswith('runmitos ') for command in commands)
     assert commands == [
-        'runmitos --fasta input.fa -c 2 -o output -r refseq81m --best --noplots',
         'runmitos -i input.fa -c 2 -o output -r refseq81m --best --noplots',
+        'runmitos --input input.fa -c 2 -o output -r refseq81m --best --noplots',
     ]
+    assert '-I ' not in ' '.join(commands)
+    assert '--fasta' not in ' '.join(commands)
     assert '--threads' not in ' '.join(commands)
 
 
@@ -62,8 +64,29 @@ def test_mitos2_command_templates_quote_paths_and_include_optional_refdir():
     )
 
     assert commands[0] == (
-        "/opt/mitos/bin/runmitos --fasta '/tmp/input fasta.fa' -c 2 "
-        "-o '/tmp/output directory' -r refseq99m --best --noplots "
-        "-R '/tmp/reference data'"
+        "/opt/mitos/bin/runmitos -i '/tmp/input fasta.fa' -c 2 "
+        "-o '/tmp/output directory' -r refseq99m -R '/tmp/reference data' "
+        "--best --noplots"
     )
-    assert commands[1].startswith("/opt/mitos/bin/runmitos -i '/tmp/input fasta.fa'")
+    assert commands[1].startswith("/opt/mitos/bin/runmitos --input '/tmp/input fasta.fa'")
+
+
+def test_parse_outputs_prefers_mitos_gff_and_normalizes_mitos_names(tmp_path):
+    module = load_module()
+    (tmp_path / 'result.gff').write_text(
+        'chrM\tmitos\tregion\t1\t16965\t.\t+\t.\tID=chrM:1..16965\n'
+        'chrM\tmitfi\tncRNA_gene\t1\t66\t.\t+\t.\tID=gene_trnF;Name=trnF;gene_id=trnF\n'
+        'chrM\tmitfi\ttRNA\t1\t66\t.\t+\t.\tID=transcript_trnF(gaa);Name=trnF(gaa)\n'
+        'chrM\tmitfi\trRNA\t67\t1022\t.\t+\t.\tID=transcript_rrnS;Name=rrnS\n'
+        'chrM\tmitos\tgene\t2738\t3694\t.\t+\t.\tID=gene_nad1;Name=nad1;gene_id=nad1\n'
+        'chrM\tmitfi\texon\t2738\t3694\t.\t+\t.\tParent=transcript_nad1;Name=nad1\n'
+    )
+    # This fallback must not be read while the GFF produces valid features.
+    (tmp_path / 'result.bed').write_text('chrM\t1\t10\tnad2\t0\t+\n')
+    features, diagnostics = module.parse_outputs(tmp_path, {'reference_key': 'test'})
+
+    assert [feature['feature_type'] for feature in features] == ['tRNA', 'rRNA', 'CDS']
+    assert [feature['gene'] for feature in features] == ['trnF', 'MT-RNR1', 'MT-ND1']
+    assert features[-1]['gene_raw'] == 'nad1'
+    assert len(diagnostics) == 1
+    assert diagnostics[0]['file'].endswith('result.gff')

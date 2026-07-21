@@ -291,8 +291,8 @@ mitos2_annotation:
     threads: 4
     # Required by runmitos; choose the reference version installed with MITOS2.
     refseqver: refseq81m
-    # Optional custom MITOS2 reference directory. Empty uses the MITOS2 default.
-    refdir: ""
+    # Working MITOS2 reference database used by the validated runmitos command.
+    refdir: /home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/data/reference_tables
     # Conda environment: mitos2; package: mitos; CLI executable: runmitos.
     use_conda: true
     conda_module: miniconda
