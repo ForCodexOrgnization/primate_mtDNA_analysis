@@ -289,13 +289,12 @@ mitos2_annotation:
     run_for_all_references: true
     overwrite_existing: false
     threads: 4
-    # MITOS2 is called through conda activate mitos2.
+    # Conda environment: mitos2; package: mitos; CLI executable: runmitos.
     use_conda: true
-    conda_module: miniconda/24.11.3
+    conda_module: miniconda
     conda_env: mitos2
-    # Commands may vary by installation; detect available command after activation.
-    mitos2_command_candidates: "mitos2,mitos,runmitos.py"
-    mitos2_command_mode: auto
+    # runmitos is validated after environment activation; do not probe package or environment names.
+    mitos2_command_mode: runmitos
     reuse_incomplete: false
     genetic_code: 2
     # MITOS2 tRNA/rRNA results are interval annotations only.

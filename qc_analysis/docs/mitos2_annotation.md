@@ -3,11 +3,24 @@
 MITOS2 is invoked only through its conda environment, not as a presumed system command:
 
 ```bash
-module load miniconda/24.11.3
+module load miniconda
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate mitos2
+
+echo "CONDA_PREFIX=$CONDA_PREFIX"
+echo "MITOS executable=$(command -v runmitos || true)"
+if ! command -v runmitos >/dev/null 2>&1; then
+    echo "ERROR: runmitos was not found after activating conda env mitos2." >&2
+    echo "CONDA_PREFIX=${CONDA_PREFIX:-not_set}" >&2
+    echo "PATH=$PATH" >&2
+    exit 1
+fi
+
+echo "Using MITOS2 executable: $(command -v runmitos)"
+runmitos --help >/dev/null
 ```
 
-`run_mitos2_annotation.py` activates that environment in a login shell, probes `mitos2`, `mitos`, then `runmitos.py`, and records the selected executable in `results/qc/mitos2_annotation/mitos2_annotation_summary.tsv`.
+`run_mitos2_annotation.py` activates that environment in a login shell, validates `runmitos`, and records that executable in `results/qc/mitos2_annotation/mitos2_annotation_summary.tsv`. The conda environment name is `mitos2`, the installed package name is `mitos`, and the CLI executable name is `runmitos`.
 
 The workflow deduplicates final materialized chrM FASTAs from the resolved reference manifest. Those FASTAs are the coordinate truth for all emitted positions. MITOS2 supplies CDS, tRNA, and rRNA *intervals*; its tRNA/rRNA output does not provide secondary-structure stem/loop information and does not replace tRNAscan paired-site annotations or human-guided rRNA stem/loop annotation. The interval table may support future fallback region tables.
 

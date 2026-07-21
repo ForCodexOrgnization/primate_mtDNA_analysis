@@ -65,13 +65,25 @@ def parse_outputs(raw,ref):
   features+=parsed;diagnostics.append({'reference_key':ref['reference_key'],'file':str(p),'suffix':p.suffix,'n_lines':len(lines),'n_candidate_feature_lines':cand,'parser_used':parser,'n_features_parsed':len(parsed)})
  return features,diagnostics
 def activate(settings):
- return f"module load {shlex.quote(str(settings.get('conda_module','miniconda/24.11.3')))} && source \"$(conda info --base)/etc/profile.d/conda.sh\" && conda activate {shlex.quote(str(settings.get('conda_env','mitos2')))}"
+ # mitos2 is the conda environment, mitos is the package, and runmitos is the CLI.
+ return f"module load {shlex.quote(str(settings.get('conda_module', 'miniconda')))} && source \"$(conda info --base)/etc/profile.d/conda.sh\" && conda activate {shlex.quote(str(settings.get('conda_env', 'mitos2')))}"
 def command(settings):
- mode=str(settings.get('mitos2_command_mode','auto')); candidates=[mode] if mode!='auto' else [x.strip() for x in str(settings.get('mitos2_command_candidates','mitos2,mitos,runmitos.py')).split(',')]
- for c in candidates:
-  x=subprocess.run(['bash','-lc',activate(settings)+f' && command -v {shlex.quote(c)}'],text=True,capture_output=True)
-  if x.returncode==0:return x.stdout.strip(),c
- raise RuntimeError(f"ERROR: MITOS2 was not found after activating conda env {settings.get('conda_env','mitos2')}.")
+ validation = activate(settings) + '''
+if ! command -v runmitos >/dev/null 2>&1; then
+    echo "ERROR: runmitos was not found after activating conda env mitos2." >&2
+    echo "CONDA_PREFIX=${CONDA_PREFIX:-not_set}" >&2
+    echo "PATH=$PATH" >&2
+    exit 1
+fi
+
+echo "CONDA_PREFIX=$CONDA_PREFIX"
+echo "MITOS executable=$(command -v runmitos || true)"
+echo "Using MITOS2 executable: $(command -v runmitos)"
+'''
+ x=subprocess.run(['bash','-lc',validation],text=True,capture_output=True)
+ if x.returncode != 0:
+  raise RuntimeError(x.stderr.strip() or 'ERROR: runmitos validation failed after conda activation.')
+ return 'runmitos',x.stdout
 def templates(exe,fasta,out,settings):
  q=shlex.quote;code=str(settings.get('genetic_code',2));threads=str(settings.get('threads',4))
  return [f'{q(exe)} -i {q(fasta)} -o {q(out)} --code {code} --threads {threads}',f'{q(exe)} --input {q(fasta)} --output {q(out)} --genetic_code {code} --threads {threads}',f'{q(exe)} {q(fasta)} {q(out)}']
@@ -106,7 +118,7 @@ def main():
   for path in logs.values(): Path(path).write_text('')
   try:
    if not Path(fasta).exists():raise FileNotFoundError(f'Final chrM FASTA is missing: {fasta}')
-   exe,selected=command(settings);mode=selected if mode=='auto' else mode; helpx=subprocess.run(['bash','-lc',activate(settings)+f' && {shlex.quote(exe)} --help'],text=True,capture_output=True);Path(logs['help']).write_text(helpx.stdout+'\n'+helpx.stderr)
+   exe,validation=command(settings);mode='runmitos'; helpx=subprocess.run(['bash','-lc',activate(settings)+f' && {shlex.quote(exe)} --help'],text=True,capture_output=True);Path(logs['help']).write_text(validation+helpx.stdout+'\n'+helpx.stderr)
    marker=raw/'mitos2.completed.ok'
    if a.dry_run:Path(logs['command']).write_text('dry-run\n');Path(logs['stdout']).write_text('');Path(logs['stderr']).write_text('');Path(logs['returncode']).write_text('0\n');status='dry_run';features=[];diag=[]
    elif marker.exists() and not a.force:
