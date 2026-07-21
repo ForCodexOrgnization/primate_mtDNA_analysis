@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Run MITOS2 per final chrM FASTA and materialize diagnostic annotation tables."""
-import argparse, csv, re, shlex, subprocess, sys
+import argparse, csv, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.match_utils import yaml
@@ -9,6 +9,7 @@ try:
 except ImportError: SeqIO = None
 FEATURE_FIELDS='reference_key reference_species coordinate_reference_accession coordinate_reference_fasta feature_type gene gene_raw start end strand score source_file annotation_source'.split()
 CODON_FIELDS='file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source coordinate_reference_fasta coordinate_reference_accession'.split()
+DEBUG_FIELDS='gff_seqid fasta_record_id fasta_length cds_length usable_cds_length n_codons n_position_rows status error gene gene_raw start end strand'.split()
 TASK_FIELDS='task_id reference_key reference_species coordinate_reference_accession coordinate_reference_fasta n_samples_using_reference status'.split()
 SUMMARY_FIELDS='reference_key reference_species coordinate_reference_accession coordinate_reference_fasta status command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_linked_samples n_reference_coding_position_rows n_sample_level_coding_position_rows n_coding_position_rows n_output_files_scanned n_parseable_files result_gff_exists n_gff_gene_rows n_gff_cds_like_gene_rows n_gff_trna_rows n_gff_rrna_rows parser_status note'.split()
 DIAG_FIELDS='reference_key file suffix n_lines n_candidate_feature_lines parser_used n_features_parsed'.split()
@@ -33,7 +34,7 @@ def read(p):
  if not p.exists():return []
  with p.open(newline='') as h: rows=[x for x in csv.reader(h,delimiter='\t') if any(y.strip() for y in x)]
  if not rows:return []
- headers={'sample','target_species','final_chrM_species','final_chrM_accession','chrM_expected_output_fasta'}
+ headers={'sample','target_species','final_chrM_species','final_chrM_accession','chrM_expected_output_fasta','reference_key','gff_seqid','status'}
  return [dict(zip(rows[0],x)) for x in rows[1:]] if headers.intersection(rows[0]) else [{'sample':x[0].strip(),'species':x[1].strip() if len(x)>1 else ''} for x in rows]
 def attrs(s):
  d={}
@@ -103,7 +104,7 @@ def parse_file(p, ref):
   rawgene=cleanraw(rawgene); key=(ft,start,end,strand,rawgene)
   if key in seen: continue
   seen.add(key)
-  parsed.append({**ref,'feature_type':ft,'gene':norm(rawgene) if ft in ('CDS', 'rRNA') else rawgene,
+  parsed.append({**ref,'gff_seqid':c[0] if len(c) >= 9 else '', 'feature_type':ft,'gene':norm(rawgene) if ft in ('CDS', 'rRNA') else rawgene,
                  'gene_raw':rawgene,'start':start,'end':end,'strand':strand,'score':score,
                  'source_file':str(p),'annotation_source':'MITOS2'})
  diagnostics.append({'reference_key':ref['reference_key'],'file':str(p),'suffix':p.suffix,'n_lines':len(lines),
@@ -156,21 +157,34 @@ def templates(exe,fasta,out,settings):
 def build_reference_codon_rows(features,fasta,ref,code):
  """Build coding-position rows once per reference, before sample expansion."""
  if SeqIO is None: raise RuntimeError('Biopython is required to create MITOS2 codon rows.')
- rec=next(SeqIO.parse(str(fasta),'fasta'));seq=str(rec.seq).upper();base=[]
+ records=list(SeqIO.parse(str(fasta),'fasta'))
+ if not records: raise RuntimeError(f'No FASTA records in {fasta}')
+ base=[]; debug=[]
  for f in features:
   if f['feature_type']!='CDS': continue
-  coords=list(range(int(f['start'])-1,int(f['end'])));strand=f['strand'];dna=''.join(seq[i] for i in coords)
-  if strand=='-': coords.reverse();dna=dna.translate(str.maketrans('ACGTN','TGCAN'))[::-1]
-  usable=len(dna)//3*3
-  for i in range(0,usable,3):
-   trip=coords[i:i+3]
-   for phase,pos in enumerate(trip,1): base.append({'file_name':Path(fasta).name,'seq_name':rec.id,'sample':'','species':'','species_key':'','accession':ref['coordinate_reference_accession'],'accession_version':ref['coordinate_reference_accession'],'reference_id':ref['coordinate_reference_accession'],'family':'','pos':pos+1,'ref_base_genome':seq[pos],'gene':f['gene'],'gene_raw':f['gene_raw'],'product':f['gene_raw'],'protein_id':'','strand':strand,'codon_index':i//3+1,'codon_pos_in_triplet':phase,'codon_seq':dna[i:i+3],'codon_pos1_genomic':trip[0]+1,'codon_pos2_genomic':trip[1]+1,'codon_pos3_genomic':trip[2]+1,'codon_start_qualifier':'1','transl_table':code,'cds_tail_incomplete_bases':len(dna)-usable,'annotation_source':'MITOS2','coordinate_reference_fasta':str(fasta),'coordinate_reference_accession':ref['coordinate_reference_accession']})
+  gff_seqid=f.get('gff_seqid',''); rec=next((r for r in records if r.id == gff_seqid), records[0] if len(records)==1 else None)
+  d={'gff_seqid':gff_seqid,'fasta_record_id':rec.id if rec else '','fasta_length':len(rec) if rec else '','cds_length':'','usable_cds_length':'','n_codons':0,'n_position_rows':0,'status':'','error':'','gene':f['gene'],'gene_raw':f['gene_raw'],'start':f['start'],'end':f['end'],'strand':f['strand']}
+  try:
+   if rec is None: raise ValueError(f'No FASTA record matches GFF seqid {gff_seqid!r}')
+   seq=str(rec.seq).upper(); start,end=int(f['start']),int(f['end'])
+   if start < 1 or end < start or end > len(seq): raise ValueError(f'CDS coordinates {start}..{end} outside FASTA length {len(seq)}')
+   coords=list(range(start-1,end));strand=f['strand'];dna=''.join(seq[i] for i in coords)
+   if strand=='-': coords.reverse();dna=dna.translate(str.maketrans('ACGTN','TGCAN'))[::-1]
+   usable=len(dna)//3*3; d.update(cds_length=len(dna),usable_cds_length=usable,n_codons=usable//3)
+   for i in range(0,usable,3):
+    trip=coords[i:i+3]
+    for phase,pos in enumerate(trip,1): base.append({'file_name':Path(fasta).name,'seq_name':rec.id,'sample':'','species':'','species_key':'','accession':ref['coordinate_reference_accession'],'accession_version':ref['coordinate_reference_accession'],'reference_id':ref['coordinate_reference_accession'],'family':'','pos':pos+1,'ref_base_genome':seq[pos],'gene':f['gene'],'gene_raw':f['gene_raw'],'product':f['gene_raw'],'protein_id':'','strand':strand,'codon_index':i//3+1,'codon_pos_in_triplet':phase,'codon_seq':dna[i:i+3],'codon_pos1_genomic':trip[0]+1,'codon_pos2_genomic':trip[1]+1,'codon_pos3_genomic':trip[2]+1,'codon_start_qualifier':'1','transl_table':code,'cds_tail_incomplete_bases':len(dna)-usable,'annotation_source':'MITOS2','coordinate_reference_fasta':str(fasta),'coordinate_reference_accession':ref['coordinate_reference_accession']})
+   d.update(n_position_rows=usable,status='completed')
+  except Exception as exc: d.update(status='failed',error=f'{type(exc).__name__}: {exc}')
+  debug.append(d)
+ raw_dir=ref.get('raw_dir','')
+ if raw_dir: write(Path(raw_dir)/'mitos2_reference_codon_debug.tsv',DEBUG_FIELDS,debug)
  return base
 def expand_reference_codon_rows(reference_codon_rows,linked_samples):
  return [{**r,'sample':sample['sample'],'species':sample['species'],'species_key':sk(sample['species'])} for sample in linked_samples for r in reference_codon_rows]
 def collect_reference(ref,linked,paths,settings):
  """Return a complete result object for one reference; never abort a batch."""
- raw=Path(paths['mitos2_raw_dir'])/ref['reference_key']; logs={x:str(raw/f'mitos2.{x}.txt') for x in ('command','stdout','stderr','returncode','help')}
+ raw=Path(paths['mitos2_raw_dir'])/ref['reference_key']; ref={**ref,'raw_dir':str(raw)}; logs={x:str(raw/f'mitos2.{x}.txt') for x in ('command','stdout','stderr','returncode','help')}
  gff=gff_diagnostics(raw); features=[];diag=[];reference_codon_rows=[];sample_codon_rows=[];note=''
  recorded_status=(raw/'mitos2.status.txt').read_text().strip() if (raw/'mitos2.status.txt').exists() else ''
  marker=raw/'mitos2.completed.ok'
@@ -184,11 +198,13 @@ def collect_reference(ref,linked,paths,settings):
  if reference_codon_rows:
   try: sample_codon_rows=expand_reference_codon_rows(reference_codon_rows,linked)
   except Exception as exc: note=f'Sample codon expansion failed: {exc}'
+ debug_rows=read(raw/'mitos2_reference_codon_debug.tsv')
+ gene_warnings=any(val(row,'status') != 'completed' for row in debug_rows)
  if not n_cds:
   status=parser_failure_status(features,gff) if (marker.exists() or recorded_status or gff['result_gff_exists']) else 'pending'
  elif not reference_codon_rows: status='failed_reference_codon_construction'
  elif not linked: status='completed_reference_no_linked_samples'
- elif sample_codon_rows: status='completed'
+ elif sample_codon_rows: status='completed_with_gene_warnings' if gene_warnings else 'completed'
  else: status='failed_sample_expansion'
  if recorded_status and not gff['result_gff_exists'] and not features: status=recorded_status
  rc=Path(logs['returncode']).read_text().strip() if Path(logs['returncode']).exists() else ''
@@ -221,8 +237,10 @@ def merge(paths,settings,refs):
  results=[collect_reference(ref,linked,paths,settings) for ref,linked in refs]
  allf=[row for result in results for row in result['features']]
  allc=[row for result in results for row in result['sample_codon_rows']]
+ allref=[row for result in results for row in result['reference_codon_rows']]
  summ=[result['summary_row'] for result in results]
- write(paths['mitos2_feature_table'],FEATURE_FIELDS,allf);write(paths['mitos2_cds_table'],CODON_FIELDS,allc);write(paths['mitos2_summary_table'],SUMMARY_FIELDS,summ)
+ reference_table=paths.get('mitos2_reference_cds_table',str(Path(paths['output_dir'])/'all_mitos2_reference_position_codon_table.tsv'))
+ write(paths['mitos2_feature_table'],FEATURE_FIELDS,allf);write(paths['mitos2_cds_table'],CODON_FIELDS,allc);write(reference_table,CODON_FIELDS,allref);write(paths['mitos2_summary_table'],SUMMARY_FIELDS,summ)
  print(f'Wrote {len(allf)} features and {len(allc)} sample-level coding rows.')
 def run_reference(ref,linked,paths,settings,a):
  """Execute one MITOS2 reference and always return its materialized result."""
@@ -231,23 +249,31 @@ def run_reference(ref,linked,paths,settings,a):
  if marker.exists() and not a.force:
   print(f'Skipping completed MITOS2 reference: {ref["reference_key"]}')
   return collect_reference(ref,linked,paths,settings)
+ if a.force:
+  for p in raw.glob('result.*'): p.unlink(missing_ok=True)
+  for name in ('ignored.mitos','stst.dat','mitos2.completed.ok','mitos2.status.txt','parsed_output_files.tsv','mitos2_reference_codon_debug.tsv'):
+   (raw/name).unlink(missing_ok=True)
+  for name in ('blast','mitfi-global'):
+   shutil.rmtree(raw/name,ignore_errors=True)
  for path in logs.values(): Path(path).write_text('')
  if not Path(fasta).exists():
   Path(logs['returncode']).write_text('exception\n');Path(logs['stderr']).write_text(f'Final chrM FASTA is missing: {fasta}\n');status_file.write_text('failed_missing_fasta\n');return collect_reference(ref,linked,paths,settings)
  if a.dry_run:
   Path(logs['command']).write_text('dry-run\n');Path(logs['returncode']).write_text('0\n');status_file.write_text('dry_run\n');return collect_reference(ref,linked,paths,settings)
- attempted=[];rc='';success=False;failure_status='failed_mitos2'
+ attempted=[];rc='';success=False;failure_status='failed_mitos2_execution'
  try:
   exe,validation=command(settings);helpx=subprocess.run(['bash','-lc',activate(settings)+f' && {shlex.quote(exe)} --help'],text=True,capture_output=True);Path(logs['help']).write_text(validation+helpx.stdout+'\n'+helpx.stderr)
   for cmd in templates(exe,fasta,raw,settings):
    attempted.append(cmd);x=subprocess.run(['bash','-lc',activate(settings)+' && '+cmd],text=True,capture_output=True);Path(logs['stdout']).write_text(Path(logs['stdout']).read_text()+x.stdout);Path(logs['stderr']).write_text(Path(logs['stderr']).read_text()+x.stderr);rc=str(x.returncode)
    if x.returncode: continue
+   if not all((raw/name).is_file() for name in ('result.gff','result.bed','result.mitos')):
+    failure_status='failed_mitos2_execution'; attempted.append('runmitos_missing_required_raw_output'); continue
    result=collect_reference(ref,linked,paths,settings)
-   if result['status'] in ('completed','completed_reference_no_linked_samples'): success=True;break
+   if result['status'] in ('completed','completed_with_gene_warnings','completed_reference_no_linked_samples'): success=True;break
    failure_status=result['status'];attempted.append('template_returned_zero_but_invalid_materialized_output')
   Path(logs['command']).write_text('\n'.join(attempted)+'\n');Path(logs['returncode']).write_text(rc+'\n')
  except Exception as exc:
-  Path(logs['returncode']).write_text((rc or 'exception')+'\n');Path(logs['stderr']).write_text(Path(logs['stderr']).read_text()+str(exc)+'\n');failure_status='failed_execution'
+  Path(logs['returncode']).write_text((rc or 'exception')+'\n');Path(logs['stderr']).write_text(Path(logs['stderr']).read_text()+str(exc)+'\n');failure_status='failed_mitos2_execution'
  if success: status_file.unlink(missing_ok=True);marker.write_text('completed\n')
  else:
   status_file.write_text(failure_status+'\n');print(f'MITOS2 reference failed: {ref["reference_key"]} ({failure_status}); continuing.')
@@ -272,8 +298,6 @@ def main():
  if not selected: raise SystemExit('No MITOS2 references selected.')
  for ref,linked in selected:
   run_reference(ref,linked,paths,settings,a)
-  # Persist completed and failed summaries after each non-array reference.
-  if not a.task_id: merge(paths,settings,refs)
  # Array workers must not concurrently rewrite combined output tables.
  if not (a.task_id or a.reference):
   merge(paths,settings,refs);write(task_path,TASK_FIELDS,task_rows(refs,paths))

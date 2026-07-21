@@ -282,6 +282,7 @@ mitos2_annotation:
     mitos2_parsed_dir: results/qc/mitos2_annotation/parsed
     mitos2_reference_tasks: results/qc/mitos2_annotation/mitos2_reference_tasks.tsv
     mitos2_cds_table: results/qc/mitos2_annotation/all_mitos2_position_codon_table.tsv
+    mitos2_reference_cds_table: results/qc/mitos2_annotation/all_mitos2_reference_position_codon_table.tsv
     mitos2_feature_table: results/qc/mitos2_annotation/all_mitos2_features.tsv
     mitos2_summary_table: results/qc/mitos2_annotation/mitos2_annotation_summary.tsv
     genbank_mitos2_comparison_table: results/qc/codon_table_build/genbank_vs_mitos2_cds_comparison.tsv
@@ -289,14 +290,14 @@ mitos2_annotation:
     enabled: true
     run_for_all_references: true
     overwrite_existing: false
-    threads: 4
+    # runmitos does not consume this setting; array concurrency is controlled by Slurm.
     # Required by runmitos; choose the reference version installed with MITOS2.
     refseqver: refseq81m
     # Working MITOS2 reference database used by the validated runmitos command.
     refdir: /home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/data/reference_tables
     # Conda environment: mitos2; package: mitos; CLI executable: runmitos.
     use_conda: true
-    conda_module: miniconda
+    conda_module: miniconda/24.11.3
     conda_env: mitos2
     # runmitos is validated after environment activation; do not probe package or environment names.
     mitos2_command_mode: runmitos
