@@ -11,12 +11,18 @@ FEATURE_FIELDS='reference_key reference_species coordinate_reference_accession c
 CODON_FIELDS='file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source coordinate_reference_fasta coordinate_reference_accession'.split()
 SUMMARY_FIELDS='reference_key reference_species coordinate_reference_accession coordinate_reference_fasta status command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_coding_position_rows n_output_files_scanned n_parseable_files parser_status note'.split()
 DIAG_FIELDS='reference_key file suffix n_lines n_candidate_feature_lines parser_used n_features_parsed'.split()
-GENES={'ND1':'MT-ND1','ND2':'MT-ND2','ND3':'MT-ND3','ND4':'MT-ND4','ND4L':'MT-ND4L','ND5':'MT-ND5','ND6':'MT-ND6','COX1':'MT-CO1','COI':'MT-CO1','COX2':'MT-CO2','COII':'MT-CO2','COX3':'MT-CO3','COIII':'MT-CO3','CYTB':'MT-CYB','ATP6':'MT-ATP6','ATP8':'MT-ATP8'}
-CODING=set(GENES)
+GENES = {
+ 'ND1':'MT-ND1', 'NAD1':'MT-ND1', 'ND2':'MT-ND2', 'NAD2':'MT-ND2',
+ 'ND3':'MT-ND3', 'NAD3':'MT-ND3', 'ND4':'MT-ND4', 'NAD4':'MT-ND4',
+ 'ND4L':'MT-ND4L', 'NAD4L':'MT-ND4L', 'ND5':'MT-ND5', 'NAD5':'MT-ND5',
+ 'ND6':'MT-ND6', 'NAD6':'MT-ND6', 'COX1':'MT-CO1', 'COI':'MT-CO1',
+ 'COX2':'MT-CO2', 'COII':'MT-CO2', 'COX3':'MT-CO3', 'COIII':'MT-CO3',
+ 'COB':'MT-CYB', 'CYTB':'MT-CYB', 'ATP6':'MT-ATP6', 'ATP8':'MT-ATP8',
+ 'RRNS':'MT-RNR1', 'RRNL':'MT-RNR2',
+}
+CODING = {key for key, value in GENES.items() if value not in ('MT-RNR1', 'MT-RNR2')}
 def val(r,k): return (r.get(k) or '').strip()
 def sk(s): return re.sub(r'_+','_',re.sub(r'\s+','_',s.lower())).strip('_')
-def norm(g):
- k=re.sub(r'[^A-Z0-9]','',g.upper().replace('MT','',1)); return GENES.get(k,g)
 def write(p,fields,rows):
  Path(p).parent.mkdir(parents=True,exist_ok=True)
  with open(p,'w',newline='') as h:
@@ -31,39 +37,70 @@ def read(p):
 def attrs(s):
  d={}
  for x in s.split(';'):
-  if '=' in x:k,v=x.split('=',1);d[k.lower()]=v.strip('"')
-  elif ' ' in x:k,v=x.split(' ',1);d[k.lower()]=v.strip(' "')
+  if '=' in x: k,v=x.split('=',1); d[k.lower()]=v.strip('"')
+  elif ' ' in x: k,v=x.split(' ',1); d[k.lower()]=v.strip(' "')
  return d
-def infer(raw,declared=''):
- t=declared.lower(); name=re.sub(r'[^a-z0-9]','',raw.lower())
- if t.lower() in ('cds','trna','rrna'): return {'cds':'CDS','trna':'tRNA','rrna':'rRNA'}[t]
- if t=='gene':
-  if name in {x.lower() for x in CODING}:return 'CDS'
-  if name.startswith(('trn','trna')):return 'tRNA'
-  if any(x in name for x in ('rrns','rrnl','12s','16s','rrna')):return 'rRNA'
+def cleanraw(raw):
+ raw = (raw or '').strip()
+ raw = re.sub(r'^(?:gene|transcript)_', '', raw, flags=re.I)
+ return re.sub(r'\([^)]*\)$', '', raw).strip()
+def norm(g):
+ raw = cleanraw(g)
+ key = re.sub(r'[^A-Z0-9]', '', raw.upper())
+ if key.startswith('MT'): key = key[2:]
+ return GENES.get(key, raw)
+def infer(raw, declared=''):
+ feature_type = (declared or '').lower()
+ name = re.sub(r'[^a-z0-9]', '', cleanraw(raw).lower())
+ if feature_type in ('cds', 'trna', 'rrna'):
+  return {'cds':'CDS', 'trna':'tRNA', 'rrna':'rRNA'}[feature_type]
+ if feature_type == 'gene':
+  if name.upper() in CODING: return 'CDS'
+  if name.startswith(('trn', 'trna')): return 'tRNA'
+  if name in ('rrns', 'rrnl', '12s', '16s') or 'rrna' in name: return 'rRNA'
  return ''
 def text_file(p):
  if p.suffix.lower() in ('.fa','.fasta','.fna','.gz','.bam','.png','.pdf'):return False
  try: p.read_text(errors='strict');return True
  except (UnicodeDecodeError,OSError):return False
+def parse_file(p, ref):
+ parsed=[]; diagnostics=[]; seen=set(); lines=p.read_text(errors='replace').splitlines(); cand=0; parser='none'
+ for line in lines:
+  if not line or line.startswith('#'): continue
+  c=line.split('\t'); ft=rawgene=''; start=end=strand=score=''
+  if len(c) >= 9 and c[3].isdigit() and c[4].isdigit():
+   parser='gff'; declared=c[2].lower()
+   # MITOS2 GFF: genes represent protein coding intervals; transcript rows represent RNA intervals.
+   if declared in ('region', 'exon', 'ncrna_gene'): continue
+   at=attrs(c[8]); rawgene=at.get('name') or at.get('gene') or at.get('gene_id') or at.get('id') or ''
+   ft=infer(rawgene, declared); start,end,strand,score=c[3],c[4],c[6] or '+',c[5]; cand += bool(ft)
+  elif len(c) >= 3 and c[1].isdigit() and c[2].isdigit():
+   parser='tabular'; rawgene=c[3] if len(c)>3 else ''; ft=infer(rawgene, rawgene)
+   start=str(int(c[1])+1) if p.suffix.lower()=='.bed' else c[1]; end=c[2]; strand=c[5] if len(c)>5 else '+'; cand += bool(ft)
+  if not ft: continue
+  rawgene=cleanraw(rawgene); key=(ft,start,end,strand,rawgene)
+  if key in seen: continue
+  seen.add(key)
+  parsed.append({**ref,'feature_type':ft,'gene':norm(rawgene) if ft in ('CDS', 'rRNA') else rawgene,
+                 'gene_raw':rawgene,'start':start,'end':end,'strand':strand,'score':score,
+                 'source_file':str(p),'annotation_source':'MITOS2'})
+ diagnostics.append({'reference_key':ref['reference_key'],'file':str(p),'suffix':p.suffix,'n_lines':len(lines),
+                     'n_candidate_feature_lines':cand,'parser_used':parser,'n_features_parsed':len(parsed)})
+ return parsed, diagnostics
 def parse_outputs(raw,ref):
- features=[]; diagnostics=[]; seen=set(); allowed={'.gff','.gff3','.bed','.tbl','.tsv','.txt','.out','.result','.mitos',''}
- for p in sorted(Path(raw).rglob('*')):
-  if not p.is_file() or p.name.startswith('mitos2.') or p.suffix.lower() not in allowed or not text_file(p):continue
-  lines=p.read_text(errors='replace').splitlines(); parsed=[]; cand=0; parser='none'
-  for line in lines:
-   if not line or line.startswith('#'):continue
-   c=line.split('\t'); ft=rawgene=''; start=end=strand=score=''
-   if len(c)>=9 and c[3].isdigit() and c[4].isdigit():
-    parser='gff'; at=attrs(c[8]); rawgene=at.get('gene') or at.get('name') or at.get('product') or at.get('id') or ''; ft=infer(rawgene,c[2]); start,end,strand,score=c[3],c[4],c[6] or '+',c[5]; cand+=bool(ft)
-   elif len(c)>=3 and c[1].isdigit() and c[2].isdigit():
-    parser='tabular'; rawgene=c[3] if len(c)>3 else ''; ft=infer(rawgene,rawgene); start=str(int(c[1])+1) if p.suffix.lower()=='.bed' else c[1];end=c[2];strand=c[5] if len(c)>5 else '+';cand+=bool(ft)
-   if not ft:continue
-   key=(ft,start,end,strand,rawgene)
-   if key in seen:continue
-   seen.add(key); parsed.append({**ref,'feature_type':ft,'gene':norm(rawgene) if ft=='CDS' else rawgene,'gene_raw':rawgene,'start':start,'end':end,'strand':strand,'score':score,'source_file':str(p),'annotation_source':'MITOS2'})
-  features+=parsed;diagnostics.append({'reference_key':ref['reference_key'],'file':str(p),'suffix':p.suffix,'n_lines':len(lines),'n_candidate_feature_lines':cand,'parser_used':parser,'n_features_parsed':len(parsed)})
- return features,diagnostics
+ raw=Path(raw); explicit=[raw/'result.gff', raw/'result.bed', raw/'result.mitos']; diagnostics=[]
+ # Prefer the authoritative GFF and do not duplicate it with BED/MITOS output.
+ for p in explicit:
+  if p.is_file() and text_file(p):
+   features, diag=parse_file(p, ref); diagnostics += diag
+   if features: return features, diagnostics
+ allowed={'.gff','.gff3','.bed','.tbl','.tsv','.txt','.out','.result','.mitos',''}
+ explicit_set=set(explicit)
+ for p in sorted(raw.rglob('*')):
+  if p in explicit_set or not p.is_file() or p.name.startswith('mitos2.') or p.suffix.lower() not in allowed or not text_file(p): continue
+  features, diag=parse_file(p, ref); diagnostics += diag
+  if features: return features, diagnostics
+ return [], diagnostics
 def activate(settings):
  # mitos2 is the conda environment, mitos is the package, and runmitos is the CLI.
  return f"module load {shlex.quote(str(settings.get('conda_module', 'miniconda')))} && source \"$(conda info --base)/etc/profile.d/conda.sh\" && conda activate {shlex.quote(str(settings.get('conda_env', 'mitos2')))}"
@@ -90,9 +127,10 @@ def templates(exe,fasta,out,settings):
  code=str(settings.get('genetic_code',2))
  refseqver=str(settings.get('refseqver','refseq81m'))
  refdir=str(settings.get('refdir','') or '')
- common=f'-c {q(code)} -o {q(out)} -r {q(refseqver)} --best --noplots'
- if refdir:common+=f' -R {q(refdir)}'
- return [f'{q(exe)} --fasta {q(fasta)} {common}',f'{q(exe)} -i {q(fasta)} {common}']
+ common=f'-c {q(code)} -o {q(out)} -r {q(refseqver)}'
+ if refdir: common += f' -R {q(refdir)}'
+ common += ' --best --noplots'
+ return [f'{q(exe)} -i {q(fasta)} {common}', f'{q(exe)} --input {q(fasta)} {common}']
 def codons(features,fasta,ref,samples,code):
  if SeqIO is None:raise RuntimeError('Biopython is required to create MITOS2 codon rows.')
  rec=next(SeqIO.parse(str(fasta),'fasta'));seq=str(rec.seq).upper();base=[]
@@ -136,17 +174,27 @@ def main():
     elif not rows:status='failed_no_coding_rows';note='Successful marker existed but CDS produced no coding rows'
     else:status='completed'
    else:
+    features=[]; diag=[]; rows=[]; success=False; zero_output=False
     for cmd in templates(exe,fasta,raw,settings):
-     attempted.append(cmd);x=subprocess.run(['bash','-lc',activate(settings)+' && '+cmd],text=True,capture_output=True);Path(logs['stdout']).write_text((Path(logs['stdout']).read_text() if Path(logs['stdout']).exists() else '')+x.stdout);Path(logs['stderr']).write_text((Path(logs['stderr']).read_text() if Path(logs['stderr']).exists() else '')+x.stderr);rc=str(x.returncode)
-     if x.returncode==0:break
+     attempted.append(cmd)
+     x=subprocess.run(['bash','-lc',activate(settings)+' && '+cmd],text=True,capture_output=True)
+     Path(logs['stdout']).write_text(Path(logs['stdout']).read_text()+x.stdout)
+     Path(logs['stderr']).write_text(Path(logs['stderr']).read_text()+x.stderr)
+     rc=str(x.returncode)
+     if x.returncode != 0: continue
+     features,diag=parse_outputs(raw,ref); cds=[f for f in features if f['feature_type']=='CDS']
+     rows=codons(features,fasta,ref,linked,str(settings.get('genetic_code',2))) if cds else []
+     if features and cds and rows:
+      success=True; break
+     zero_output=True
+     attempted.append('template_returned_zero_but_no_parseable_output')
     Path(logs['command']).write_text('\n'.join(attempted)+'\n');Path(logs['returncode']).write_text(rc+'\n')
-    if rc != '0':raise RuntimeError(f'runmitos failed. Check mitos2_annotation.settings.refseqver and refdir. See raw/{ref["reference_key"]}/mitos2.stderr.txt')
-    features,diag=parse_outputs(raw,ref);write(raw/'parsed_output_files.tsv',DIAG_FIELDS,diag)
-    cds=[f for f in features if f['feature_type']=='CDS']; rows=codons(features,fasta,ref,linked,str(settings.get('genetic_code',2))) if cds else []
-    if not features:status='failed_parse';note='MITOS2 ran but no parseable features were found'
-    elif not cds:status='failed_no_cds';note='MITOS2 output had features but no CDS'
-    elif not rows:status='failed_no_coding_rows';note='MITOS2 CDS features produced no coding rows'
-    else:status='completed';marker.write_text('completed\n')
+    write(raw/'parsed_output_files.tsv',DIAG_FIELDS,diag)
+    if success: status='completed'; marker.write_text('completed\n')
+    elif zero_output:
+     status='template_returned_zero_but_no_parseable_output'; note='A MITOS2 template returned zero but did not produce features, CDS features, and coding-position rows'
+    elif rc != '0': raise RuntimeError(f'runmitos failed. Check mitos2_annotation.settings.refseqver and refdir. See raw/{ref["reference_key"]}/mitos2.stderr.txt')
+    else: status='failed_parse'; note='MITOS2 did not produce parseable output'
    if a.dry_run:rows=[]
   except Exception as e:features=[];diag=[];rows=[];note=str(e);rc=rc or 'exception';Path(logs['returncode']).write_text(rc+'\n');Path(logs['stderr']).write_text((Path(logs['stderr']).read_text() if Path(logs['stderr']).exists() else '')+note+'\n')
   allf+=features;allc+=rows;summ.append({**ref,'status':status,'command_mode':mode,'mitos2_command':exe,'attempted_commands':' | '.join(attempted),'return_code':rc,'stdout_log':logs['stdout'],'stderr_log':logs['stderr'],'help_log':logs['help'],'raw_dir':str(raw),'n_features':len(features),'n_cds_features':len([f for f in features if f['feature_type']=='CDS']),'n_coding_position_rows':len(rows),'n_output_files_scanned':len(diag),'n_parseable_files':sum(bool(d['n_features_parsed']) for d in diag),'parser_status':status,'note':(note+'; stderr_log='+logs['stderr']).strip('; ')})
