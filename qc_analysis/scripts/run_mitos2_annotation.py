@@ -5,7 +5,7 @@ The materialized chrM FASTA is always the coordinate authority; MITOS2 supplies
 features only.  MITOS2 command-line interfaces vary, so the invocation is kept
 in one deliberately small, inspectable command builder.
 """
-import argparse, csv, re, shlex, shutil, subprocess, sys
+import argparse, csv, re, shlex, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.match_utils import yaml
@@ -23,11 +23,24 @@ def sk(s): return re.sub(r'_+','_',re.sub(r'\s+','_',s.lower())).strip('_')
 def norm(g):
     k=re.sub(r'[^A-Z0-9]','',g.upper().replace('MT','',1)); return GENES.get(k,g)
 def read(path):
-    if not Path(path).exists(): return []
-    with open(path,newline='') as h:
-        rows=list(csv.reader(h,delimiter='\t'))
-    if not rows:return []
-    return [dict(zip(rows[0],r)) for r in rows[1:]] if 'sample' in rows[0] else [{'sample':r[0],'species':r[1] if len(r)>1 else ''} for r in rows]
+    """Read a headered TSV or legacy two-column sample/species TSV.
+
+    Legacy sample files commonly contain blank separator/trailing lines.  Ignore
+    them before determining the format so they cannot become zero-length rows.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    with path.open(newline='') as handle:
+        rows = [row for row in csv.reader(handle, delimiter='\t')
+                if any(cell.strip() for cell in row)]
+    if not rows:
+        return []
+    if 'sample' in rows[0]:
+        return [dict(zip(rows[0], row)) for row in rows[1:]]
+    return [{'sample': row[0].strip(),
+             'species': row[1].strip() if len(row) > 1 else ''}
+            for row in rows]
 def write(path, fields, rows):
     Path(path).parent.mkdir(parents=True,exist_ok=True)
     with open(path,'w',newline='') as h:
