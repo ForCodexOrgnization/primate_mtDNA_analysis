@@ -138,6 +138,36 @@ def test_reference_tasks_are_one_based_deduplicated_and_report_completion(tmp_pa
     assert [row['status'] for row in rows] == ['completed', 'pending']
 
 
+def test_missing_chrm_reference_is_skipped_not_fallback_task_and_is_summarized(tmp_path):
+    module = load_module()
+    manifest = tmp_path / 'manifest.tsv'
+    samples = tmp_path / 'samples.tsv'
+    manifest.write_text(
+        'target_species\tfinal_chrM_species\tfinal_chrM_accession\tfinal_chrM_refseq_accn\tfinal_chrM_genbank_accn\tchrM_expected_output_fasta\tchrM_selection_status\tfinal_reference_strategy\treference_pairing_status\n'
+        'WG only species\t\t\t\t\t\tmissing_chrM_ref\twg_only_no_chrM\tno_chrM_pair\n'
+    )
+    samples.write_text('sample\tspecies\nS1\tWG only species\n')
+    paths = {
+        'reference_manifest': str(manifest),
+        'sample_ref_file': str(samples),
+        'fasta_dir': str(tmp_path / 'fallback'),
+        'mitos2_raw_dir': str(tmp_path / 'raw'),
+    }
+
+    refs = module.references(paths)
+
+    assert len(refs) == 1
+    ref, linked = refs[0]
+    assert ref['status'] == 'skipped_no_chrM_reference'
+    assert ref['coordinate_reference_fasta'] == ''
+    assert module.task_rows(refs, paths) == []
+    summary = module.collect_reference(ref, linked, paths, {})['summary_row']
+    assert summary['status'] == 'skipped_no_chrM_reference'
+    assert summary['chrM_selection_status'] == 'missing_chrM_ref'
+    assert summary['final_reference_strategy'] == 'wg_only_no_chrM'
+    assert summary['reference_pairing_status'] == 'no_chrM_pair'
+
+
 def test_collect_reference_separates_reference_and_sample_codon_counts(tmp_path, monkeypatch):
     module = load_module()
     fasta = tmp_path / 'NC_002764.1.fa'

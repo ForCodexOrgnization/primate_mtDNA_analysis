@@ -11,7 +11,7 @@ FEATURE_FIELDS='reference_key reference_species coordinate_reference_accession c
 CODON_FIELDS='file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source coordinate_reference_fasta coordinate_reference_accession'.split()
 DEBUG_FIELDS='gff_seqid fasta_record_id fasta_length cds_length usable_cds_length n_codons n_position_rows status error gene gene_raw start end strand'.split()
 TASK_FIELDS='task_id reference_key reference_species coordinate_reference_accession coordinate_reference_fasta n_samples_using_reference status'.split()
-SUMMARY_FIELDS='reference_key reference_species coordinate_reference_accession coordinate_reference_fasta status command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_linked_samples n_reference_coding_position_rows n_sample_level_coding_position_rows n_coding_position_rows n_output_files_scanned n_parseable_files result_gff_exists n_gff_gene_rows n_gff_cds_like_gene_rows n_gff_trna_rows n_gff_rrna_rows parser_status note'.split()
+SUMMARY_FIELDS='reference_key reference_species coordinate_reference_accession coordinate_reference_fasta chrM_selection_status final_reference_strategy reference_pairing_status status command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_linked_samples n_reference_coding_position_rows n_sample_level_coding_position_rows n_coding_position_rows n_output_files_scanned n_parseable_files result_gff_exists n_gff_gene_rows n_gff_cds_like_gene_rows n_gff_trna_rows n_gff_rrna_rows parser_status note'.split()
 DIAG_FIELDS='reference_key file suffix n_lines n_candidate_feature_lines parser_used n_features_parsed'.split()
 GENES = {
  'ND1':'MT-ND1', 'NAD1':'MT-ND1', 'ND2':'MT-ND2', 'NAD2':'MT-ND2',
@@ -185,6 +185,9 @@ def expand_reference_codon_rows(reference_codon_rows,linked_samples):
 def collect_reference(ref,linked,paths,settings):
  """Return a complete result object for one reference; never abort a batch."""
  raw=Path(paths['mitos2_raw_dir'])/ref['reference_key']; ref={**ref,'raw_dir':str(raw)}; logs={x:str(raw/f'mitos2.{x}.txt') for x in ('command','stdout','stderr','returncode','help')}
+ if ref.get('status') == 'skipped_no_chrM_reference':
+  summary={**ref,'status':'skipped_no_chrM_reference','command_mode':'not_run','mitos2_command':'','attempted_commands':'','return_code':'','stdout_log':'','stderr_log':'','help_log':'','n_features':0,'n_cds_features':0,'n_linked_samples':len(linked),'n_reference_coding_position_rows':0,'n_sample_level_coding_position_rows':0,'n_coding_position_rows':0,'n_output_files_scanned':0,'n_parseable_files':0,'result_gff_exists':False,'n_gff_gene_rows':0,'n_gff_cds_like_gene_rows':0,'n_gff_trna_rows':0,'n_gff_rrna_rows':0,'parser_status':'skipped_no_chrM_reference','note':'Manifest row has neither a materialized chrM FASTA nor a final chrM accession.'}
+  return {'features':[],'reference_codon_rows':[],'sample_codon_rows':[],'summary_row':summary,'status':'skipped_no_chrM_reference','note':summary['note']}
  gff=gff_diagnostics(raw); features=[];diag=[];reference_codon_rows=[];sample_codon_rows=[];note=''
  recorded_status=(raw/'mitos2.status.txt').read_text().strip() if (raw/'mitos2.status.txt').exists() else ''
  marker=raw/'mitos2.completed.ok'
@@ -217,10 +220,16 @@ def references(paths, sample_filter=None):
  refs={}
  for m in manifest:
   target=val(m,'target_species'); species=val(m,'final_chrM_species') or target
-  fasta=val(m,'chrM_expected_output_fasta') or str(Path(paths['fasta_dir'])/(species+'.fa'))
+  expected_fasta=val(m,'chrM_expected_output_fasta')
   acc=val(m,'final_chrM_accession') or val(m,'final_chrM_genbank_accn') or val(m,'final_chrM_refseq_accn')
+  skipped=not expected_fasta and not acc
+  fasta=expected_fasta or ('' if skipped else str(Path(paths['fasta_dir'])/(species+'.fa')))
   key=re.sub(r'[^A-Za-z0-9_.-]+','_',acc or Path(fasta).stem)
-  r=refs.setdefault(str(Path(fasta)),{'reference_key':key,'reference_species':species,'coordinate_reference_accession':acc,'coordinate_reference_fasta':str(Path(fasta)),'targets':set()})
+  if skipped: key=re.sub(r'[^A-Za-z0-9_.-]+','_',f'skipped_{target or species}')
+  reference_id=str(Path(fasta)) if fasta else f'__{key}'
+  r=refs.setdefault(reference_id,{'reference_key':key,'reference_species':species,'coordinate_reference_accession':acc,'coordinate_reference_fasta':str(Path(fasta)) if fasta else '',
+   'chrM_selection_status':val(m,'chrM_selection_status'),'final_reference_strategy':val(m,'final_reference_strategy'),'reference_pairing_status':val(m,'reference_pairing_status'),
+   'status':'skipped_no_chrM_reference' if skipped else 'pending','targets':set()})
   r['targets'].add(sk(target))
  result=[]
  for ref in refs.values():
@@ -229,7 +238,9 @@ def references(paths, sample_filter=None):
  return sorted(result,key=lambda pair:(pair[0]['reference_key'], pair[0]['coordinate_reference_fasta']))
 def task_rows(refs, paths):
  rows=[]
- for task_id,(ref,linked) in enumerate(refs,1):
+ for ref,linked in refs:
+  if ref.get('status') == 'skipped_no_chrM_reference': continue
+  task_id=len(rows)+1
   marker=Path(paths['mitos2_raw_dir'])/ref['reference_key']/'mitos2.completed.ok'
   rows.append({'task_id':task_id,**{k:ref[k] for k in TASK_FIELDS if k in ref},'n_samples_using_reference':len(linked),'status':'completed' if marker.exists() else 'pending'})
  return rows
@@ -244,6 +255,8 @@ def merge(paths,settings,refs):
  print(f'Wrote {len(allf)} features and {len(allc)} sample-level coding rows.')
 def run_reference(ref,linked,paths,settings,a):
  """Execute one MITOS2 reference and always return its materialized result."""
+ if ref.get('status') == 'skipped_no_chrM_reference':
+  return collect_reference(ref,linked,paths,settings)
  fasta=ref['coordinate_reference_fasta'];raw=Path(paths['mitos2_raw_dir'])/ref['reference_key'];raw.mkdir(parents=True,exist_ok=True)
  logs={x:str(raw/f'mitos2.{x}.txt') for x in ('command','stdout','stderr','returncode','help')}; marker=raw/'mitos2.completed.ok';status_file=raw/'mitos2.status.txt'
  if marker.exists() and not a.force:
@@ -286,12 +299,13 @@ def main():
  paths,settings=sec['paths'],sec.get('settings',{}); refs=references(paths,a.sample)
  task_path=paths.get('mitos2_reference_tasks',str(Path(paths['output_dir'])/'mitos2_reference_tasks.tsv'))
  if a.prepare_tasks:
-  write(task_path,TASK_FIELDS,task_rows(refs,paths))
-  print(f'Wrote {len(refs)} MITOS2 reference tasks to {task_path}.');return
+  tasks=task_rows(refs,paths);write(task_path,TASK_FIELDS,tasks)
+  print(f'Wrote {len(tasks)} MITOS2 reference tasks to {task_path}.');return
  if a.merge_only:
   merge(paths,settings,refs);write(task_path,TASK_FIELDS,task_rows(refs,paths));return
  if a.task_id:
-  selected=[pair for task,pair in zip(task_rows(refs,paths),refs) if str(task['task_id'])==str(a.task_id)]
+  runnable=[pair for pair in refs if pair[0].get('status') != 'skipped_no_chrM_reference']
+  selected=[pair for task,pair in zip(task_rows(refs,paths),runnable) if str(task['task_id'])==str(a.task_id)]
   if not selected: raise SystemExit(f'No MITOS2 task found with task_id {a.task_id}.')
  elif a.reference: selected=[pair for pair in refs if a.reference in (pair[0]['reference_key'],pair[0]['reference_species'],pair[0]['coordinate_reference_accession'])]
  else: selected=refs
