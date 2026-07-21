@@ -113,7 +113,7 @@ def test_parser_failure_status_flags_unrecognized_cds_like_gff_genes():
     assert module.parser_failure_status([], diagnostics) == 'failed_parser_cds_gene_detection'
 
 
-def test_reference_tasks_are_one_based_deduplicated_and_report_completion(tmp_path):
+def test_reference_tasks_are_one_based_per_target_species_and_report_completion(tmp_path):
     module = load_module()
     manifest = tmp_path / 'manifest.tsv'
     samples = tmp_path / 'samples.tsv'
@@ -132,10 +132,56 @@ def test_reference_tasks_are_one_based_deduplicated_and_report_completion(tmp_pa
 
     rows = module.task_rows(refs, paths)
 
-    assert [row['task_id'] for row in rows] == [1, 2]
-    assert [row['reference_key'] for row in rows] == ['ACC.1', 'ACC.3']
-    assert [row['n_samples_using_reference'] for row in rows] == [2, 1]
-    assert [row['status'] for row in rows] == ['completed', 'pending']
+    assert [row['task_id'] for row in rows] == [1, 2, 3]
+    assert [row['reference_key'] for row in rows] == ['Species_one', 'Species_three', 'Species_two']
+    assert [row['n_samples_using_reference'] for row in rows] == [1, 1, 1]
+    assert [row['status'] for row in rows] == ['pending', 'pending', 'pending']
+
+
+def test_references_prefers_target_variant_calling_fasta_for_cross_species_reference(tmp_path):
+    module = load_module()
+    fasta_dir = tmp_path / 'Ref_chrM'; fasta_dir.mkdir()
+    target_fasta = fasta_dir / 'Target_species.fa'
+    target_fasta.write_text('>chrM\nATG\n')
+    manifest = tmp_path / 'manifest.tsv'
+    manifest.write_text(
+        'target_species\tfinal_chrM_species\tfinal_chrM_accession\tfinal_chrM_refseq_accn\tchrM_expected_output_fasta\n'
+        'Target_species\tOther species\tGB_1.1\tNC_123.4\t/references/chrM/independent/NC_123.4.fa\n'
+    )
+    samples = tmp_path / 'samples.tsv'; samples.write_text('sample\tspecies\nS1\tTarget_species\n')
+    refs = module.references({'reference_manifest': str(manifest), 'sample_ref_file': str(samples),
+                              'fasta_dir': str(fasta_dir), 'mitos2_raw_dir': str(tmp_path / 'raw')})
+
+    ref, linked = refs[0]
+    assert ref['mitos2_input_fasta'] == str(target_fasta)
+    assert ref['coordinate_reference_fasta'] == str(target_fasta)
+    assert ref['coordinate_reference_fasta_from_manifest'].endswith('NC_123.4.fa')
+    assert ref['target_species'] == 'Target_species'
+    assert ref['final_chrM_species'] == 'Other species'
+    assert ref['final_chrM_accession'] == 'GB_1.1'
+    assert ref['coordinate_reference_accession'] == 'GB_1.1'
+    assert linked == [{'sample': 'S1', 'species': 'Target_species'}]
+
+
+def test_references_sanitizes_manifest_fallback_and_skips_known_no_chrm(tmp_path):
+    module = load_module()
+    fallback = tmp_path / 'source.fa'; fallback.write_text('>NC_123.4 source\nATG\n')
+    manifest = tmp_path / 'manifest.tsv'
+    manifest.write_text(
+        'target_species\tfinal_reference_strategy\tchrM_expected_output_fasta\n'
+        f'Fallback species\t\t{fallback}\n'
+        'No chrM species\twg_only_no_chrM\t\n'
+    )
+    samples = tmp_path / 'samples.tsv'; samples.write_text('sample\tspecies\nS1\tFallback species\nS2\tNo chrM species\n')
+    paths = {'reference_manifest': str(manifest), 'sample_ref_file': str(samples),
+             'fasta_dir': str(tmp_path / 'Ref_chrM'), 'mitos2_raw_dir': str(tmp_path / 'raw')}
+    refs = module.references(paths)
+    fallback_ref = next(ref for ref, _ in refs if ref['target_species'] == 'Fallback species')
+    skipped_ref = next(ref for ref, _ in refs if ref['target_species'] == 'No chrM species')
+
+    assert Path(fallback_ref['mitos2_input_fasta']).read_text() == '>chrM\nATG\n'
+    assert skipped_ref['initial_status'] == 'skipped_no_chrM_reference'
+    assert next(row for row in module.task_rows(refs, paths) if row['target_species'] == 'No chrM species')['status'] == 'skipped_no_chrM_reference'
 
 
 def test_collect_reference_separates_reference_and_sample_codon_counts(tmp_path, monkeypatch):

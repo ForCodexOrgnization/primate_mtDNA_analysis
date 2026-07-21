@@ -276,6 +276,7 @@ mitos2_annotation:
   paths:
     sample_ref_file: config/sample_ref_file.tsv
     reference_manifest: references/manifests/reference_materialization_manifest.resolved.tsv
+    # Primary MITOS2 inputs: target-species FASTAs used to call sample VCFs.
     fasta_dir: references/variant_calling/Ref_chrM
     output_dir: results/qc/mitos2_annotation
     mitos2_raw_dir: results/qc/mitos2_annotation/raw
