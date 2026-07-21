@@ -45,3 +45,25 @@ def test_mitos2_command_templates_invoke_runmitos():
     commands = module.templates('runmitos', 'input.fa', 'output', {'genetic_code': 2, 'threads': 4})
 
     assert all(command.startswith('runmitos ') for command in commands)
+    assert commands == [
+        'runmitos --fasta input.fa -c 2 -o output -r refseq81m --best --noplots',
+        'runmitos -i input.fa -c 2 -o output -r refseq81m --best --noplots',
+    ]
+    assert '--threads' not in ' '.join(commands)
+
+
+def test_mitos2_command_templates_quote_paths_and_include_optional_refdir():
+    module = load_module()
+    commands = module.templates(
+        Path('/opt/mitos/bin/runmitos'),
+        Path('/tmp/input fasta.fa'),
+        Path('/tmp/output directory'),
+        {'genetic_code': 2, 'refseqver': 'refseq99m', 'refdir': '/tmp/reference data'},
+    )
+
+    assert commands[0] == (
+        "/opt/mitos/bin/runmitos --fasta '/tmp/input fasta.fa' -c 2 "
+        "-o '/tmp/output directory' -r refseq99m --best --noplots "
+        "-R '/tmp/reference data'"
+    )
+    assert commands[1].startswith("/opt/mitos/bin/runmitos -i '/tmp/input fasta.fa'")
