@@ -18,7 +18,8 @@ Steps:
   collect_variant_calling_results  Collect and standardize variant-calling outputs only.
   discover_global_anchor           Discover reference-level global MSA anchors only.
   coordinate_liftover              Run coordinate liftover only.
-  build_primate_codon_table        Download GenBank records and build sample-level codon annotations.
+  build_primate_codon_table        Build GenBank-first / MITOS2-fallback sample-level codon annotations.
+  mitos2_annotation                 Run MITOS2 on unique final chrM references.
   codon_match                      Annotate lifted VCFs with codon matching.
   trna_match                       Annotate VCFs with tRNA matching.
   rrna_match                       Annotate VCFs with rRNA matching.
@@ -76,7 +77,7 @@ case "$STEP" in
     usage
     exit 0
     ;;
-  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|codon_match|trna_match|rrna_match|all)
+  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|mitos2_annotation|codon_match|trna_match|rrna_match|all)
     ;;
   *)
     echo "ERROR: unknown step: $STEP" >&2
@@ -132,6 +133,7 @@ COLLECT_SCRIPT="qc_analysis/scripts/collect_variant_calling_results.py"
 LIFTOVER_SCRIPT="qc_analysis/scripts/run_coordinate_liftover.py"
 CODON_SCRIPT="qc_analysis/scripts/run_codon_match.py"
 CODON_TABLE_SCRIPT="qc_analysis/scripts/build_primate_codon_table.py"
+MITOS2_SCRIPT="qc_analysis/scripts/run_mitos2_annotation.py"
 TRNA_SCRIPT="qc_analysis/scripts/run_trna_match.py"
 RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
 GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
@@ -196,6 +198,13 @@ run_coordinate_liftover() {
   "${cmd[@]}"
 }
 
+run_mitos2_annotation() {
+  echo "[qc_preprocessing] Running mitos2_annotation with config: ${CONFIG}" >&2
+  local cmd=("$PYTHON" "$MITOS2_SCRIPT" --config "$CONFIG")
+  [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
+  "${cmd[@]}"
+}
+
 run_build_primate_codon_table() {
   echo "[qc_preprocessing] Running build_primate_codon_table with config: ${CONFIG}" >&2
   if [[ "${BIOPYTHON_USE_MODULE}" == "1" ]]; then
@@ -245,6 +254,7 @@ case "$STEP" in
   coordinate_liftover)
     run_coordinate_liftover
     ;;
+  mitos2_annotation) run_mitos2_annotation ;;
   build_primate_codon_table) run_build_primate_codon_table ;;
   codon_match) run_annotation codon_match "$CODON_SCRIPT" ;;
   trna_match) run_annotation trna_match "$TRNA_SCRIPT" ;;
@@ -253,6 +263,7 @@ case "$STEP" in
     run_collect_variant_calling_results
     run_discover_global_anchor
     run_coordinate_liftover
+    run_mitos2_annotation
     run_build_primate_codon_table
     run_annotation codon_match "$CODON_SCRIPT"
     run_annotation trna_match "$TRNA_SCRIPT"
