@@ -295,6 +295,8 @@ mitos2_annotation:
     conda_env: mitos2
     # Commands may vary by installation; detect available command after activation.
     mitos2_command_candidates: "mitos2,mitos,runmitos.py"
+    mitos2_command_mode: auto
+    reuse_incomplete: false
     genetic_code: 2
     # MITOS2 tRNA/rRNA results are interval annotations only.
     accepted_feature_types: "CDS,gene,tRNA,rRNA"
