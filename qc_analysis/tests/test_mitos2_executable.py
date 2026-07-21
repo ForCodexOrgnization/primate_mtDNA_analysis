@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -185,3 +186,23 @@ def test_collect_reference_reports_parser_cds_detection_failure(tmp_path):
     assert result['status'] == 'failed_parser_cds_gene_detection'
     assert result['summary_row']['n_cds_features'] == 0
     assert result['summary_row']['n_gff_cds_like_gene_rows'] == 1
+
+
+def test_reference_codon_rows_select_gff_seqid_and_isolate_bad_gene(tmp_path):
+    module = load_module()
+    if module.SeqIO is None:
+        pytest.skip('Biopython is required for FASTA codon-row coverage')
+    fasta = tmp_path / 'multi.fa'
+    fasta.write_text('>wrong\n' + 'A' * 30 + '\n>chrM\n' + 'ATG' * 10 + '\n')
+    raw = tmp_path / 'raw'; raw.mkdir()
+    ref = {'reference_key': 'NC_002764.1', 'coordinate_reference_accession': 'NC_002764.1', 'raw_dir': str(raw)}
+    features = [
+        {'feature_type': 'CDS', 'gff_seqid': 'chrM', 'start': '1', 'end': '30', 'strand': '+', 'gene': 'MT-ND1', 'gene_raw': 'nad1'},
+        {'feature_type': 'CDS', 'gff_seqid': 'chrM', 'start': '31', 'end': '40', 'strand': '+', 'gene': 'MT-ND2', 'gene_raw': 'nad2'},
+    ]
+    rows = module.build_reference_codon_rows(features, fasta, ref, '2')
+    debug = list(__import__('csv').DictReader((raw / 'mitos2_reference_codon_debug.tsv').open(), delimiter='\t'))
+    assert len(rows) == 30
+    assert rows[0]['seq_name'] == 'chrM'
+    assert [row['status'] for row in debug] == ['completed', 'failed']
+    assert debug[1]['error']

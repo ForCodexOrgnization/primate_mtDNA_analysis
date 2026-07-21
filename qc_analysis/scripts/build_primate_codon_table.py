@@ -142,6 +142,22 @@ def resolve_accession(metadata, direct_columns, manifests, settings, paths):
             return '', 'unresolved', '', '', '', str(fasta_path)
     return '', 'unresolved', '', '', '', ''
 
+def manifest_coordinate_reference(metadata, manifest_file, manifests, settings):
+    """Return the materialized coordinate FASTA/accession for a manifest-resolved sample."""
+    if not manifest_file:
+        return '', '', ''
+    target = species_key(metadata['species'])
+    columns = configured_columns(settings, 'reference_summary_species_columns', 'target_species,final_chrM_species,preprint_REFERENCE_SPECIES,final_wg_ref_species')
+    for path, rows in manifests:
+        if path != manifest_file:
+            continue
+        matches = [r for r in rows if any(species_key(value(r, c)) == target for c in columns)]
+        if matches:
+            selected, _ = choose_manifest_match(matches, configured_columns(settings, 'reference_summary_accession_columns', 'final_chrM_genbank_accn,final_chrM_refseq_accn,final_chrM_accession,chrM_source_accession'))
+            return (value(selected, 'chrM_expected_output_fasta'), value(selected, 'final_chrM_accession'),
+                    value(selected, 'final_chrM_species'))
+    return '', '', ''
+
 def safe_filename(accession):
     return re.sub(r'[^A-Za-z0-9_.-]+', '_', accession) + '.gb'
 
@@ -231,6 +247,12 @@ def main():
     for raw_metadata in sample_rows:
         metadata = dict(raw_metadata); metadata['sample'] = value(metadata, sample_col); metadata['species'] = value(metadata, species_col)
         accession, source, accession_note, manifest_file, matched_species, fasta_path = resolve_accession(metadata, columns, manifests, settings, paths)
+        manifest_fasta, manifest_accession, manifest_species = manifest_coordinate_reference(metadata, manifest_file, manifests, settings)
+        # A manifest is coordinate authority: never fall back to original-species FASTA.
+        if manifest_fasta:
+            fasta_path = manifest_fasta
+        if manifest_accession:
+            accession = manifest_accession
         metadata['accession_query'] = accession
         coordinate_fasta = fasta_path or (str(find_species_fasta(metadata['species'], paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna'))) or '')
         metadata['coordinate_reference_fasta'] = coordinate_fasta
@@ -266,8 +288,11 @@ def main():
             reason = f'{type(exc).__name__}: {exc}'; failures.append({'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'reason':reason}); base['note'] = reason
         summary.append(base)
     # Select exactly one source per sample: valid GenBank first, then MITOS2 fallback.
-    mitos_path = yaml(args.config).get('mitos2_annotation', {}).get('paths', {}).get('mitos2_cds_table', '')
+    mitos_paths = yaml(args.config).get('mitos2_annotation', {}).get('paths', {})
+    mitos_path = mitos_paths.get('mitos2_cds_table', '')
+    mitos_reference_path = mitos_paths.get('mitos2_reference_cds_table', '')
     mitos_rows = read_tsv(mitos_path) if mitos_path else []
+    mitos_reference_rows = read_tsv(mitos_reference_path) if mitos_reference_path else []
     genbank_rows = list(output)
     selected = []
     for metadata in sample_rows:
@@ -277,6 +302,13 @@ def main():
             selected.extend(gb_rows)
             continue
         fallback = [dict(row) for row in mitos_rows if value(row, 'sample') == sample]
+        if not fallback:
+            summary_row = next((r for r in summary if r['sample'] == sample), {})
+            accession = value(summary_row, 'accession_query')
+            coordinate_fasta = value(summary_row, 'species_fasta_path')
+            fallback = [dict(row) for row in mitos_reference_rows if value(row, 'coordinate_reference_accession') == accession or (coordinate_fasta and value(row, 'coordinate_reference_fasta') == coordinate_fasta)]
+            for row in fallback:
+                row.update(sample=sample, species=value(metadata, species_col), species_key=species_key(value(metadata, species_col)))
         if fallback and settings.get('use_mitos2_if_genbank_fails', True):
             for row in fallback:
                 row['annotation_source'] = 'MITOS2'; row['annotation_fallback_used'] = 'yes'
