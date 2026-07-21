@@ -172,6 +172,10 @@ build_primate_codon_table:
     sleep_seconds: 0.34
     rettype: gb
     retmode: text
+    prefer_annotation_source: GenBank
+    fallback_annotation_source: MITOS2
+    use_mitos2_if_genbank_fails: true
+    compare_genbank_and_mitos2: true
 
 codon_match:
   paths:
@@ -267,3 +271,30 @@ environment:
   python:
     executable: python
     required_version: ">=3.9"
+
+mitos2_annotation:
+  paths:
+    sample_ref_file: config/sample_ref_file.tsv
+    reference_manifest: references/manifests/reference_materialization_manifest.resolved.tsv
+    fasta_dir: references/variant_calling/Ref_chrM
+    output_dir: results/qc/mitos2_annotation
+    mitos2_raw_dir: results/qc/mitos2_annotation/raw
+    mitos2_parsed_dir: results/qc/mitos2_annotation/parsed
+    mitos2_cds_table: results/qc/mitos2_annotation/all_mitos2_position_codon_table.tsv
+    mitos2_feature_table: results/qc/mitos2_annotation/all_mitos2_features.tsv
+    mitos2_summary_table: results/qc/mitos2_annotation/mitos2_annotation_summary.tsv
+    genbank_mitos2_comparison_table: results/qc/codon_table_build/genbank_vs_mitos2_cds_comparison.tsv
+  settings:
+    enabled: true
+    run_for_all_references: true
+    overwrite_existing: false
+    threads: 4
+    # MITOS2 is called through conda activate mitos2.
+    use_conda: true
+    conda_module: miniconda/24.11.3
+    conda_env: mitos2
+    # Commands may vary by installation; detect available command after activation.
+    mitos2_command_candidates: "mitos2,mitos,runmitos.py"
+    genetic_code: 2
+    # MITOS2 tRNA/rRNA results are interval annotations only.
+    accepted_feature_types: "CDS,gene,tRNA,rRNA"
