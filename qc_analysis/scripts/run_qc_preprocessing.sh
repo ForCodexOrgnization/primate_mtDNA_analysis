@@ -19,9 +19,9 @@ Steps:
   discover_global_anchor           Discover reference-level global MSA anchors only.
   coordinate_liftover              Run coordinate liftover only.
   build_primate_codon_table        Build GenBank-first / MITOS2-fallback sample-level codon annotations.
-  mitos2_prepare_tasks              Write one Slurm-array task per unique final chrM reference.
+  mitos2_prepare_tasks              Write one Slurm-array task per target-species chrM FASTA.
   mitos2_merge                      Merge completed per-reference MITOS2 raw outputs.
-  mitos2_annotation                 Run MITOS2 sequentially on unique final chrM references.
+  mitos2_annotation                 Run MITOS2 sequentially on target-species chrM FASTAs.
   codon_match                      Annotate lifted VCFs with codon matching.
   trna_match                       Annotate VCFs with tRNA matching.
   rrna_match                       Annotate VCFs with rRNA matching.
