@@ -90,3 +90,28 @@ def test_parse_outputs_prefers_mitos_gff_and_normalizes_mitos_names(tmp_path):
     assert features[-1]['gene_raw'] == 'nad1'
     assert len(diagnostics) == 1
     assert diagnostics[0]['file'].endswith('result.gff')
+
+
+def test_reference_tasks_are_one_based_deduplicated_and_report_completion(tmp_path):
+    module = load_module()
+    manifest = tmp_path / 'manifest.tsv'
+    samples = tmp_path / 'samples.tsv'
+    raw = tmp_path / 'raw'
+    manifest.write_text(
+        'target_species\tfinal_chrM_species\tfinal_chrM_accession\tchrM_expected_output_fasta\n'
+        'Species one\tReference one\tACC.1\t/tmp/ref-one.fa\n'
+        'Species two\tReference one\tACC.1\t/tmp/ref-one.fa\n'
+        'Species three\tReference three\tACC.3\t/tmp/ref-three.fa\n'
+    )
+    samples.write_text('sample\tspecies\nS1\tSpecies one\nS2\tSpecies two\nS3\tSpecies three\n')
+    paths = {'reference_manifest': str(manifest), 'sample_ref_file': str(samples), 'mitos2_raw_dir': str(raw)}
+    refs = module.references(paths)
+    (raw / 'ACC.1' / 'mitos2.completed.ok').parent.mkdir(parents=True)
+    (raw / 'ACC.1' / 'mitos2.completed.ok').write_text('completed\n')
+
+    rows = module.task_rows(refs, paths)
+
+    assert [row['task_id'] for row in rows] == [1, 2]
+    assert [row['reference_key'] for row in rows] == ['ACC.1', 'ACC.3']
+    assert [row['n_samples_using_reference'] for row in rows] == [2, 1]
+    assert [row['status'] for row in rows] == ['completed', 'pending']

@@ -280,6 +280,7 @@ mitos2_annotation:
     output_dir: results/qc/mitos2_annotation
     mitos2_raw_dir: results/qc/mitos2_annotation/raw
     mitos2_parsed_dir: results/qc/mitos2_annotation/parsed
+    mitos2_reference_tasks: results/qc/mitos2_annotation/mitos2_reference_tasks.tsv
     mitos2_cds_table: results/qc/mitos2_annotation/all_mitos2_position_codon_table.tsv
     mitos2_feature_table: results/qc/mitos2_annotation/all_mitos2_features.tsv
     mitos2_summary_table: results/qc/mitos2_annotation/mitos2_annotation_summary.tsv
