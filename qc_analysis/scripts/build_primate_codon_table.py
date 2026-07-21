@@ -16,7 +16,7 @@ try:
 except ImportError:  # checked in main so importing helpers remains possible in tests
     Entrez = SeqIO = None
 
-OUTPUT_FIELDS = "file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases".split()
+OUTPUT_FIELDS = "file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used coordinate_reference_fasta coordinate_reference_accession".split()
 SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path accession_record genbank_file n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
 FAIL_FIELDS = "sample species accession_query reason".split()
 GENES = {'ND1':'MT-ND1','ND2':'MT-ND2','ND3':'MT-ND3','ND4':'MT-ND4','ND4L':'MT-ND4L','ND5':'MT-ND5','ND6':'MT-ND6','COX1':'MT-CO1','COI':'MT-CO1','COX2':'MT-CO2','COII':'MT-CO2','COX3':'MT-CO3','COIII':'MT-CO3','CYTB':'MT-CYB','ATP6':'MT-ATP6','ATP8':'MT-ATP8'}
@@ -198,6 +198,9 @@ def parse_record(record, metadata, filename):
                     'codon_pos1_genomic': triplet[0] + 1, 'codon_pos2_genomic': triplet[1] + 1,
                     'codon_pos3_genomic': triplet[2] + 1, 'codon_start_qualifier': codon_start,
                     'transl_table': qualifier(feature, 'transl_table'), 'cds_tail_incomplete_bases': tail,
+                    'annotation_source': 'GenBank', 'annotation_fallback_used': 'no',
+                    'coordinate_reference_fasta': value(metadata, 'coordinate_reference_fasta'),
+                    'coordinate_reference_accession': value(metadata, 'coordinate_reference_accession') or value(metadata, 'accession_query'),
                 })
     return rows, n_cds
 
@@ -229,6 +232,9 @@ def main():
         metadata = dict(raw_metadata); metadata['sample'] = value(metadata, sample_col); metadata['species'] = value(metadata, species_col)
         accession, source, accession_note, manifest_file, matched_species, fasta_path = resolve_accession(metadata, columns, manifests, settings, paths)
         metadata['accession_query'] = accession
+        coordinate_fasta = fasta_path or (str(find_species_fasta(metadata['species'], paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna'))) or '')
+        metadata['coordinate_reference_fasta'] = coordinate_fasta
+        metadata['coordinate_reference_accession'] = accession
         base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession,
                 'accession_source':source, 'accession_note':accession_note,
                 'manifest_file':manifest_file, 'matched_manifest_species':matched_species,
@@ -259,6 +265,47 @@ def main():
         except Exception as exc:
             reason = f'{type(exc).__name__}: {exc}'; failures.append({'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'reason':reason}); base['note'] = reason
         summary.append(base)
+    # Select exactly one source per sample: valid GenBank first, then MITOS2 fallback.
+    mitos_path = yaml(args.config).get('mitos2_annotation', {}).get('paths', {}).get('mitos2_cds_table', '')
+    mitos_rows = read_tsv(mitos_path) if mitos_path else []
+    genbank_rows = list(output)
+    selected = []
+    for metadata in sample_rows:
+        sample = value(metadata, sample_col)
+        gb_rows = [row for row in output if row['sample'] == sample]
+        if gb_rows:
+            selected.extend(gb_rows)
+            continue
+        fallback = [dict(row) for row in mitos_rows if value(row, 'sample') == sample]
+        if fallback and settings.get('use_mitos2_if_genbank_fails', True):
+            for row in fallback:
+                row['annotation_source'] = 'MITOS2'; row['annotation_fallback_used'] = 'yes'
+            selected.extend(fallback)
+            for row in summary:
+                if row['sample'] == sample:
+                    row['status'] = 'completed_mitos2_fallback'; row['n_coding_position_rows'] = len(fallback); row['n_genes'] = len({x['gene'] for x in fallback}); row['note'] = '; '.join(filter(None, [row['note'], 'GenBank CDS unavailable; MITOS2 fallback used.']))
+    output = selected
+    # Compare raw GenBank and MITOS2 CDS boundaries wherever both sources exist.
+    comparison_path = yaml(args.config).get('mitos2_annotation', {}).get('paths', {}).get('genbank_mitos2_comparison_table', 'results/qc/codon_table_build/genbank_vs_mitos2_cds_comparison.tsv')
+    comparison_fields = 'record_type sample original_species reference_species coordinate_reference_accession gene genbank_start genbank_end genbank_strand genbank_length mitos2_start mitos2_end mitos2_strand mitos2_length start_delta end_delta length_delta strand_match coordinate_match_status n_genbank_cds_genes n_mitos2_cds_genes n_gene_matches n_exact_boundary_matches n_near_boundary_matches n_strand_mismatches missing_in_genbank missing_in_mitos2 comparison_status'.split()
+    comparisons = []
+    for sample in sorted({value(r, 'sample') for r in genbank_rows + mitos_rows}):
+        g = {}; m = {}
+        for row in [x for x in genbank_rows if value(x, 'sample') == sample]: g.setdefault(normalize_gene(value(row, 'gene')), []).append(row)
+        for row in [x for x in mitos_rows if value(x, 'sample') == sample]: m.setdefault(normalize_gene(value(row, 'gene')), []).append(row)
+        exact = near = mismatch = matches = 0
+        for gene in sorted(set(g) | set(m)):
+            gr, mr = g.get(gene, []), m.get(gene, [])
+            if not gr or not mr:
+                status = 'missing_mitos2' if gr else 'missing_genbank'
+                comparisons.append({'record_type':'gene','sample':sample,'original_species':value((gr or mr)[0], 'species'),'reference_species':'','coordinate_reference_accession':value((gr or mr)[0], 'coordinate_reference_accession'),'gene':gene,'coordinate_match_status':status})
+                continue
+            gg, mm = gr[0], mr[0]; gs,ge=min(int(x['pos']) for x in gr),max(int(x['pos']) for x in gr); ms,me=min(int(x['pos']) for x in mr),max(int(x['pos']) for x in mr)
+            sd,ed=ms-gs,me-ge; sm=value(gg,'strand') == value(mm,'strand'); status='strand_mismatch' if not sm else ('exact' if not sd and not ed else ('near_boundary_delta_le_3' if abs(sd)<=3 and abs(ed)<=3 else 'different'))
+            matches += 1; exact += status == 'exact'; near += status == 'near_boundary_delta_le_3'; mismatch += status == 'strand_mismatch'
+            comparisons.append({'record_type':'gene','sample':sample,'original_species':value(gg,'species'),'reference_species':'','coordinate_reference_accession':value(gg,'coordinate_reference_accession'),'gene':gene,'genbank_start':gs,'genbank_end':ge,'genbank_strand':value(gg,'strand'),'genbank_length':len(gr),'mitos2_start':ms,'mitos2_end':me,'mitos2_strand':value(mm,'strand'),'mitos2_length':len(mr),'start_delta':sd,'end_delta':ed,'length_delta':len(mr)-len(gr),'strand_match':'yes' if sm else 'no','coordinate_match_status':status})
+        comparisons.append({'record_type':'summary','sample':sample,'n_genbank_cds_genes':len(g),'n_mitos2_cds_genes':len(m),'n_gene_matches':matches,'n_exact_boundary_matches':exact,'n_near_boundary_matches':near,'n_strand_mismatches':mismatch,'missing_in_genbank':','.join(sorted(set(m)-set(g))),'missing_in_mitos2':','.join(sorted(set(g)-set(m))),'comparison_status':'compared' if g and m else 'source_unavailable'})
+    if settings.get('compare_genbank_and_mitos2', True): write_tsv(comparison_path, comparison_fields, comparisons)
     # Global checks are warnings; they intentionally do not discard useful records.
     required = {'sample','pos','gene','codon_seq','codon_pos_in_triplet'}
     global_notes = []
