@@ -289,6 +289,10 @@ mitos2_annotation:
     run_for_all_references: true
     overwrite_existing: false
     threads: 4
+    # Required by runmitos; choose the reference version installed with MITOS2.
+    refseqver: refseq81m
+    # Optional custom MITOS2 reference directory. Empty uses the MITOS2 default.
+    refdir: ""
     # Conda environment: mitos2; package: mitos; CLI executable: runmitos.
     use_conda: true
     conda_module: miniconda

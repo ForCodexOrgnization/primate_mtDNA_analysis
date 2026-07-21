@@ -85,8 +85,14 @@ echo "Using MITOS2 executable: $(command -v runmitos)"
   raise RuntimeError(x.stderr.strip() or 'ERROR: runmitos validation failed after conda activation.')
  return 'runmitos',x.stdout
 def templates(exe,fasta,out,settings):
- q=shlex.quote;code=str(settings.get('genetic_code',2));threads=str(settings.get('threads',4))
- return [f'{q(exe)} -i {q(fasta)} -o {q(out)} --code {code} --threads {threads}',f'{q(exe)} --input {q(fasta)} --output {q(out)} --genetic_code {code} --threads {threads}',f'{q(exe)} {q(fasta)} {q(out)}']
+ q=shlex.quote
+ exe=str(exe);fasta=str(fasta);out=str(out)
+ code=str(settings.get('genetic_code',2))
+ refseqver=str(settings.get('refseqver','refseq81m'))
+ refdir=str(settings.get('refdir','') or '')
+ common=f'-c {q(code)} -o {q(out)} -r {q(refseqver)} --best --noplots'
+ if refdir:common+=f' -R {q(refdir)}'
+ return [f'{q(exe)} --fasta {q(fasta)} {common}',f'{q(exe)} -i {q(fasta)} {common}']
 def codons(features,fasta,ref,samples,code):
  if SeqIO is None:raise RuntimeError('Biopython is required to create MITOS2 codon rows.')
  rec=next(SeqIO.parse(str(fasta),'fasta'));seq=str(rec.seq).upper();base=[]
@@ -133,7 +139,9 @@ def main():
     for cmd in templates(exe,fasta,raw,settings):
      attempted.append(cmd);x=subprocess.run(['bash','-lc',activate(settings)+' && '+cmd],text=True,capture_output=True);Path(logs['stdout']).write_text((Path(logs['stdout']).read_text() if Path(logs['stdout']).exists() else '')+x.stdout);Path(logs['stderr']).write_text((Path(logs['stderr']).read_text() if Path(logs['stderr']).exists() else '')+x.stderr);rc=str(x.returncode)
      if x.returncode==0:break
-    Path(logs['command']).write_text('\n'.join(attempted)+'\n');Path(logs['returncode']).write_text(rc+'\n');features,diag=parse_outputs(raw,ref);write(raw/'parsed_output_files.tsv',DIAG_FIELDS,diag)
+    Path(logs['command']).write_text('\n'.join(attempted)+'\n');Path(logs['returncode']).write_text(rc+'\n')
+    if rc != '0':raise RuntimeError(f'runmitos failed. Check mitos2_annotation.settings.refseqver and refdir. See raw/{ref["reference_key"]}/mitos2.stderr.txt')
+    features,diag=parse_outputs(raw,ref);write(raw/'parsed_output_files.tsv',DIAG_FIELDS,diag)
     cds=[f for f in features if f['feature_type']=='CDS']; rows=codons(features,fasta,ref,linked,str(settings.get('genetic_code',2))) if cds else []
     if not features:status='failed_parse';note='MITOS2 ran but no parseable features were found'
     elif not cds:status='failed_no_cds';note='MITOS2 output had features but no CDS'
