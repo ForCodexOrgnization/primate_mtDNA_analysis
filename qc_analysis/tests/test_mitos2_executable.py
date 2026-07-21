@@ -90,6 +90,26 @@ def test_parse_outputs_prefers_mitos_gff_and_normalizes_mitos_names(tmp_path):
     assert features[-1]['gene_raw'] == 'nad1'
     assert len(diagnostics) == 1
     assert diagnostics[0]['file'].endswith('result.gff')
+    assert module.gff_diagnostics(tmp_path) == {
+        'result_gff_exists': True,
+        'n_gff_gene_rows': 1,
+        'n_gff_cds_like_gene_rows': 1,
+        'n_gff_trna_rows': 1,
+        'n_gff_rrna_rows': 1,
+    }
+
+
+def test_parser_failure_status_flags_unrecognized_cds_like_gff_genes():
+    module = load_module()
+    diagnostics = {
+        'result_gff_exists': True,
+        'n_gff_gene_rows': 1,
+        'n_gff_cds_like_gene_rows': 1,
+        'n_gff_trna_rows': 0,
+        'n_gff_rrna_rows': 0,
+    }
+
+    assert module.parser_failure_status([], diagnostics) == 'failed_parser_cds_gene_detection'
 
 
 def test_reference_tasks_are_one_based_deduplicated_and_report_completion(tmp_path):

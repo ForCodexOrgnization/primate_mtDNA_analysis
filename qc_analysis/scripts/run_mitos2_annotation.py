@@ -10,7 +10,7 @@ except ImportError: SeqIO = None
 FEATURE_FIELDS='reference_key reference_species coordinate_reference_accession coordinate_reference_fasta feature_type gene gene_raw start end strand score source_file annotation_source'.split()
 CODON_FIELDS='file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source coordinate_reference_fasta coordinate_reference_accession'.split()
 TASK_FIELDS='task_id reference_key reference_species coordinate_reference_accession coordinate_reference_fasta n_samples_using_reference status'.split()
-SUMMARY_FIELDS='reference_key reference_species coordinate_reference_accession coordinate_reference_fasta status command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_coding_position_rows n_output_files_scanned n_parseable_files parser_status note'.split()
+SUMMARY_FIELDS='reference_key reference_species coordinate_reference_accession coordinate_reference_fasta status command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_coding_position_rows n_output_files_scanned n_parseable_files result_gff_exists n_gff_gene_rows n_gff_cds_like_gene_rows n_gff_trna_rows n_gff_rrna_rows parser_status note'.split()
 DIAG_FIELDS='reference_key file suffix n_lines n_candidate_feature_lines parser_used n_features_parsed'.split()
 GENES = {
  'ND1':'MT-ND1', 'NAD1':'MT-ND1', 'ND2':'MT-ND2', 'NAD2':'MT-ND2',
@@ -60,6 +60,27 @@ def infer(raw, declared=''):
   if name.startswith(('trn', 'trna')): return 'tRNA'
   if name in ('rrns', 'rrnl', '12s', '16s') or 'rrna' in name: return 'rRNA'
  return ''
+def gff_diagnostics(raw):
+ """Summarize the authoritative MITOS2 GFF, including gene-like CDS evidence."""
+ p=Path(raw)/'result.gff'; result={'result_gff_exists':p.is_file(),'n_gff_gene_rows':0,
+  'n_gff_cds_like_gene_rows':0,'n_gff_trna_rows':0,'n_gff_rrna_rows':0}
+ if not result['result_gff_exists'] or not text_file(p): return result
+ for line in p.read_text(errors='replace').splitlines():
+  if not line or line.startswith('#'): continue
+  c=line.split('\t')
+  if len(c)<9: continue
+  declared=c[2].lower(); at=attrs(c[8])
+  rawgene=at.get('name') or at.get('gene') or at.get('gene_id') or at.get('id') or ''
+  if declared=='gene':
+   result['n_gff_gene_rows']+=1
+   if infer(rawgene, declared)=='CDS': result['n_gff_cds_like_gene_rows']+=1
+  elif declared=='trna': result['n_gff_trna_rows']+=1
+  elif declared=='rrna': result['n_gff_rrna_rows']+=1
+ return result
+def parser_failure_status(features, gff):
+ if gff['n_gff_cds_like_gene_rows'] and not any(f['feature_type']=='CDS' for f in features):
+  return 'failed_parser_cds_gene_detection'
+ return 'failed_parse' if not features else 'failed_no_cds'
 def text_file(p):
  if p.suffix.lower() in ('.fa','.fasta','.fna','.gz','.bam','.png','.pdf'):return False
  try: p.read_text(errors='strict');return True
@@ -171,33 +192,39 @@ def merge(paths,settings,refs):
  for ref,linked in refs:
   raw=Path(paths['mitos2_raw_dir'])/ref['reference_key']; logs={x:str(raw/f'mitos2.{x}.txt') for x in ('command','stdout','stderr','returncode','help')}
   marker=raw/'mitos2.completed.ok'; features=[];diag=[];rows=[];note=''
-  if marker.exists():
+  gff=gff_diagnostics(raw)
+  recorded_status=Path(raw/'mitos2.status.txt').read_text().strip() if (raw/'mitos2.status.txt').exists() else ''
+  # A prior parser failure may have left valid MITOS2 files without a completion marker.
+  if marker.exists() or recorded_status or gff['result_gff_exists']:
    fasta=ref['coordinate_reference_fasta']; features,diag=parse_outputs(raw,ref)
-   if not features: status='failed_parse';note='Successful marker existed but no parseable features were found'
+   if not features:
+    status=parser_failure_status(features,gff);note='MITOS2 output did not yield parseable features'
    else:
     cds=[f for f in features if f['feature_type']=='CDS']
     rows=codons(features,fasta,ref,linked,str(settings.get('genetic_code',2))) if cds and Path(fasta).exists() else []
-    status='completed' if cds and rows else ('failed_no_cds' if not cds else 'failed_no_coding_rows')
+    status='completed' if cds and rows else (parser_failure_status(features,gff) if not cds else 'failed_no_coding_rows')
+   if recorded_status and status != 'completed': status=recorded_status
    write(raw/'parsed_output_files.tsv',DIAG_FIELDS,diag)
   else: status='pending'
   rc=Path(logs['returncode']).read_text().strip() if Path(logs['returncode']).exists() else ''
   command_text=Path(logs['command']).read_text().strip() if Path(logs['command']).exists() else ''
   allf+=features;allc+=rows
-  summ.append({**ref,'status':status,'command_mode':'runmitos','mitos2_command':'runmitos','attempted_commands':command_text,'return_code':rc,'stdout_log':logs['stdout'],'stderr_log':logs['stderr'],'help_log':logs['help'],'raw_dir':str(raw),'n_features':len(features),'n_cds_features':len([f for f in features if f['feature_type']=='CDS']),'n_coding_position_rows':len(rows),'n_output_files_scanned':len(diag),'n_parseable_files':sum(bool(d['n_features_parsed']) for d in diag),'parser_status':status,'note':note})
+  summ.append({**ref,'status':status,'command_mode':'runmitos','mitos2_command':'runmitos','attempted_commands':command_text,'return_code':rc,'stdout_log':logs['stdout'],'stderr_log':logs['stderr'],'help_log':logs['help'],'raw_dir':str(raw),'n_features':len(features),'n_cds_features':len([f for f in features if f['feature_type']=='CDS']),'n_coding_position_rows':len(rows),'n_output_files_scanned':len(diag),'n_parseable_files':sum(bool(d['n_features_parsed']) for d in diag),**gff,'parser_status':status,'note':note})
  write(paths['mitos2_feature_table'],FEATURE_FIELDS,allf);write(paths['mitos2_cds_table'],CODON_FIELDS,allc);write(paths['mitos2_summary_table'],SUMMARY_FIELDS,summ)
  print(f'Wrote {len(allf)} features and {len(allc)} sample-level coding rows.')
 def run_reference(ref,linked,paths,settings,a):
  fasta=ref['coordinate_reference_fasta'];raw=Path(paths['mitos2_raw_dir'])/ref['reference_key'];raw.mkdir(parents=True,exist_ok=True)
  logs={x:str(raw/f'mitos2.{x}.txt') for x in ('command','stdout','stderr','returncode','help')}; marker=raw/'mitos2.completed.ok'
+ status_file=raw/'mitos2.status.txt'
  if marker.exists() and not a.force:
   print(f'Skipping completed MITOS2 reference: {ref["reference_key"]}')
   return
  for path in logs.values(): Path(path).write_text('')
  if not Path(fasta).exists():
-  Path(logs['returncode']).write_text('exception\n');Path(logs['stderr']).write_text(f'Final chrM FASTA is missing: {fasta}\n');raise FileNotFoundError(f'Final chrM FASTA is missing: {fasta}')
+  Path(logs['returncode']).write_text('exception\n');Path(logs['stderr']).write_text(f'Final chrM FASTA is missing: {fasta}\n');status_file.write_text('failed_missing_fasta\n');return
  if a.dry_run:
   Path(logs['command']).write_text('dry-run\n');Path(logs['returncode']).write_text('0\n');return
- attempted=[];rc='';success=False
+ attempted=[];rc='';success=False; failure_status='failed_mitos2'
  try:
   exe,validation=command(settings);helpx=subprocess.run(['bash','-lc',activate(settings)+f' && {shlex.quote(exe)} --help'],text=True,capture_output=True);Path(logs['help']).write_text(validation+helpx.stdout+'\n'+helpx.stderr)
   for cmd in templates(exe,fasta,raw,settings):
@@ -207,12 +234,16 @@ def run_reference(ref,linked,paths,settings,a):
    features,diag=parse_outputs(raw,ref); cds=[f for f in features if f['feature_type']=='CDS']; rows=codons(features,fasta,ref,linked,str(settings.get('genetic_code',2))) if cds else []
    write(raw/'parsed_output_files.tsv',DIAG_FIELDS,diag)
    if features and cds and rows: success=True;break
+   failure_status=parser_failure_status(features,gff_diagnostics(raw)) if not cds else 'failed_no_coding_rows'
    attempted.append('template_returned_zero_but_no_parseable_output')
   Path(logs['command']).write_text('\n'.join(attempted)+'\n');Path(logs['returncode']).write_text(rc+'\n')
  except Exception as e:
-  Path(logs['returncode']).write_text((rc or 'exception')+'\n');Path(logs['stderr']).write_text(Path(logs['stderr']).read_text()+str(e)+'\n');raise
- if not success: raise RuntimeError(f'runmitos did not produce parseable CDS output for {ref["reference_key"]}; see {logs["stderr"]}')
- marker.write_text('completed\n')
+  Path(logs['returncode']).write_text((rc or 'exception')+'\n');Path(logs['stderr']).write_text(Path(logs['stderr']).read_text()+str(e)+'\n');failure_status='failed_execution'
+ if not success:
+  status_file.write_text(failure_status+'\n')
+  print(f'MITOS2 reference failed: {ref["reference_key"]} ({failure_status}); continuing.')
+  return
+ status_file.unlink(missing_ok=True); marker.write_text('completed\n')
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('--config',required=True);ap.add_argument('--sample');ap.add_argument('--prepare-tasks',action='store_true');ap.add_argument('--task-id');ap.add_argument('--reference');ap.add_argument('--merge-only',action='store_true');ap.add_argument('--force',action='store_true');ap.add_argument('--dry-run',action='store_true');a=ap.parse_args()
  if sum(bool(x) for x in (a.prepare_tasks,a.merge_only)) and (a.task_id or a.reference): ap.error('--prepare-tasks/--merge-only cannot be combined with --task-id or --reference')
