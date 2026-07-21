@@ -48,3 +48,26 @@ This writes `results/qc/mitos2_annotation/all_mitos2_features.tsv`,
 `results/qc/mitos2_annotation/mitos2_annotation_summary.tsv`. A completed
 Tarsius run contains approximately 13 CDS intervals and 11,000 coding-position
 rows.
+
+## Slurm array workflow (recommended)
+
+`runmitos` does not provide useful multithreading, so parallelize across unique
+final chrM references instead. First create a stable, one-based task list, then
+submit one array task for each data row and merge only after the array finishes:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh mitos2_prepare_tasks config/qc_preprocessing.yaml
+N=$(($(wc -l < results/qc/mitos2_annotation/mitos2_reference_tasks.tsv)-1))
+sbatch --array=1-${N}%20 qc_analysis/scripts/run_mitos2_annotation_array.slurm
+bash qc_analysis/scripts/run_qc_preprocessing.sh mitos2_merge config/qc_preprocessing.yaml
+```
+
+The task list has one row per final chrM FASTA/reference and records its task ID,
+reference metadata, number of linked samples, and completion status. Each array
+worker writes only `results/qc/mitos2_annotation/raw/{reference_key}/`; successful
+workers create `mitos2.completed.ok`, which causes later runs to skip that
+reference unless `--force` is supplied. The merge command parses every completed
+raw directory and regenerates the three combined tables.
+
+`%20` limits concurrent workers to 20. Adjust this array concurrency to roughly
+10–30 according to current cluster load and local scheduler policy.
