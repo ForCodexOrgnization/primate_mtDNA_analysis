@@ -135,3 +135,53 @@ def test_reference_tasks_are_one_based_deduplicated_and_report_completion(tmp_pa
     assert [row['reference_key'] for row in rows] == ['ACC.1', 'ACC.3']
     assert [row['n_samples_using_reference'] for row in rows] == [2, 1]
     assert [row['status'] for row in rows] == ['completed', 'pending']
+
+
+def test_collect_reference_separates_reference_and_sample_codon_counts(tmp_path, monkeypatch):
+    module = load_module()
+    fasta = tmp_path / 'NC_002764.1.fa'
+    fasta.write_text('>NC_002764.1\n' + 'ATG' * 10 + '\n')
+    raw = tmp_path / 'raw' / 'NC_002764.1'
+    raw.mkdir(parents=True)
+    raw.joinpath('result.gff').write_text(
+        'chrM\tmitos\tgene\t1\t30\t.\t+\t.\tID=gene_nad1;Name=nad1;gene_id=nad1\n'
+    )
+    ref = {
+        'reference_key': 'NC_002764.1',
+        'reference_species': 'Macaca_sylvanus',
+        'coordinate_reference_accession': 'NC_002764.1',
+        'coordinate_reference_fasta': str(fasta),
+    }
+    paths = {'mitos2_raw_dir': str(tmp_path / 'raw')}
+    monkeypatch.setattr(module, 'build_reference_codon_rows', lambda *args: [{'pos': i} for i in range(30)])
+
+    result = module.collect_reference(ref, [{'sample': 'sample-1', 'species': 'Macaca sylvanus'}], paths, {'genetic_code': 2})
+
+    assert result['status'] == 'completed'
+    assert len(result['features']) == 1
+    assert len(result['reference_codon_rows']) == 30
+    assert len(result['sample_codon_rows']) == 30
+    summary = result['summary_row']
+    assert summary['n_cds_features'] == 1
+    assert summary['n_linked_samples'] == 1
+    assert summary['n_reference_coding_position_rows'] == 30
+    assert summary['n_sample_level_coding_position_rows'] == 30
+    assert summary['result_gff_exists'] is True
+
+
+def test_collect_reference_reports_parser_cds_detection_failure(tmp_path):
+    module = load_module()
+    raw = tmp_path / 'raw' / 'NC_002764.1'
+    raw.mkdir(parents=True)
+    # The diagnostics recognizes nad1 as coding even when parsing produces no features.
+    raw.joinpath('result.gff').write_text('chrM\tmitos\tgene\t1\t30\t.\t+\t.\tName=nad1\n')
+    ref = {'reference_key': 'NC_002764.1', 'reference_species': 'Macaca_sylvanus',
+           'coordinate_reference_accession': 'NC_002764.1', 'coordinate_reference_fasta': str(tmp_path / 'missing.fa')}
+
+    # Make the parser intentionally return no rows to exercise the diagnostic branch.
+    module.parse_outputs = lambda raw_dir, reference: ([], [])
+    result = module.collect_reference(ref, [], {'mitos2_raw_dir': str(tmp_path / 'raw')}, {})
+
+    assert result['status'] == 'failed_parser_cds_gene_detection'
+    assert result['summary_row']['n_cds_features'] == 0
+    assert result['summary_row']['n_gff_cds_like_gene_rows'] == 1
