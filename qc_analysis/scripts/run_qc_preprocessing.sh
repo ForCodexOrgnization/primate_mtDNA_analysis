@@ -167,6 +167,33 @@ configured_biopython_value() {
   ' "$CONFIG"
 }
 
+# Read the MITOS2 conda settings without requiring a Python YAML parser before
+# the environment that provides Biopython has been activated.
+configured_mitos2_value() {
+  local requested_key="$1"
+  awk -v requested_key="$requested_key" '
+    function indent(line) { match(line, /^[[:space:]]*/); return RLENGTH }
+    function trim(value) { sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); return value }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      if (line !~ /[^[:space:]]/) next
+      level = indent(line)
+      content = trim(line)
+
+      if (content == "mitos2_annotation:") { mitos2_indent = level; in_mitos2 = 1; in_settings = 0; next }
+      if (in_mitos2 && level <= mitos2_indent) { in_mitos2 = 0; in_settings = 0 }
+      if (in_mitos2 && content == "settings:") { settings_indent = level; in_settings = 1; next }
+      if (in_settings && level <= settings_indent) in_settings = 0
+      if (in_settings && content ~ ("^" requested_key ":[[:space:]]*")) {
+        sub("^" requested_key ":[[:space:]]*", "", content)
+        print trim(content)
+        exit
+      }
+    }
+  ' "$CONFIG"
+}
+
 if [[ -z "${BIOPYTHON_USE_MODULE+x}" ]]; then
   configured_use_module="$(configured_biopython_value use_module)"
   case "${configured_use_module,,}" in
@@ -176,6 +203,8 @@ if [[ -z "${BIOPYTHON_USE_MODULE+x}" ]]; then
 fi
 BIOPYTHON_MODULE="${BIOPYTHON_MODULE:-$(configured_biopython_value module_load)}"
 BIOPYTHON_MODULE="${BIOPYTHON_MODULE:-Biopython/1.83-foss-2022b}"
+MITOS2_CONDA_MODULE="$(configured_mitos2_value conda_module)"
+MITOS2_CONDA_ENV="$(configured_mitos2_value conda_env)"
 
 run_collect_variant_calling_results() {
   echo "[qc_preprocessing] Running collect_variant_calling_results with config: ${CONFIG}" >&2
@@ -202,11 +231,47 @@ run_coordinate_liftover() {
 
 run_mitos2_annotation() {
   local mode="${1:-}"
+  activate_mitos2_environment
   echo "[qc_preprocessing] Running mitos2_annotation ${mode} with config: ${CONFIG}" >&2
   local cmd=("$PYTHON" "$MITOS2_SCRIPT" --config "$CONFIG")
   [[ -n "$mode" ]] && cmd+=("$mode")
   [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
   "${cmd[@]}"
+}
+
+activate_mitos2_environment() {
+  if [[ -z "$MITOS2_CONDA_MODULE" || -z "$MITOS2_CONDA_ENV" ]]; then
+    echo "ERROR: mitos2_annotation.settings must define conda_module and conda_env." >&2
+    exit 1
+  fi
+
+  echo "[qc_preprocessing] Loading MITOS2 conda module: ${MITOS2_CONDA_MODULE}" >&2
+  if ! command -v module >/dev/null 2>&1; then
+    if [[ -f /etc/profile.d/modules.sh ]]; then
+      # module is commonly initialized only for login shells on HPC systems.
+      source /etc/profile.d/modules.sh
+    fi
+  fi
+  if ! command -v module >/dev/null 2>&1; then
+    echo "ERROR: module command is unavailable; cannot load ${MITOS2_CONDA_MODULE}." >&2
+    exit 1
+  fi
+  module load "$MITOS2_CONDA_MODULE"
+
+  # shellcheck disable=SC1090
+  source "$(conda info --base)/etc/profile.d/conda.sh"
+  echo "[qc_preprocessing] Activating MITOS2 conda environment: ${MITOS2_CONDA_ENV}" >&2
+  conda activate "$MITOS2_CONDA_ENV"
+  PYTHON="$(command -v python)"
+
+  if ! "$PYTHON" - <<'PY'
+from Bio import SeqIO
+print("Biopython import OK")
+PY
+  then
+    echo "ERROR: Biopython is not importable in the MITOS2 conda environment: ${MITOS2_CONDA_ENV}." >&2
+    exit 1
+  fi
 }
 
 run_build_primate_codon_table() {
