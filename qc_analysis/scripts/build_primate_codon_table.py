@@ -19,6 +19,8 @@ except ImportError:  # checked in main so importing helpers remains possible in 
 OUTPUT_FIELDS = "file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used coordinate_reference_fasta coordinate_reference_accession".split()
 SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path accession_record genbank_file n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
 FAIL_FIELDS = "sample species accession_query reason".split()
+MITOS2_FALLBACK_SELECTION_FIELDS = "sample species accession coordinate_reference_fasta coordinate_reference_accession fallback_match_mode n_candidate_rows n_selected_rows_before_dedup n_selected_rows_after_dedup n_duplicate_rows_collapsed n_candidate_reference_groups selected_reference_group note".split()
+MITOS2_NUMERIC_FIELDS = ('pos', 'codon_index', 'codon_pos_in_triplet', 'codon_pos1_genomic', 'codon_pos2_genomic', 'codon_pos3_genomic')
 GENES = {'ND1':'MT-ND1','ND2':'MT-ND2','ND3':'MT-ND3','ND4':'MT-ND4','ND4L':'MT-ND4L','ND5':'MT-ND5','ND6':'MT-ND6','COX1':'MT-CO1','COI':'MT-CO1','COX2':'MT-CO2','COII':'MT-CO2','COX3':'MT-CO3','COIII':'MT-CO3','CYTB':'MT-CYB','ATP6':'MT-ATP6','ATP8':'MT-ATP8'}
 
 def value(row, key):
@@ -167,6 +169,61 @@ def write_tsv(path, fields, records):
         out = csv.DictWriter(handle, fieldnames=fields, delimiter='\t', extrasaction='ignore')
         out.writeheader(); out.writerows(records)
 
+def valid_phase(value):
+    try:
+        return int(value) in (1, 2, 3)
+    except Exception:
+        return False
+
+def normalize_mitos2_numeric_fields(row):
+    """Make MITOS2 TSV values comparable to GenBank-derived numeric values."""
+    for field in MITOS2_NUMERIC_FIELDS:
+        raw = value(row, field)
+        if raw:
+            try:
+                row[field] = str(int(raw))
+            except (TypeError, ValueError):
+                row[field] = raw
+    return row
+
+def fallback_duplicate_key(row, include_sample=False):
+    fields = ('coordinate_reference_fasta', 'coordinate_reference_accession', 'gene',
+              'pos', 'codon_index', 'codon_pos_in_triplet')
+    if include_sample:
+        fields = ('sample', 'pos', 'gene', 'codon_index', 'codon_pos_in_triplet')
+    return tuple(value(row, field) for field in fields)
+
+def deduplicate_rows(rows, key):
+    """Keep the first deterministic occurrence of each annotation position."""
+    unique, seen = [], set()
+    for row in rows:
+        row_key = key(row)
+        if row_key not in seen:
+            seen.add(row_key)
+            unique.append(row)
+    return unique, len(rows) - len(unique)
+
+def select_reference_fallback(rows, coordinate_fasta, accession):
+    """Select one reference annotation set, preferring the coordinate FASTA."""
+    fasta_candidates = [row for row in rows if coordinate_fasta and value(row, 'coordinate_reference_fasta') == coordinate_fasta]
+    candidates, mode = (fasta_candidates, 'coordinate_fasta') if fasta_candidates else (
+        [row for row in rows if value(row, 'coordinate_reference_accession') == accession], 'accession')
+    groups = {}
+    for row in candidates:
+        group = (value(row, 'coordinate_reference_fasta'), value(row, 'coordinate_reference_accession'))
+        groups.setdefault(group, []).append(row)
+    if not groups:
+        return [], mode, 0, ''
+    # Prefer the most complete CDS gene set, then a biologically plausible number
+    # of coding rows, then row count, with lexical ordering as a stable tie-breaker.
+    def score(item):
+        group, group_rows = item
+        n_genes = len({normalize_gene(value(row, 'gene')) for row in group_rows})
+        n_rows = len(group_rows)
+        return (-n_genes, -(5000 <= n_rows <= 13000), -n_rows, group[0], group[1])
+    selected_group, selected_rows = min(groups.items(), key=score)
+    return [dict(row) for row in selected_rows], mode, len(groups), '|'.join(selected_group)
+
 def coding_coordinates(feature):
     """Return genomic 0-based positions in coding orientation, including joined CDSs."""
     parts = list(feature.location.parts)
@@ -260,7 +317,7 @@ def main():
         base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession,
                 'accession_source':source, 'accession_note':accession_note,
                 'manifest_file':manifest_file, 'matched_manifest_species':matched_species,
-                'species_fasta_path':fasta_path, 'accession_record':'', 'genbank_file':'',
+                'species_fasta_path':fasta_path or coordinate_fasta, 'accession_record':'', 'genbank_file':'',
                 'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'',
                 'max_pos':'', 'status':'failed', 'note':''}
         if not accession:
@@ -294,7 +351,7 @@ def main():
     mitos_rows = read_tsv(mitos_path) if mitos_path else []
     mitos_reference_rows = read_tsv(mitos_reference_path) if mitos_reference_path else []
     genbank_rows = list(output)
-    selected = []
+    selected, fallback_selection_summary = [], []
     for metadata in sample_rows:
         sample = value(metadata, sample_col)
         gb_rows = [row for row in output if row['sample'] == sample]
@@ -302,20 +359,52 @@ def main():
             selected.extend(gb_rows)
             continue
         fallback = [dict(row) for row in mitos_rows if value(row, 'sample') == sample]
+        match_mode = 'sample_level'
+        candidate_groups = 1 if fallback else 0
+        selected_group = ''
         if not fallback:
             summary_row = next((r for r in summary if r['sample'] == sample), {})
             accession = value(summary_row, 'accession_query')
-            coordinate_fasta = value(summary_row, 'species_fasta_path')
-            fallback = [dict(row) for row in mitos_reference_rows if value(row, 'coordinate_reference_accession') == accession or (coordinate_fasta and value(row, 'coordinate_reference_fasta') == coordinate_fasta)]
+            coordinate_fasta = value(summary_row, 'species_fasta_path') or value(summary_row, 'coordinate_reference_fasta')
+            fallback, match_mode, candidate_groups, selected_group = select_reference_fallback(
+                mitos_reference_rows, coordinate_fasta, accession)
             for row in fallback:
                 row.update(sample=sample, species=value(metadata, species_col), species_key=species_key(value(metadata, species_col)))
+        n_candidate_rows = len(fallback)
         if fallback and settings.get('use_mitos2_if_genbank_fails', True):
             for row in fallback:
+                normalize_mitos2_numeric_fields(row)
                 row['annotation_source'] = 'MITOS2'; row['annotation_fallback_used'] = 'yes'
+                row['gene'] = normalize_gene(value(row, 'gene'))
+            # Reference-level input tables can contain repeated annotation sets;
+            # remove those before and after assigning the target sample identity.
+            fallback, reference_duplicates = deduplicate_rows(fallback, fallback_duplicate_key)
+            fallback, sample_duplicates = deduplicate_rows(fallback, lambda row: fallback_duplicate_key(row, include_sample=True))
+            duplicates_collapsed = reference_duplicates + sample_duplicates
+            assert len({fallback_duplicate_key(row, include_sample=True) for row in fallback}) == len(fallback), \
+                f'MITOS2 fallback duplicate keys remain for {sample}'
             selected.extend(fallback)
+            notes = ['GenBank CDS unavailable; MITOS2 fallback used.']
+            if candidate_groups > 1:
+                notes.append(f'MITOS2 fallback selected one reference group from {candidate_groups} candidates: {selected_group}')
+            if duplicates_collapsed:
+                notes.append(f'MITOS2 fallback duplicate rows collapsed: {duplicates_collapsed}')
+            if len(fallback) < 5000 or len(fallback) > 13000:
+                notes.append(f'Coding rows outside expected mammalian range after MITOS2 fallback: {len(fallback)}')
             for row in summary:
                 if row['sample'] == sample:
-                    row['status'] = 'completed_mitos2_fallback'; row['n_coding_position_rows'] = len(fallback); row['n_genes'] = len({x['gene'] for x in fallback}); row['note'] = '; '.join(filter(None, [row['note'], 'GenBank CDS unavailable; MITOS2 fallback used.']))
+                    row['status'] = 'completed_mitos2_fallback'; row['n_coding_position_rows'] = len(fallback); row['n_genes'] = len({normalize_gene(value(x, 'gene')) for x in fallback}); row['note'] = '; '.join(filter(None, [row['note'], *notes]))
+            fallback_selection_summary.append({
+                'sample': sample, 'species': value(metadata, species_col),
+                'accession': value(next((r for r in summary if r['sample'] == sample), {}), 'accession_query'),
+                'coordinate_reference_fasta': value(fallback[0], 'coordinate_reference_fasta'),
+                'coordinate_reference_accession': value(fallback[0], 'coordinate_reference_accession'),
+                'fallback_match_mode': match_mode, 'n_candidate_rows': n_candidate_rows,
+                'n_selected_rows_before_dedup': n_candidate_rows,
+                'n_selected_rows_after_dedup': len(fallback), 'n_duplicate_rows_collapsed': duplicates_collapsed,
+                'n_candidate_reference_groups': candidate_groups, 'selected_reference_group': selected_group,
+                'note': '; '.join(notes[1:]),
+            })
     output = selected
     # Compare raw GenBank and MITOS2 CDS boundaries wherever both sources exist.
     comparison_path = yaml(args.config).get('mitos2_annotation', {}).get('paths', {}).get('genbank_mitos2_comparison_table', 'results/qc/codon_table_build/genbank_vs_mitos2_cds_comparison.tsv')
@@ -342,11 +431,13 @@ def main():
     required = {'sample','pos','gene','codon_seq','codon_pos_in_triplet'}
     global_notes = []
     if not required.issubset(OUTPUT_FIELDS): global_notes.append('Internal error: output schema lacks required columns.')
-    if any(r['codon_pos_in_triplet'] not in (1,2,3) for r in output): global_notes.append('Invalid codon_pos_in_triplet values detected.')
+    if any(not valid_phase(r.get('codon_pos_in_triplet')) for r in output): global_notes.append('Invalid codon_pos_in_triplet values detected.')
     if any(r['codon_seq'] and len(r['codon_seq']) != 3 for r in output): global_notes.append('Non-triplet codon_seq values detected.')
     if global_notes:
         for row in summary: row['note'] = '; '.join(filter(None, [row['note'], *global_notes]))
     if not args.dry_run: write_tsv(paths['output_table'], OUTPUT_FIELDS, output)
+    fallback_summary_path = mitos_paths.get('mitos2_fallback_selection_summary_table', 'results/qc/codon_table_build/mitos2_fallback_selection_summary.tsv')
+    write_tsv(fallback_summary_path, MITOS2_FALLBACK_SELECTION_FIELDS, fallback_selection_summary)
     write_tsv(paths['failed_downloads_table'], FAIL_FIELDS, failures); write_tsv(paths['summary_table'], SUMMARY_FIELDS, summary)
     if args.dry_run:
         resolved = sum(row['status'] == 'dry_run_resolved' for row in summary)
