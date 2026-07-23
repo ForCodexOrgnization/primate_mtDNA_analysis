@@ -296,7 +296,7 @@ environment:
   # Used only by the GenBank/codon-table build wrapper; this keeps Biopython
   # separate from the MAFFT conda environment.
   biopython:
-    use_module: true
+    use_module: false
     module_load: Biopython/1.83-foss-2022b
   mafft:
     module_load: miniconda/24.11.3
