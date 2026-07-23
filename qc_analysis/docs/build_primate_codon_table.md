@@ -85,24 +85,42 @@ reference base, coding-oriented codon and phase, all three genomic codon positio
 strand, and CDS qualifiers. Joined and minus-strand CDS features are emitted in
 coding orientation while retaining their original genomic coordinates.
 
-Failures are recorded without stopping other samples in
+Final sample failures are recorded without stopping other samples in
 `results/qc/codon_table_build/failed_genbank_downloads.tsv`; per-sample counts and
-sanity-check warnings are recorded in the matching summary table. Set the optional
+sanity-check warnings are recorded in the matching summary table. A GenBank
+resolution or download problem is removed from this final-failure table if MITOS2
+subsequently provides a usable fallback annotation. Set the optional
 `build_primate_codon_table.settings.email` for NCBI Entrez requests. Use `--dry-run`
 to resolve and audit every accession without downloading or parsing GenBank records,
 or `--force-download` to refresh cached records.
 
 ## Parallel and HPC operation
 
-The script resolves accessions once, downloads each unique missing accession at
-most once, and then prepares/parses samples internally with worker threads.
-Final TSV construction, MITOS2 fallback selection, comparisons, validation, and
-writing are deliberately single-process, so the shared output files are written
-exactly once in sample-reference order. Do **not** run several `--sample`
+The summary `status` is a final sample outcome:
+
+* `completed` means GenBank CDS annotation successfully generated the codon table.
+* `completed_mitos2_fallback` means GenBank annotation was unavailable, but MITOS2
+  fallback successfully generated the sample codon table.
+* `failed` means neither GenBank nor MITOS2 produced a usable codon table.
+
+The final completed count includes both `completed` and
+`completed_mitos2_fallback`. Before reporting it, the script also compares the
+successful summary sample set with the output-table sample set and emits a warning
+if they differ.
+
+Accession and coordinate resolution remain serial. The script downloads each
+unique missing GenBank accession at most once using `download_workers`, then parses
+only eligible downloaded/cached GenBank files using `workers`. MITOS2 fallback
+post-processing currently occurs in the main process. Thus, when every sample
+requires MITOS2 fallback, the GenBank parsing thread pool has no useful work (and
+is not created), although mixed runs still support parallel GenBank parsing.
+Final TSV construction, comparisons, validation, and writing are deliberately
+single-process, so the shared output files are written exactly once in
+sample-reference order. Do **not** run several `--sample`
 invocations concurrently against the same configuration: each invocation still
 owns the same global output paths.
 
-Use `--workers` for sample preparation and cached GenBank parsing. Its default is
+Use `--workers` for eligible cached/downloaded GenBank parsing. Its default is
 CLI value, then YAML `settings.workers`, then `SLURM_CPUS_PER_TASK`, then 1.
 `--download-workers` controls only concurrent Entrez downloads; without an API
 key it defaults to 1. The process-wide rate limiter spaces all Entrez request

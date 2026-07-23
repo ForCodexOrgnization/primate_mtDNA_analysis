@@ -27,10 +27,45 @@ SUMMARY_FIELDS = "sample species accession_query accession_source accession_note
 FAIL_FIELDS = "sample species accession_query reason".split()
 MITOS2_FALLBACK_SELECTION_FIELDS = "sample species accession coordinate_reference_fasta coordinate_reference_accession fallback_match_mode n_candidate_rows n_selected_rows_before_dedup n_selected_rows_after_dedup n_duplicate_rows_collapsed n_candidate_reference_groups selected_reference_group note".split()
 MITOS2_NUMERIC_FIELDS = ('pos', 'codon_index', 'codon_pos_in_triplet', 'codon_pos1_genomic', 'codon_pos2_genomic', 'codon_pos3_genomic')
+SUCCESS_STATUSES = {
+    'completed',
+    'completed_mitos2_fallback',
+}
 GENES = {'ND1':'MT-ND1','ND2':'MT-ND2','ND3':'MT-ND3','ND4':'MT-ND4','ND4L':'MT-ND4L','ND5':'MT-ND5','ND6':'MT-ND6','COX1':'MT-CO1','COI':'MT-CO1','COX2':'MT-CO2','COII':'MT-CO2','COX3':'MT-CO3','COIII':'MT-CO3','CYTB':'MT-CYB','ATP6':'MT-ATP6','ATP8':'MT-ATP8'}
 
 def value(row, key):
     return (row.get(key) or '').strip()
+
+def summarize_build_status(summary):
+    """Count final sample outcomes, including both successful annotation routes."""
+    counts = {
+        'total': len(summary), 'completed': 0, 'completed_genbank': 0,
+        'completed_mitos2_fallback': 0, 'failed': 0, 'other': 0,
+    }
+    for row in summary:
+        status = value(row, 'status')
+        if status == 'completed':
+            counts['completed_genbank'] += 1
+            counts['completed'] += 1
+        elif status == 'completed_mitos2_fallback':
+            counts['completed_mitos2_fallback'] += 1
+            counts['completed'] += 1
+        elif status == 'failed':
+            counts['failed'] += 1
+        else:
+            counts['other'] += 1
+    return counts
+
+def warn_if_output_summary_disagree(summary, output):
+    """Warn, without failing, if final output and successful status sets differ."""
+    successful_samples = {value(row, 'sample') for row in summary
+                          if value(row, 'status') in SUCCESS_STATUSES}
+    output_samples = {value(row, 'sample') for row in output if value(row, 'sample')}
+    if successful_samples != output_samples:
+        print('WARNING: build summary and final codon table sample sets disagree.', file=sys.stderr)
+        print('Successful-without-output: ' + ', '.join(sorted(successful_samples - output_samples)), file=sys.stderr)
+        print('Output-without-success-status: ' + ', '.join(sorted(output_samples - successful_samples)), file=sys.stderr)
+    return successful_samples == output_samples
 
 def normalize_gene(raw):
     key = re.sub(r'[^A-Z0-9]', '', raw.upper().replace('MT', '', 1))
@@ -438,6 +473,10 @@ def main():
     context = (settings, paths, columns, manifests, fasta_index, args.dry_run)
     # Resolution is serial (manifest/FASTA coordination); parsing is parallel and immutable per sample.
     prepared = [prepare_sample(item, context) for item in enumerate(sample_rows)]
+    resolved_accessions = sum(result.status == 'prepared' for result in prepared)
+    print(f'Resolved {len(prepared)} samples:', file=sys.stderr)
+    print(f'  {resolved_accessions} with GenBank accession', file=sys.stderr)
+    print(f'  {len(prepared) - resolved_accessions} requiring fallback/unresolved', file=sys.stderr)
     force = args.force_download or bool(settings.get('force_download', False))
     if args.dry_run:
         for result in prepared:
@@ -447,6 +486,9 @@ def main():
     else:
         unique = {r.accession: Path(r.genbank_file) for r in prepared if r.status == 'prepared'}
         missing = [(a, p) for a, p in unique.items() if force or not (p.exists() and p.stat().st_size > 0 and settings.get('skip_existing_genbank', True))]
+        print('GenBank cache:', file=sys.stderr)
+        print(f'  {len(unique)} unique accessions', file=sys.stderr)
+        print(f'  {len(missing)} missing downloads', file=sys.stderr)
         rate = float(settings.get('requests_per_second_with_api_key' if api_key else 'requests_per_second_without_api_key', 10 if api_key else 3))
         limiter = EntrezRateLimiter(rate)
         def fetch(item):
@@ -455,13 +497,19 @@ def main():
             if not force and path.exists() and path.stat().st_size > 0: return accession, None
             try: download(accession, path, settings, limiter); return accession, None
             except Exception as exc: return accession, f'{type(exc).__name__}: {exc}'
-        with ThreadPoolExecutor(max_workers=min(download_workers, max(1, len(missing)))) as executor:
-            download_errors = dict(executor.map(fetch, missing))
+        download_errors = {}
+        if missing:
+            with ThreadPoolExecutor(max_workers=min(download_workers, len(missing))) as executor:
+                download_errors = dict(executor.map(fetch, missing))
         for result in prepared:
             if result.status == 'prepared' and result.accession in download_errors and download_errors[result.accession]:
                 result.error = download_errors[result.accession]; result.summary['note'] = result.error; result.failure = {'sample':result.sample, 'species':result.metadata['species'], 'accession_query':result.accession, 'reason':result.error}; result.status = 'failed'
-        with ThreadPoolExecutor(max_workers=min(workers, max(1, len(prepared)))) as executor:
-            prepared = list(executor.map(parse_sample, prepared))
+        parse_targets = [result for result in prepared if result.status == 'prepared']
+        print(f'  {len(parse_targets)} parse targets', file=sys.stderr)
+        if parse_targets:
+            with ThreadPoolExecutor(max_workers=min(workers, len(parse_targets))) as executor:
+                parsed_by_order = {result.order: result for result in executor.map(parse_sample, parse_targets)}
+            prepared = [parsed_by_order.get(result.order, result) for result in prepared]
     prepared.sort(key=lambda r: r.order)
     failures = [r.failure for r in prepared if r.failure]; summary = [r.summary for r in prepared]; output = [row for r in prepared for row in r.rows]
     # Select exactly one source per sample: valid GenBank first, then MITOS2 fallback.
@@ -537,6 +585,10 @@ def main():
                 'note': '; '.join(notes[1:]),
             })
     output = selected
+    # A final successful fallback supersedes an earlier GenBank-resolution failure.
+    final_status_by_sample = {value(row, 'sample'): value(row, 'status') for row in summary}
+    failures = [row for row in failures
+                if final_status_by_sample.get(value(row, 'sample')) not in SUCCESS_STATUSES]
     # Compare raw GenBank and MITOS2 CDS boundaries wherever both sources exist.
     comparison_path = yaml(args.config).get('mitos2_annotation', {}).get('paths', {}).get('genbank_mitos2_comparison_table', 'results/qc/codon_table_build/genbank_vs_mitos2_cds_comparison.tsv')
     comparison_fields = 'record_type sample original_species reference_species coordinate_reference_accession gene genbank_start genbank_end genbank_strand genbank_length mitos2_start mitos2_end mitos2_strand mitos2_length start_delta end_delta length_delta strand_match coordinate_match_status n_genbank_cds_genes n_mitos2_cds_genes n_gene_matches n_exact_boundary_matches n_near_boundary_matches n_strand_mismatches missing_in_genbank missing_in_mitos2 comparison_status'.split()
@@ -576,6 +628,15 @@ def main():
         print(f'Resolved accessions for {resolved} samples.')
         print(f'Unresolved accessions for {unresolved} samples.')
     else:
-        print(f'Built {len(output)} coding-position rows for {sum(r["status"] == "completed" for r in summary)} samples.')
+        counts = summarize_build_status(summary)
+        assert counts['completed'] == counts['completed_genbank'] + counts['completed_mitos2_fallback']
+        warn_if_output_summary_disagree(summary, output)
+        print('Final annotation:', file=sys.stderr)
+        print(f"  {counts['completed_genbank']} GenBank", file=sys.stderr)
+        print(f"  {counts['completed_mitos2_fallback']} MITOS2 fallback", file=sys.stderr)
+        print(f"  {counts['failed']} failed", file=sys.stderr)
+        print(f"Built {len(output)} coding-position rows for {counts['completed']} samples "
+              f"({counts['completed_genbank']} GenBank, {counts['completed_mitos2_fallback']} MITOS2 fallback; "
+              f"{counts['failed']} failed, {counts['other']} other).")
 
 if __name__ == '__main__': main()
