@@ -72,7 +72,7 @@ coordinate_liftover:
     # Input directories used when sample_ref_file contains only sample/species.
     # vcf_dir and cov_dir should point directly at the standardized outputs
     # produced by collect_variant_calling.outdir.
-    species_fasta_dir: /home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM
+    species_fasta_dir: references/variant_calling/Ref_chrM
     species_fasta_extensions: .fa,.fasta,.fna
     vcf_dir: results/qc/collected_variant_calling_results/collected_vcf
     vcf_pattern: "{sample}.round2.original_coords.clean.final.split.vcf.gz,{sample}.round2.original_coords.clean.final.split.vcf"
@@ -155,7 +155,7 @@ build_primate_codon_table:
     summary_table: results/qc/codon_table_build/primate_codon_table_build_summary.tsv
     reference_summary_file: references/manifests/reference_materialization_manifest.resolved.tsv
     reference_summary_fallback_files: "references/manifests/reference_materialization_manifest.tsv,references/manifests/in_house_score_reference_inputs.tsv"
-    species_fasta_dir: /home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM
+    species_fasta_dir: references/variant_calling/Ref_chrM
     species_fasta_extensions: .fa,.fasta,.fna,.fa.gz,.fasta.gz,.fna.gz
   settings:
     accession_columns: "accession,accession_version,reference_id,seq_name"
@@ -301,7 +301,7 @@ mitos2_annotation:
     # Required by runmitos; choose the reference version installed with MITOS2.
     refseqver: refseq81m
     # Working MITOS2 reference database used by the validated runmitos command.
-    refdir: /home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/data/reference_tables
+    refdir: data/reference_tables
     # Conda environment: mitos2; package: mitos; CLI executable: runmitos.
     use_conda: true
     conda_module: miniconda/24.11.3
