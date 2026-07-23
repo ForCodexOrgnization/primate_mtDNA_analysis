@@ -134,7 +134,9 @@ if [[ "$SUBMIT_TO_SLURM" == "1" ]]; then
   exit 0
 fi
 
-PYTHON="${PYTHON:-python3}"
+# Keep the workflow interpreter stable: activating MITOS2 must not change the
+# interpreter used by subsequent preprocessing steps when running `all`.
+BASE_PYTHON="${PYTHON:-python3}"
 COLLECT_SCRIPT="qc_analysis/scripts/collect_variant_calling_results.py"
 LIFTOVER_SCRIPT="qc_analysis/scripts/run_coordinate_liftover.py"
 CODON_SCRIPT="qc_analysis/scripts/run_codon_match.py"
@@ -213,21 +215,21 @@ MITOS2_CONDA_ENV="$(configured_mitos2_value conda_env)"
 
 run_collect_variant_calling_results() {
   echo "[qc_preprocessing] Running collect_variant_calling_results with config: ${CONFIG}" >&2
-  "$PYTHON" "$COLLECT_SCRIPT" --config "$CONFIG"
+  "$BASE_PYTHON" "$COLLECT_SCRIPT" --config "$CONFIG"
 }
 
 run_discover_global_anchor() {
   echo "[qc_preprocessing] Running discover_global_anchor with config: ${CONFIG}" >&2
   echo "[qc_preprocessing] MAFFT environment preflight:" >&2
-  "$PYTHON" "$GLOBAL_ANCHOR_SCRIPT" --config "$CONFIG" --check-environment | while IFS= read -r line; do
+  "$BASE_PYTHON" "$GLOBAL_ANCHOR_SCRIPT" --config "$CONFIG" --check-environment | while IFS= read -r line; do
     echo "[qc_preprocessing] ${line}" >&2
   done
-  "$PYTHON" "$GLOBAL_ANCHOR_SCRIPT" --config "$CONFIG"
+  "$BASE_PYTHON" "$GLOBAL_ANCHOR_SCRIPT" --config "$CONFIG"
 }
 
 run_coordinate_liftover() {
   echo "[qc_preprocessing] Running coordinate_liftover with config: ${CONFIG}" >&2
-  local cmd=("$PYTHON" "$LIFTOVER_SCRIPT" --config "$CONFIG")
+  local cmd=("$BASE_PYTHON" "$LIFTOVER_SCRIPT" --config "$CONFIG")
   if [[ -n "${SAMPLE:-}" ]]; then
     cmd+=(--sample "$SAMPLE")
   fi
@@ -238,7 +240,7 @@ run_mitos2_annotation() {
   local mode="${1:-}"
   activate_mitos2_environment
   echo "[qc_preprocessing] Running mitos2_annotation ${mode} with config: ${CONFIG}" >&2
-  local cmd=("$PYTHON" "$MITOS2_SCRIPT" --config "$CONFIG")
+  local cmd=("$MITOS2_PYTHON" "$MITOS2_SCRIPT" --config "$CONFIG")
   [[ -n "$mode" ]] && cmd+=("$mode")
   [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
   "${cmd[@]}"
@@ -267,16 +269,32 @@ activate_mitos2_environment() {
   source "$(conda info --base)/etc/profile.d/conda.sh"
   echo "[qc_preprocessing] Activating MITOS2 conda environment: ${MITOS2_CONDA_ENV}" >&2
   conda activate "$MITOS2_CONDA_ENV"
-  PYTHON="$(command -v python)"
+  hash -r
 
-  if ! "$PYTHON" - <<'PY'
-from Bio import SeqIO
-print("Biopython import OK")
-PY
+  if [[ -z "${CONDA_PREFIX:-}" ]]; then
+    echo "ERROR: conda activation did not set CONDA_PREFIX for MITOS2 environment: ${MITOS2_CONDA_ENV}." >&2
+    exit 1
+  fi
+  MITOS2_PYTHON="${CONDA_PREFIX}/bin/python"
+  if [[ ! -x "$MITOS2_PYTHON" ]]; then
+    echo "ERROR: MITOS2 Python is missing or not executable: ${MITOS2_PYTHON}" >&2
+    exit 1
+  fi
+
+  echo "[qc_preprocessing] CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-}" >&2
+  echo "[qc_preprocessing] CONDA_PREFIX=${CONDA_PREFIX}" >&2
+  echo "[qc_preprocessing] command -v python=$(command -v python || true)" >&2
+  echo "[qc_preprocessing] MITOS2_PYTHON=${MITOS2_PYTHON}" >&2
+  echo "[qc_preprocessing] MITOS2_PYTHON version=$($MITOS2_PYTHON --version 2>&1)" >&2
+
+  if ! "$MITOS2_PYTHON" -c \
+      'import sys, Bio; from Bio import SeqIO; print(sys.executable); print(Bio.__version__)'
   then
     echo "ERROR: Biopython is not importable in the MITOS2 conda environment: ${MITOS2_CONDA_ENV}." >&2
     exit 1
   fi
+  echo "[qc_preprocessing] Biopython version=$($MITOS2_PYTHON -c 'import Bio; print(Bio.__version__)')" >&2
+  echo "[qc_preprocessing] command -v runmitos=$(command -v runmitos || true)" >&2
 }
 
 run_build_primate_codon_table() {
@@ -294,7 +312,7 @@ run_build_primate_codon_table() {
     fi
   fi
 
-  if ! "$PYTHON" - <<'PY'
+  if ! "$BASE_PYTHON" - <<'PY'
 from Bio import Entrez, SeqIO
 print("Biopython import OK")
 PY
@@ -305,7 +323,7 @@ PY
     exit 1
   fi
 
-  local cmd=("$PYTHON" "$CODON_TABLE_SCRIPT" --config "$CONFIG")
+  local cmd=("$BASE_PYTHON" "$CODON_TABLE_SCRIPT" --config "$CONFIG")
   [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
   local workers="${CODON_TABLE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
   if [[ "$workers" =~ ^[1-9][0-9]*$ ]]; then
@@ -326,7 +344,7 @@ PY
 run_annotation() {
   local name="$1" script="$2"
   echo "[qc_preprocessing] Running ${name} with config: ${CONFIG}" >&2
-  local cmd=("$PYTHON" "$script" --config "$CONFIG")
+  local cmd=("$BASE_PYTHON" "$script" --config "$CONFIG")
   [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
   "${cmd[@]}"
 }
