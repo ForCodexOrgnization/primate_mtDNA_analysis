@@ -77,6 +77,57 @@ class BuildPrimateCodonTableTests(unittest.TestCase):
             self.assertEqual(failure['sample'], 'missing')
             self.assertIn('No accession', failure['reason'])
 
+    def test_mitos2_reference_fallback_selects_one_group_and_normalizes_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            coordinate_fasta = d / 'Species_one.fa'; coordinate_fasta.write_text('>chrM\nATG\n')
+            refs = d / 'refs.tsv'; refs.write_text('sample\tspecies\taccession\nS1\tSpecies one\tACC.1\n')
+            reference_rows = d / 'mitos_reference.tsv'
+            fields = ['coordinate_reference_fasta', 'coordinate_reference_accession', 'gene', 'pos',
+                      'codon_index', 'codon_pos_in_triplet', 'codon_pos1_genomic',
+                      'codon_pos2_genomic', 'codon_pos3_genomic', 'codon_seq']
+            first_group = [
+                [coordinate_fasta, 'ACC.1', 'ND1', pos, '1', phase, '1', '2', '3', 'ATG']
+                for pos, phase in [('1', '1'), ('2', '2'), ('3', '3')]
+            ]
+            # Duplicate the selected group and add a second accession-level group.
+            second_group = [[d / 'other.fa', 'ACC.1', 'ND2', str(pos), '1', str(phase), '4', '5', '6', 'CCC']
+                            for pos, phase in [(4, 1), (5, 2), (6, 3)]]
+            with reference_rows.open('w', newline='') as handle:
+                writer = csv.writer(handle, delimiter='\t'); writer.writerow(fields)
+                writer.writerows(first_group + first_group + second_group)
+            output, summary, diagnostic = d / 'table.tsv', d / 'summary.tsv', d / 'fallback.tsv'
+            config = d / 'config.yaml'
+            config.write_text(f'''build_primate_codon_table:
+  paths:
+    sample_ref_file: {refs}
+    genbank_dir: {d / 'gb'}
+    species_fasta_dir: {d}
+    output_table: {output}
+    failed_downloads_table: {d / 'failed.tsv'}
+    summary_table: {summary}
+  settings:
+    accession_columns: accession
+    use_mitos2_if_genbank_fails: true
+mitos2_annotation:
+  paths:
+    mitos2_reference_cds_table: {reference_rows}
+    mitos2_fallback_selection_summary_table: {diagnostic}
+''')
+            result = subprocess.run([sys.executable, str(ROOT / 'qc_analysis/scripts/build_primate_codon_table.py'), '--config', str(config)], cwd=ROOT, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = list(csv.DictReader(output.open(), delimiter='\t'))
+            self.assertEqual(len(rows), 3)
+            self.assertEqual({row['gene'] for row in rows}, {'MT-ND1'})
+            self.assertEqual({row['codon_pos_in_triplet'] for row in rows}, {'1', '2', '3'})
+            summary_row = next(csv.DictReader(summary.open(), delimiter='\t'))
+            self.assertEqual(summary_row['status'], 'completed_mitos2_fallback')
+            self.assertNotIn('Invalid codon_pos_in_triplet values detected.', summary_row['note'])
+            self.assertIn('MITOS2 fallback duplicate rows collapsed: 3', summary_row['note'])
+            diagnostic_row = next(csv.DictReader(diagnostic.open(), delimiter='\t'))
+            self.assertEqual(diagnostic_row['fallback_match_mode'], 'coordinate_fasta')
+            self.assertEqual(diagnostic_row['n_selected_rows_after_dedup'], '3')
+
 
 if __name__ == '__main__':
     unittest.main()
