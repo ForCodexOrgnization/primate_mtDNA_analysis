@@ -84,6 +84,31 @@ class MatchScriptSmokeTests(unittest.TestCase):
             self.assertEqual(info['MTCODON_PRIMATE_ALT_CODON'], 'ATG')
             self.assertEqual(info['MTCODON_STATUS'], 'PASS')
 
+    def test_codon_resolves_sample_through_reference_map(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td); primate = d / 'reference.tsv'; mapping = d / 'map.tsv'; human = d / 'human.tsv'
+            primate.write_text('reference_key\tpos\tgene\tcodon_seq\tcodon_pos_in_triplet\nref-A\t10\tMT-ND1\tACG\t2\n')
+            mapping.write_text('sample\treference_key\nS1\tref-A\n')
+            human.write_text('pos\tgene\tcodon_seq\tcodon_pos_in_triplet\n10\tMT-ND1\tATG\t2\n')
+            config = d / 'config.yaml'
+            config.write_text(f'''codon_match:
+  paths:
+    input_vcf_dir: {d}
+    output_dir: {d}
+    reports_dir: {d / 'reports'}
+    reference_codon_table: {primate}
+    sample_reference_map: {mapping}
+    human_codon_table: {human}
+  settings:
+    strict_phase_match: true
+    input_vcf_pattern: "{{sample}}.vcf"
+    output_suffix: ".out.vcf"
+''')
+            output = d / 'codon.vcf'
+            result = run_script('run_codon_match.py', config, 'S1', self.write_vcf(d, 'SRC_CHROM=species;SRC_POS=10;SRC_REF=C;SRC_ALT=T'), output)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(record_info(output)['MTCODON_STATUS'], 'PASS')
+
     def test_trna_region_match_compares_structural_classes_not_ids(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td); human = d / 'human.tsv'; species = d / 'S1.tsv'

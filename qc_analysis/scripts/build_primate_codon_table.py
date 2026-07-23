@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Download primate GenBank records and build sample-level CDS codon annotations."""
 import argparse
+import hashlib
 import csv
 import re
 import sys
@@ -24,7 +25,9 @@ try:
 except ImportError:  # checked in main so importing helpers remains possible in tests
     Entrez = SeqIO = None
 
-OUTPUT_FIELDS = "file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used coordinate_reference_fasta coordinate_reference_accession".split()
+OUTPUT_FIELDS = "reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 file_name seq_name accession accession_version reference_id pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used".split()
+LEGACY_OUTPUT_FIELDS = ['sample', 'species', *OUTPUT_FIELDS]
+SAMPLE_REFERENCE_MAP_FIELDS = "sample species species_key reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 status annotation_source".split()
 SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path accession_record genbank_file n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
 FAIL_FIELDS = "sample species accession_query reason".split()
 MITOS2_FALLBACK_SELECTION_FIELDS = "sample species accession coordinate_reference_fasta coordinate_reference_accession original_sample_fasta canonical_sample_fasta original_mitos2_fasta canonical_mitos2_fasta fasta_match group_row_count normalized_gene_count has_all_13_protein_coding_genes coding_row_count_in_expected_range fallback_match_mode n_candidate_rows n_selected_rows_before_dedup n_selected_rows_after_dedup n_duplicate_rows_collapsed n_candidate_reference_groups selected_reference_group selection_status rejection_reason note".split()
@@ -53,6 +56,21 @@ def canonical_path(raw, repo_root):
         return str(path.resolve())
     except OSError:
         return str(path.absolute())
+
+def fasta_sequence_sha256(path):
+    """Hash normalized sequence bases, independent of FASTA wrapping/header text."""
+    path = Path(path)
+    if not path.is_file():
+        return ''
+    opener = gzip.open if path.name.endswith('.gz') else open
+    with opener(path, 'rt') as handle:
+        sequence = ''.join(line.strip() for line in handle if not line.startswith('>'))
+    return hashlib.sha256(sequence.upper().encode()).hexdigest() if sequence else ''
+
+def make_reference_key(coordinate_fasta, accession, sequence_sha256):
+    """Stable identity for annotation coordinate space; species is deliberately absent."""
+    return (f'coordinate_fasta={coordinate_fasta}|coordinate_accession={accession}|'
+            f'sequence_sha256={sequence_sha256}')
 
 def summarize_build_status(summary):
     """Count final sample outcomes, including both successful annotation routes."""
@@ -379,11 +397,14 @@ def parse_record(record, metadata, filename):
             if len(triplet) != 3: continue
             for phase, coordinate in enumerate(triplet, 1):
                 rows.append({
+                    'reference_key': value(metadata, 'reference_key'),
+                    'coordinate_reference_fasta': value(metadata, '_canonical_coordinate_reference_fasta'),
+                    'coordinate_reference_accession': value(metadata, 'coordinate_reference_accession') or value(metadata, 'accession_query'),
+                    'coordinate_reference_sequence_sha256': value(metadata, 'coordinate_reference_sequence_sha256'),
                     'file_name': Path(filename).name, 'seq_name': record.id,
                     'sample': value(metadata, 'sample'), 'species': value(metadata, 'species'),
-                    'species_key': species_key(value(metadata, 'species')), 'accession': value(metadata, 'accession_query'),
-                    'accession_version': record.id, 'reference_id': value(metadata, 'reference_id'),
-                    'family': value(metadata, 'family'), 'pos': coordinate + 1,
+                    'accession': value(metadata, 'accession_query'),
+                    'accession_version': record.id, 'reference_id': value(metadata, 'reference_id'), 'pos': coordinate + 1,
                     'ref_base_genome': str(record.seq[coordinate]).upper(), 'gene': normalize_gene(raw),
                     'gene_raw': raw, 'product': qualifier(feature, 'product'), 'protein_id': qualifier(feature, 'protein_id'),
                     'strand': '+' if (feature.location.strand or 1) == 1 else '-', 'codon_index': index // 3 + 1,
@@ -392,8 +413,6 @@ def parse_record(record, metadata, filename):
                     'codon_pos3_genomic': triplet[2] + 1, 'codon_start_qualifier': codon_start,
                     'transl_table': qualifier(feature, 'transl_table'), 'cds_tail_incomplete_bases': tail,
                     'annotation_source': 'GenBank', 'annotation_fallback_used': 'no',
-                    'coordinate_reference_fasta': value(metadata, 'coordinate_reference_fasta'),
-                    'coordinate_reference_accession': value(metadata, 'coordinate_reference_accession') or value(metadata, 'accession_query'),
                 })
     return rows, n_cds
 
@@ -486,6 +505,8 @@ def prepare_sample(order_metadata, context):
     coordinate = fasta_path or str(find_species_fasta(metadata['species'], paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna'), fasta_index) or '')
     metadata['coordinate_reference_fasta'] = coordinate; metadata['coordinate_reference_accession'] = accession
     metadata['_canonical_coordinate_reference_fasta'] = canonical_path(coordinate, repo_root)
+    metadata['coordinate_reference_sequence_sha256'] = fasta_sequence_sha256(metadata['_canonical_coordinate_reference_fasta'])
+    metadata['reference_key'] = make_reference_key(metadata['_canonical_coordinate_reference_fasta'], accession, metadata['coordinate_reference_sequence_sha256'])
     original_species_fasta = fasta_path or coordinate
     base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'accession_source':source, 'accession_note':accession_note, 'manifest_file':manifest_file, 'matched_manifest_species':matched_species, 'species_fasta_path':original_species_fasta, '_canonical_species_fasta_path':canonical_path(original_species_fasta, repo_root), 'accession_record':'', 'genbank_file':'', 'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'', 'max_pos':'', 'status':'failed', 'note':''}
     if not accession:
@@ -707,15 +728,61 @@ def main():
             comparisons.append({'record_type':'gene','sample':sample,'original_species':value(gg,'species'),'reference_species':'','coordinate_reference_accession':value(gg,'coordinate_reference_accession'),'gene':gene,'genbank_start':gs,'genbank_end':ge,'genbank_strand':value(gg,'strand'),'genbank_length':len(gr),'mitos2_start':ms,'mitos2_end':me,'mitos2_strand':value(mm,'strand'),'mitos2_length':len(mr),'start_delta':sd,'end_delta':ed,'length_delta':len(mr)-len(gr),'strand_match':'yes' if sm else 'no','coordinate_match_status':status})
         comparisons.append({'record_type':'summary','sample':sample,'n_genbank_cds_genes':len(g),'n_mitos2_cds_genes':len(m),'n_gene_matches':matches,'n_exact_boundary_matches':exact,'n_near_boundary_matches':near,'n_strand_mismatches':mismatch,'missing_in_genbank':','.join(sorted(set(m)-set(g))),'missing_in_mitos2':','.join(sorted(set(g)-set(m))),'comparison_status':'compared' if g and m else 'source_unavailable'})
     if settings.get('compare_genbank_and_mitos2', True): write_tsv(comparison_path, comparison_fields, comparisons)
+    # A coordinate reference, not a biological species label, owns an annotation.
+    # Build the sample map first, then collapse duplicate codon positions by that
+    # reference identity.  This avoids ~11,400 identical rows per sample.
+    prepared_by_sample = {result.sample: result for result in prepared}
+    sample_reference_map = []
+    for metadata in sample_rows:
+        sample = value(metadata, sample_col)
+        result = prepared_by_sample[sample]
+        sample_reference_map.append({
+            'sample': sample, 'species': value(metadata, species_col),
+            'species_key': species_key(value(metadata, species_col)),
+            'reference_key': value(result.metadata, 'reference_key'),
+            'coordinate_reference_fasta': value(result.metadata, '_canonical_coordinate_reference_fasta'),
+            'coordinate_reference_accession': value(result.metadata, 'coordinate_reference_accession'),
+            'coordinate_reference_sequence_sha256': value(result.metadata, 'coordinate_reference_sequence_sha256'),
+            'status': value(summary_by_sample.get(sample, {}), 'status'),
+            'annotation_source': ('MITOS2' if value(summary_by_sample.get(sample, {}), 'status') == 'completed_mitos2_fallback' else 'GenBank'),
+        })
+    map_by_sample = {row['sample']: row for row in sample_reference_map}
+    for row in output:
+        ref = map_by_sample[value(row, 'sample')]
+        row.update(reference_key=ref['reference_key'],
+                   coordinate_reference_fasta=ref['coordinate_reference_fasta'],
+                   coordinate_reference_accession=ref['coordinate_reference_accession'],
+                   coordinate_reference_sequence_sha256=ref['coordinate_reference_sequence_sha256'])
+    reference_output, seen_reference_positions = [], set()
+    for row in output:
+        key = (value(row, 'reference_key'), value(row, 'pos'))
+        if key not in seen_reference_positions:
+            seen_reference_positions.add(key)
+            reference_output.append(row)
     # Global checks are warnings; they intentionally do not discard useful records.
-    required = {'sample','pos','gene','codon_seq','codon_pos_in_triplet'}
+    required = {'reference_key','pos','gene','codon_seq','codon_pos_in_triplet'}
     global_notes = []
     if not required.issubset(OUTPUT_FIELDS): global_notes.append('Internal error: output schema lacks required columns.')
-    if any(not valid_phase(r.get('codon_pos_in_triplet')) for r in output): global_notes.append('Invalid codon_pos_in_triplet values detected.')
-    if any(r['codon_seq'] and len(r['codon_seq']) != 3 for r in output): global_notes.append('Non-triplet codon_seq values detected.')
+    if any(not valid_phase(r.get('codon_pos_in_triplet')) for r in reference_output): global_notes.append('Invalid codon_pos_in_triplet values detected.')
+    if any(r['codon_seq'] and len(r['codon_seq']) != 3 for r in reference_output): global_notes.append('Non-triplet codon_seq values detected.')
     if global_notes:
         for row in summary: row['note'] = '; '.join(filter(None, [row['note'], *global_notes]))
-    if not args.dry_run: write_tsv(paths['output_table'], OUTPUT_FIELDS, output)
+    if not args.dry_run:
+        reference_path = paths.get('reference_codon_table') or paths.get('output_table')
+        if not reference_path:
+            raise SystemExit('Configure build_primate_codon_table.paths.reference_codon_table.')
+        write_tsv(reference_path, OUTPUT_FIELDS, reference_output)
+        write_tsv(paths.get('sample_reference_map', str(Path(reference_path).with_name('sample_reference_map.tsv'))),
+                  SAMPLE_REFERENCE_MAP_FIELDS, sample_reference_map)
+        # A legacy export is opt-in.  An old `output_table` config remains an
+        # explicit compatibility request, rather than the default workflow.
+        legacy_path = paths.get('legacy_sample_codon_table')
+        if settings.get('write_legacy_sample_level_export', False) and legacy_path:
+            write_tsv(legacy_path, LEGACY_OUTPUT_FIELDS, output)
+        # Pre-reference-level configurations named only `output_table`; preserve
+        # that explicitly configured legacy artifact for existing callers.
+        if not paths.get('reference_codon_table') and paths.get('output_table'):
+            write_tsv(paths['output_table'], LEGACY_OUTPUT_FIELDS, output)
     fallback_summary_path = mitos_paths.get('mitos2_fallback_selection_summary_table', 'results/qc/codon_table_build/mitos2_fallback_selection_summary.tsv')
     write_tsv(fallback_summary_path, MITOS2_FALLBACK_SELECTION_FIELDS, fallback_selection_summary)
     write_tsv(paths['failed_downloads_table'], FAIL_FIELDS, failures); write_tsv(paths['summary_table'], SUMMARY_FIELDS, summary)
@@ -732,7 +799,7 @@ def main():
         print(f"  {counts['completed_genbank']} GenBank", file=sys.stderr)
         print(f"  {counts['completed_mitos2_fallback']} MITOS2 fallback", file=sys.stderr)
         print(f"  {counts['failed']} failed", file=sys.stderr)
-        print(f"Built {len(output)} coding-position rows for {counts['completed']} samples "
+        print(f"Built {len(reference_output)} reference-level coding-position rows for {counts['completed']} samples "
               f"({counts['completed_genbank']} GenBank, {counts['completed_mitos2_fallback']} MITOS2 fallback; "
               f"{counts['failed']} failed, {counts['other']} other).")
 
