@@ -274,7 +274,7 @@ def test_reference_codon_rows_select_gff_seqid_and_isolate_bad_gene(tmp_path):
     ref = {'reference_key': 'NC_002764.1', 'coordinate_reference_accession': 'NC_002764.1', 'raw_dir': str(raw)}
     features = [
         {'feature_type': 'CDS', 'gff_seqid': 'chrM', 'start': '1', 'end': '30', 'strand': '+', 'gene': 'MT-ND1', 'gene_raw': 'nad1'},
-        {'feature_type': 'CDS', 'gff_seqid': 'chrM', 'start': '31', 'end': '40', 'strand': '+', 'gene': 'MT-ND2', 'gene_raw': 'nad2'},
+        {'feature_type': 'CDS', 'gff_seqid': 'chrM', 'start': '31', 'end': '70', 'strand': '+', 'gene': 'MT-ND2', 'gene_raw': 'nad2'},
     ]
     rows = module.build_reference_codon_rows(features, fasta, ref, '2')
     debug = list(__import__('csv').DictReader((raw / 'mitos2_reference_codon_debug.tsv').open(), delimiter='\t'))
@@ -282,3 +282,128 @@ def test_reference_codon_rows_select_gff_seqid_and_isolate_bad_gene(tmp_path):
     assert rows[0]['seq_name'] == 'chrM'
     assert [row['status'] for row in debug] == ['completed', 'failed']
     assert debug[1]['error']
+
+
+def circular_feature(start, end, strand='+', gene='MT-ND5'):
+    return {
+        'feature_type': 'CDS', 'gff_seqid': 'chrM', 'start': str(start),
+        'end': str(end), 'strand': strand, 'gene': gene, 'gene_raw': gene.lower(),
+    }
+
+
+def circular_reference(tmp_path, sequence):
+    fasta = tmp_path / 'chrM.fa'
+    fasta.write_text('>chrM\n' + sequence + '\n')
+    raw = tmp_path / 'raw'
+    raw.mkdir()
+    return fasta, raw, {
+        'reference_key': 'circular-reference', 'coordinate_reference_accession': 'TEST.1',
+        'raw_dir': str(raw),
+    }
+
+
+def install_fake_seqio(monkeypatch, module):
+    """Exercise codon construction without requiring the optional Biopython dependency."""
+    class Record:
+        def __init__(self, record_id, sequence):
+            self.id = record_id
+            self.seq = sequence
+
+        def __len__(self):
+            return len(self.seq)
+
+    class FakeSeqIO:
+        @staticmethod
+        def parse(path, _format):
+            header, sequence = Path(path).read_text().splitlines()
+            return [Record(header[1:].split()[0], ''.join(sequence))]
+
+    monkeypatch.setattr(module, 'SeqIO', FakeSeqIO)
+
+
+def test_circular_interval_coordinates_ordinary_interval():
+    module = load_module()
+
+    assert module.circular_interval_coordinates(10, 30, 100) == list(range(9, 30))
+
+
+def test_circular_interval_coordinates_wraps_without_reordering():
+    module = load_module()
+
+    coords = module.circular_interval_coordinates(90, 120, 100)
+
+    assert coords == list(range(89, 100)) + list(range(20))
+    assert [position + 1 for position in coords] == list(range(90, 101)) + list(range(1, 21))
+
+
+def test_wrapped_minus_strand_rows_follow_coding_direction(tmp_path, monkeypatch):
+    module = load_module()
+    install_fake_seqio(monkeypatch, module)
+    sequence = ('ACGT' * 25)
+    fasta, raw, ref = circular_reference(tmp_path, sequence)
+
+    rows = module.build_reference_codon_rows([circular_feature(90, 120, '-')], fasta, ref, '2')
+    expected_genomic = ''.join(sequence[position] for position in list(range(89, 100)) + list(range(20)))
+    expected_dna = expected_genomic.translate(str.maketrans('ACGTN', 'TGCAN'))[::-1]
+
+    expected_coding_coords = list(range(19, -1, -1)) + list(range(99, 88, -1))
+    assert list(reversed(module.circular_interval_coordinates(90, 120, 100))) == expected_coding_coords
+    assert [row['pos'] for row in rows] == [position + 1 for position in expected_coding_coords[:30]]
+    assert ''.join(row['ref_base_genome'] for row in rows) == expected_genomic[::-1][:30]
+    assert ''.join(row['codon_seq'][row['codon_pos_in_triplet'] - 1] for row in rows) == expected_dna[:30]
+    debug = list(__import__('csv').DictReader((raw / 'mitos2_reference_codon_debug.tsv').open(), delimiter='\t'))
+    assert debug[0]['circular_wrap_used'] == 'yes'
+
+
+def test_circular_interval_rejects_feature_longer_than_genome():
+    module = load_module()
+
+    with pytest.raises(ValueError, match='exceeds one full circular genome'):
+        module.circular_interval_coordinates(20, 130, 100)
+
+
+def test_saguinus_style_wrapped_nd5_rows_and_diagnostics(tmp_path, monkeypatch):
+    module = load_module()
+    install_fake_seqio(monkeypatch, module)
+    fasta, raw, ref = circular_reference(tmp_path, 'A' * 16558)
+
+    rows = module.build_reference_codon_rows([circular_feature(15540, 17357)], fasta, ref, '2')
+    debug = list(__import__('csv').DictReader((raw / 'mitos2_reference_codon_debug.tsv').open(), delimiter='\t'))
+
+    assert len(rows) == 1818
+    assert rows[-1]['pos'] == 799
+    assert all(1 <= row['pos'] <= 16558 for row in rows)
+    assert debug[0]['circular_wrap_used'] == 'yes'
+    assert debug[0]['wrapped_segment_count'] == '2'
+    assert debug[0]['original_gff_start'] == '15540'
+    assert debug[0]['original_gff_end'] == '17357'
+    assert debug[0]['sequence_length'] == '16558'
+    assert debug[0]['cds_length'] == '1818'
+    assert debug[0]['n_position_rows'] == '1818'
+
+
+def test_wrapped_incomplete_terminal_codon_is_retained_as_complete_codons(tmp_path, monkeypatch):
+    module = load_module()
+    install_fake_seqio(monkeypatch, module)
+    fasta, raw, ref = circular_reference(tmp_path, 'ACGT' * 25)
+
+    rows = module.build_reference_codon_rows([circular_feature(98, 102)], fasta, ref, '2')
+    debug = list(__import__('csv').DictReader((raw / 'mitos2_reference_codon_debug.tsv').open(), delimiter='\t'))
+
+    assert len(rows) == 3
+    assert debug[0]['status'] == 'completed'
+    assert debug[0]['cds_length'] == '5'
+    assert debug[0]['usable_cds_length'] == '3'
+    assert rows[0]['cds_tail_incomplete_bases'] == 2
+
+
+def test_codon_spanning_origin_keeps_circular_genomic_order(tmp_path, monkeypatch):
+    module = load_module()
+    install_fake_seqio(monkeypatch, module)
+    fasta, _, ref = circular_reference(tmp_path, 'ACGTACGTAA')
+
+    rows = module.build_reference_codon_rows([circular_feature(9, 11)], fasta, ref, '2')
+
+    assert [row['pos'] for row in rows] == [9, 10, 1]
+    assert [rows[0][f'codon_pos{i}_genomic'] for i in range(1, 4)] == [9, 10, 1]
+    assert rows[0]['codon_seq'] == 'AAA'
