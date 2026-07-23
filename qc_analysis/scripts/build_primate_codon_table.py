@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download primate GenBank records and build sample-level CDS codon annotations."""
+"""Build reference-level primate CDS codon annotations and a sample reference map."""
 import argparse
 import hashlib
 import csv
@@ -10,6 +10,7 @@ import gzip
 import os
 import tempfile
 import threading
+import resource
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -402,7 +403,6 @@ def parse_record(record, metadata, filename):
                     'coordinate_reference_accession': value(metadata, 'coordinate_reference_accession') or value(metadata, 'accession_query'),
                     'coordinate_reference_sequence_sha256': value(metadata, 'coordinate_reference_sequence_sha256'),
                     'file_name': Path(filename).name, 'seq_name': record.id,
-                    'sample': value(metadata, 'sample'), 'species': value(metadata, 'species'),
                     'accession': value(metadata, 'accession_query'),
                     'accession_version': record.id, 'reference_id': value(metadata, 'reference_id'), 'pos': coordinate + 1,
                     'ref_base_genome': str(record.seq[coordinate]).upper(), 'gene': normalize_gene(raw),
@@ -415,6 +415,66 @@ def parse_record(record, metadata, filename):
                     'annotation_source': 'GenBank', 'annotation_fallback_used': 'no',
                 })
     return rows, n_cds
+
+
+def stage(message, started=None):
+    """Emit prompt, memory-aware progress messages for long production builds."""
+    suffix = '' if started is None else f' in {time.monotonic() - started:.1f} seconds'
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        # Linux ru_maxrss is KiB; use an explicit unit to keep scheduler logs useful.
+        current = ''
+        try:
+            current_kib = next(line.split()[1] for line in Path('/proc/self/status').read_text().splitlines()
+                               if line.startswith('VmRSS:'))
+            current = f'current RSS {int(current_kib) / 1024:.1f} MiB, '
+        except (OSError, StopIteration, ValueError, IndexError):
+            pass
+        rss = f'; {current}max RSS {usage.ru_maxrss / 1024:.1f} MiB'
+    except (AttributeError, OSError):
+        rss = ''
+    print(message + suffix + rss, file=sys.stderr, flush=True)
+
+
+def load_mitos_reference_groups(path):
+    """Materialize only the (small) reference table, grouping it exactly once."""
+    started = time.monotonic()
+    stage('Loading MITOS2 reference table...')
+    groups = defaultdict(list)
+    if path and Path(path).exists():
+        with Path(path).open(newline='') as handle:
+            for row in csv.DictReader(handle, delimiter='\t'):
+                row['_canonical_coordinate_reference_fasta'] = canonical_path(
+                    value(row, 'coordinate_reference_fasta'), repo_root)
+                groups[(value(row, 'coordinate_reference_fasta'),
+                        value(row, 'coordinate_reference_accession'))].append(row)
+    count = sum(len(rows) for rows in groups.values())
+    stage(f'Loaded {count} rows in {time.monotonic() - started:.1f} seconds')
+    return groups
+
+
+def select_reference_group(groups, coordinate_fasta, accession):
+    """Select a pre-grouped MITOS2 reference without rebuilding row indexes."""
+    profiles = []
+    for group, rows in groups.items():
+        genes = {normalize_gene(value(row, 'gene')) for row in rows}
+        profile = {'group': group, 'rows': rows, 'n_rows': len(rows),
+                   'canonical_fasta': value(rows[0], '_canonical_coordinate_reference_fasta'),
+                   'n_genes': len(genes),
+                   'has_13_genes': PROTEIN_CODING_GENES.issubset(genes),
+                   'in_expected_range': 5000 <= len(rows) <= 13000,
+                   'distance': abs(len(rows) - EXPECTED_MAMMALIAN_CODING_TOTAL)}
+        profile['fasta_match'] = bool(coordinate_fasta and profile['canonical_fasta'] == coordinate_fasta)
+        profile['accession_match'] = bool(accession and group[1] == accession)
+        profile['rank'] = (-profile['fasta_match'], -profile['accession_match'],
+                           -profile['has_13_genes'], -profile['in_expected_range'], profile['distance'])
+        profiles.append(profile)
+    if not profiles:
+        return [], 'none', []
+    profiles.sort(key=lambda p: (*p['rank'], *p['group']))
+    chosen = profiles[0]
+    return [dict(row) for row in chosen['rows']], ('coordinate_fasta' if chosen['fasta_match'] else
+            'accession' if chosen['accession_match'] else 'gene_count_row_count'), profiles
 
 class EntrezRateLimiter:
     """Thread-safe limiter that spaces Entrez request starts globally."""
@@ -533,7 +593,105 @@ def parse_sample(result):
     return result
 
 
-def main():
+def main_reference(args, section):
+    """Build annotations once per coordinate reference, never per sample."""
+    paths, settings = section['paths'], section.get('settings', {})
+    workers = resolve_workers(args.workers, settings, 'workers')
+    sample_col, species_col = settings.get('sample_column', 'sample'), settings.get('species_column', 'species')
+    stage('Loading sample metadata...')
+    sample_rows = read_samples(paths['sample_ref_file'], sample_col, species_col)
+    if args.sample:
+        sample_rows = [r for r in sample_rows if value(r, sample_col) == args.sample]
+    if not sample_rows:
+        raise SystemExit('No samples selected.')
+    columns = configured_columns(settings, 'accession_columns', 'accession,accession_version,reference_id,seq_name')
+    manifests = manifest_rows(paths, settings)
+    if SeqIO is None and not args.dry_run:
+        raise SystemExit('Biopython is required for GenBank download/parsing.')
+    fasta_index = build_fasta_index(paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna,.fa.gz,.fasta.gz,.fna.gz'))
+    stage('Preparing sample-to-reference map...')
+    context = (settings, paths, columns, manifests, fasta_index, args.dry_run)
+    prepared = [prepare_sample(item, context) for item in enumerate(sample_rows)]
+    by_reference = {}
+    for result in prepared:
+        by_reference.setdefault(result.metadata['reference_key'], result)
+    stage(f'Prepared {len(prepared)} samples for {len(by_reference)} unique references')
+    # Download and parse only one representative for every coordinate reference.
+    representatives = list(by_reference.values())
+    if not args.dry_run:
+        force = args.force_download or bool(settings.get('force_download', False))
+        unique = {r.accession: Path(r.genbank_file) for r in representatives if r.status == 'prepared'}
+        missing = [(a, p) for a, p in unique.items() if force or not (p.exists() and p.stat().st_size > 0 and settings.get('skip_existing_genbank', True))]
+        rate = float(settings.get('requests_per_second_with_api_key' if settings.get('entrez_api_key') else 'requests_per_second_without_api_key', 3))
+        limiter = EntrezRateLimiter(rate)
+        def fetch(item):
+            accession, path = item
+            try:
+                if force or not (path.exists() and path.stat().st_size > 0): download(accession, path, settings, limiter)
+                return accession, ''
+            except Exception as exc:
+                return accession, f'{type(exc).__name__}: {exc}'
+        errors = dict(ThreadPoolExecutor(max_workers=min(resolve_workers(args.download_workers, settings, 'download_workers', 1), len(missing))).map(fetch, missing)) if missing else {}
+        for result in representatives:
+            if result.status == 'prepared' and errors.get(result.accession):
+                result.status = 'failed'; result.summary['status'] = 'failed'; result.summary['note'] = errors[result.accession]
+        targets = [r for r in representatives if r.status == 'prepared']
+        stage(f'Parsing {len(targets)} unique GenBank references...')
+        if targets:
+            with ThreadPoolExecutor(max_workers=min(workers, len(targets))) as executor:
+                parsed = list(executor.map(parse_sample, targets))
+            by_reference = {r.metadata['reference_key']: r for r in parsed + [r for r in representatives if r.status != 'prepared']}
+    else:
+        for result in representatives:
+            result.status = 'dry_run_resolved' if result.status == 'prepared' else result.status
+            result.summary['status'] = result.status
+    mitos_paths = yaml(args.config).get('mitos2_annotation', {}).get('paths', {})
+    # Deliberately do not read mitos2_cds_table in reference mode.  It is sample-level.
+    sample_mitos = mitos_paths.get('mitos2_cds_table', '')
+    limit = int(settings.get('sample_mitos2_max_bytes', 500 * 1024 * 1024))
+    if sample_mitos and Path(sample_mitos).exists() and Path(sample_mitos).stat().st_size > limit:
+        print('Sample-level MITOS2 table is not required in reference-level mode.', file=sys.stderr, flush=True)
+    groups = load_mitos_reference_groups(mitos_paths.get('mitos2_reference_cds_table', ''))
+    reference_rows, reference_source = {}, {}
+    fallback_summary = []
+    for key, result in by_reference.items():
+        if result.status == 'completed':
+            reference_rows[key] = result.rows; reference_source[key] = 'GenBank'; continue
+        rows, mode, profiles = select_reference_group(groups, value(result.metadata, '_canonical_coordinate_reference_fasta'), value(result.metadata, 'coordinate_reference_accession'))
+        if rows and settings.get('use_mitos2_if_genbank_fails', True):
+            for row in rows:
+                normalize_mitos2_numeric_fields(row); row.update(reference_key=key,
+                    coordinate_reference_fasta=value(result.metadata, '_canonical_coordinate_reference_fasta'),
+                    coordinate_reference_accession=value(result.metadata, 'coordinate_reference_accession'),
+                    coordinate_reference_sequence_sha256=value(result.metadata, 'coordinate_reference_sequence_sha256'),
+                    annotation_source='MITOS2', annotation_fallback_used='yes')
+                row['gene'] = normalize_gene(value(row, 'gene'))
+            rows, _ = deduplicate_rows(rows, fallback_duplicate_key)
+            reference_rows[key] = rows; reference_source[key] = 'MITOS2'; result.status = 'completed_mitos2_fallback'; result.summary['status'] = result.status
+            fallback_summary.append({'sample': '', 'species': '', 'accession': value(result.metadata, 'accession_query'), 'coordinate_reference_fasta': value(result.metadata, '_canonical_coordinate_reference_fasta'), 'coordinate_reference_accession': value(result.metadata, 'coordinate_reference_accession'), 'fallback_match_mode': mode, 'n_candidate_reference_groups': len(profiles), 'selection_status': 'selected'})
+    summary, failures, sample_map = [], [], []
+    for result in prepared:
+        representative = by_reference[result.metadata['reference_key']]
+        status = representative.status
+        result.summary.update(status=status, n_coding_position_rows=len(reference_rows.get(result.metadata['reference_key'], [])), n_genes=len({value(r, 'gene') for r in reference_rows.get(result.metadata['reference_key'], [])}))
+        summary.append(result.summary)
+        if status not in SUCCESS_STATUSES and not args.dry_run:
+            failures.append({'sample': result.sample, 'species': value(result.metadata, 'species'), 'accession_query': result.accession, 'reason': value(result.summary, 'note') or 'No reference annotation available.'})
+        sample_map.append({'sample': result.sample, 'species': value(result.metadata, 'species'), 'species_key': species_key(value(result.metadata, 'species')), 'reference_key': result.metadata['reference_key'], 'coordinate_reference_fasta': value(result.metadata, '_canonical_coordinate_reference_fasta'), 'coordinate_reference_accession': value(result.metadata, 'coordinate_reference_accession'), 'coordinate_reference_sequence_sha256': value(result.metadata, 'coordinate_reference_sequence_sha256'), 'status': status, 'annotation_source': reference_source.get(result.metadata['reference_key'], '')})
+    output = [row for key in sorted(reference_rows) for row in reference_rows[key]]
+    if not args.dry_run:
+        reference_path = paths.get('reference_codon_table') or paths.get('output_table')
+        if not reference_path: raise SystemExit('Configure build_primate_codon_table.paths.reference_codon_table.')
+        stage('Writing reference codon table...')
+        write_tsv(reference_path, OUTPUT_FIELDS, output)
+        write_tsv(paths.get('sample_reference_map', str(Path(reference_path).with_name('sample_reference_map.tsv'))), SAMPLE_REFERENCE_MAP_FIELDS, sample_map)
+    write_tsv(mitos_paths.get('mitos2_fallback_selection_summary_table', 'results/qc/codon_table_build/mitos2_fallback_selection_summary.tsv'), MITOS2_FALLBACK_SELECTION_FIELDS, fallback_summary)
+    write_tsv(paths['failed_downloads_table'], FAIL_FIELDS, failures); write_tsv(paths['summary_table'], SUMMARY_FIELDS, summary)
+    counts = summarize_build_status(summary)
+    print(f'Built {len(output)} reference-level coding-position rows for {counts["completed"]} samples ({counts["completed_genbank"]} GenBank, {counts["completed_mitos2_fallback"]} MITOS2 fallback; {counts["failed"]} failed, {counts["other"]} other).')
+
+
+def main_legacy():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True); parser.add_argument('--sample'); parser.add_argument('--force-download', action='store_true'); parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--workers'); parser.add_argument('--download-workers')
@@ -802,5 +960,22 @@ def main():
         print(f"Built {len(reference_output)} reference-level coding-position rows for {counts['completed']} samples "
               f"({counts['completed_genbank']} GenBank, {counts['completed_mitos2_fallback']} MITOS2 fallback; "
               f"{counts['failed']} failed, {counts['other']} other).")
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', required=True); parser.add_argument('--sample'); parser.add_argument('--force-download', action='store_true'); parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--workers'); parser.add_argument('--download-workers')
+    args = parser.parse_args()
+    section = yaml(args.config).get('build_primate_codon_table')
+    if not section:
+        raise SystemExit('Missing build_primate_codon_table section in config.')
+    level = section.get('settings', {}).get('codon_table_level', 'reference')
+    if level == 'reference':
+        return main_reference(args, section)
+    if level != 'sample':
+        raise SystemExit('build_primate_codon_table.settings.codon_table_level must be reference or sample.')
+    # The former implementation is intentionally opt-in for reproducibility only.
+    return main_legacy()
+
 
 if __name__ == '__main__': main()

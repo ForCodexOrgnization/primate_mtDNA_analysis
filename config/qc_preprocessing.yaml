@@ -214,6 +214,9 @@ build_primate_codon_table:
     rettype: gb
     retmode: text
     prefer_annotation_source: GenBank
+    # Reference mode is memory bounded by unique coordinate references, not samples.
+    codon_table_level: reference
+    sample_mitos2_max_bytes: 524288000
     fallback_annotation_source: MITOS2
     use_mitos2_if_genbank_fails: true
     compare_genbank_and_mitos2: true
