@@ -10,7 +10,7 @@ except ImportError: SeqIO = None
 REFERENCE_METADATA_FIELDS='target_species final_chrM_species final_chrM_accession coordinate_reference_fasta_from_manifest mitos2_input_fasta'.split()
 FEATURE_FIELDS=('reference_key reference_species coordinate_reference_accession coordinate_reference_fasta '+ ' '.join(REFERENCE_METADATA_FIELDS) +' feature_type gene gene_raw start end strand score source_file annotation_source').split()
 CODON_FIELDS=('file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source coordinate_reference_fasta coordinate_reference_accession '+ ' '.join(REFERENCE_METADATA_FIELDS)).split()
-DEBUG_FIELDS='gff_seqid fasta_record_id fasta_length cds_length usable_cds_length n_codons n_position_rows status error gene gene_raw start end strand'.split()
+DEBUG_FIELDS='gff_seqid fasta_record_id fasta_length sequence_length original_gff_start original_gff_end canonical_start canonical_end circular_wrap_used wrapped_segment_count cds_length usable_cds_length n_codons n_position_rows status error gene gene_raw start end strand'.split()
 TASK_FIELDS=('task_id reference_key reference_species coordinate_reference_accession coordinate_reference_fasta '+ ' '.join(REFERENCE_METADATA_FIELDS) +' n_samples_using_reference status').split()
 SUMMARY_FIELDS=('reference_key reference_species coordinate_reference_accession coordinate_reference_fasta '+ ' '.join(REFERENCE_METADATA_FIELDS) +' status command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_linked_samples n_reference_coding_position_rows n_sample_level_coding_position_rows n_coding_position_rows n_output_files_scanned n_parseable_files result_gff_exists n_gff_gene_rows n_gff_cds_like_gene_rows n_gff_trna_rows n_gff_rrna_rows parser_status note').split()
 DIAG_FIELDS='reference_key file suffix n_lines n_candidate_feature_lines parser_used n_features_parsed'.split()
@@ -155,6 +155,23 @@ def templates(exe,fasta,out,settings):
  if refdir: common += f' -R {q(refdir)}'
  common += ' --best --noplots'
  return [f'{q(exe)} -i {q(fasta)} {common}', f'{q(exe)} --input {q(fasta)} {common}']
+def circular_interval_coordinates(start: int, end: int, sequence_length: int) -> list[int]:
+ """Return ordered zero-based coordinates for a circular GFF interval.
+
+ GFF coordinates are 1-based and inclusive; returned coordinates are zero-based
+ and retain traversal order across the circular genome origin.
+ """
+ if sequence_length <= 0:
+  raise ValueError(f'sequence_length must be positive, observed {sequence_length}')
+ if start < 1:
+  raise ValueError(f'start must be >= 1, observed {start}')
+ if end < start:
+  raise ValueError(f'end must be >= start, observed start={start}, end={end}')
+ feature_length=end-start+1
+ if feature_length > sequence_length:
+  raise ValueError('Circular feature length exceeds one full circular genome: '
+                   f'feature_length={feature_length}, sequence_length={sequence_length}')
+ return [(extended_pos-1) % sequence_length for extended_pos in range(start,end+1)]
 def build_reference_codon_rows(features,fasta,ref,code):
  """Build coding-position rows once per reference, before sample expansion."""
  if SeqIO is None: raise RuntimeError('Biopython is required to create MITOS2 codon rows.')
@@ -164,13 +181,26 @@ def build_reference_codon_rows(features,fasta,ref,code):
  for f in features:
   if f['feature_type']!='CDS': continue
   gff_seqid=f.get('gff_seqid',''); rec=next((r for r in records if r.id == gff_seqid), records[0] if len(records)==1 else None)
-  d={'gff_seqid':gff_seqid,'fasta_record_id':rec.id if rec else '','fasta_length':len(rec) if rec else '','cds_length':'','usable_cds_length':'','n_codons':0,'n_position_rows':0,'status':'','error':'','gene':f['gene'],'gene_raw':f['gene_raw'],'start':f['start'],'end':f['end'],'strand':f['strand']}
+  d={'gff_seqid':gff_seqid,'fasta_record_id':rec.id if rec else '','fasta_length':len(rec) if rec else '',
+     'sequence_length':len(rec) if rec else '','original_gff_start':f['start'],'original_gff_end':f['end'],
+     'canonical_start':'','canonical_end':'','circular_wrap_used':'','wrapped_segment_count':'',
+     'cds_length':'','usable_cds_length':'','n_codons':0,'n_position_rows':0,'status':'','error':'',
+     'gene':f['gene'],'gene_raw':f['gene_raw'],'start':f['start'],'end':f['end'],'strand':f['strand']}
   try:
    if rec is None: raise ValueError(f'No FASTA record matches GFF seqid {gff_seqid!r}')
    seq=str(rec.seq).upper(); start,end=int(f['start']),int(f['end'])
-   if start < 1 or end < start or end > len(seq): raise ValueError(f'CDS coordinates {start}..{end} outside FASTA length {len(seq)}')
-   coords=list(range(start-1,end));strand=f['strand'];dna=''.join(seq[i] for i in coords)
-   if strand=='-': coords.reverse();dna=dna.translate(str.maketrans('ACGTN','TGCAN'))[::-1]
+   sequence_length=len(seq); cds_length=end-start+1
+   d.update(sequence_length=sequence_length,original_gff_start=start,original_gff_end=end,
+            canonical_start=(start-1) % sequence_length+1 if sequence_length else '',
+            canonical_end=(end-1) % sequence_length+1 if sequence_length else '',
+            circular_wrap_used='yes' if end > sequence_length else 'no',
+            wrapped_segment_count=2 if end > sequence_length else 1)
+   try: coords=circular_interval_coordinates(start,end,sequence_length)
+   except ValueError as exc:
+    raise ValueError(f"Reference {ref.get('reference_key','')}, gene {f['gene']}: {exc}") from exc
+   strand=f['strand'];genomic_dna=''.join(seq[position] for position in coords)
+   if strand=='-': coords=list(reversed(coords));dna=genomic_dna.translate(str.maketrans('ACGTN','TGCAN'))[::-1]
+   else: dna=genomic_dna
    usable=len(dna)//3*3; d.update(cds_length=len(dna),usable_cds_length=usable,n_codons=usable//3)
    for i in range(0,usable,3):
     trip=coords[i:i+3]
@@ -235,16 +265,20 @@ def references(paths, sample_filter=None):
   standardized=Path(fasta_dir)/(target+'.fa')
   manifest_fasta=val(m,'chrM_expected_output_fasta')
   no_chrm=any(val(m,k) in ('wg_only_no_chrM','missing_chrM_ref') for k in ('final_reference_strategy','chrM_reference_context','status'))
-  if standardized.is_file(): fasta=str(standardized); status='pending'
+  if no_chrm and val(m,'chrM_selection_status') == 'missing_chrM_ref': fasta=''; status='skipped_no_chrM_reference'
+  elif standardized.is_file(): fasta=str(standardized); status='pending'
   elif manifest_fasta: fasta=sanitized_fallback_fasta(manifest_fasta,target,paths); status='pending'
   else: fasta=str(standardized); status='skipped_no_chrM_reference' if no_chrm else 'pending'
   acc=val(m,'final_chrM_accession') or val(m,'final_chrM_refseq_accn') or val(m,'final_chrM_genbank_accn')
   # A target species is the task identity: cross-species targets can share an accession but not a FASTA.
   key=re.sub(r'[^A-Za-z0-9_.-]+','_',target or Path(fasta).stem)
   refs[key]={'reference_key':key,'reference_species':species,'coordinate_reference_accession':acc,
-             'coordinate_reference_fasta':str(Path(fasta)),'coordinate_reference_fasta_from_manifest':manifest_fasta,
-             'mitos2_input_fasta':str(Path(fasta)),'target_species':target,'final_chrM_species':val(m,'final_chrM_species'),
-             'final_chrM_accession':val(m,'final_chrM_accession'),'targets':{sk(target)},'initial_status':status}
+             'coordinate_reference_fasta':str(Path(fasta)) if fasta else '','coordinate_reference_fasta_from_manifest':manifest_fasta,
+             'mitos2_input_fasta':str(Path(fasta)) if fasta else '','target_species':target,'final_chrM_species':val(m,'final_chrM_species'),
+             'final_chrM_accession':val(m,'final_chrM_accession'),'chrM_selection_status':val(m,'chrM_selection_status'),
+             'final_reference_strategy':val(m,'final_reference_strategy'),'reference_pairing_status':val(m,'reference_pairing_status'),
+             'targets':{sk(target)},'initial_status':status,
+             **({'status':status} if val(m,'chrM_selection_status') == 'missing_chrM_ref' else {})}
  result=[]
  for ref in refs.values():
   linked=[{'sample':val(s,'sample'),'species':val(s,'species')} for s in samples if sk(val(s,'species')) in ref['targets'] or sk(val(s,'species'))==sk(ref['reference_species'])]
