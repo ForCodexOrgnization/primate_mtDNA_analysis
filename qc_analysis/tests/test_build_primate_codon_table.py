@@ -122,11 +122,82 @@ mitos2_annotation:
             self.assertEqual({row['codon_pos_in_triplet'] for row in rows}, {'1', '2', '3'})
             summary_row = next(csv.DictReader(summary.open(), delimiter='\t'))
             self.assertEqual(summary_row['status'], 'completed_mitos2_fallback')
+            self.assertIn('Built 3 coding-position rows for 1 samples (0 GenBank, 1 MITOS2 fallback; 0 failed, 0 other).', result.stdout)
             self.assertNotIn('Invalid codon_pos_in_triplet values detected.', summary_row['note'])
             self.assertIn('MITOS2 fallback duplicate rows collapsed: 3', summary_row['note'])
             diagnostic_row = next(csv.DictReader(diagnostic.open(), delimiter='\t'))
             self.assertEqual(diagnostic_row['fallback_match_mode'], 'coordinate_fasta')
             self.assertEqual(diagnostic_row['n_selected_rows_after_dedup'], '3')
+            self.assertEqual(list(csv.DictReader((d / 'failed.tsv').open(), delimiter='\t')), [])
+
+    def test_mixed_genbank_mitos2_and_failure_is_deterministic(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td); gbdir = d / 'gb'; gbdir.mkdir(); self.make_record(gbdir / 'TEST.1.gb')
+            refs = d / 'refs.tsv'
+            refs.write_text('sample\tspecies\taccession\nGB\tGenBank species\tTEST.1\nFB\tFallback species\nFAIL\tFailed species\n')
+            mitos = d / 'mitos.tsv'
+            mitos.write_text('sample\tspecies\tgene\tpos\tcodon_index\tcodon_pos_in_triplet\tcodon_pos1_genomic\tcodon_pos2_genomic\tcodon_pos3_genomic\tcodon_seq\n'
+                             'FB\tFallback species\tND1\t1\t1\t1\t1\t2\t3\tATG\n')
+            outputs = []
+            for workers in (1, 4):
+                output, summary, failures, diagnostic = (d / f'table-{workers}.tsv', d / f'summary-{workers}.tsv',
+                                                          d / f'failed-{workers}.tsv', d / f'fallback-{workers}.tsv')
+                config = d / f'config-{workers}.yaml'
+                config.write_text(f'''build_primate_codon_table:
+  paths:
+    sample_ref_file: {refs}
+    genbank_dir: {gbdir}
+    output_table: {output}
+    failed_downloads_table: {failures}
+    summary_table: {summary}
+  settings:
+    accession_columns: accession
+    skip_existing_genbank: true
+    use_mitos2_if_genbank_fails: true
+mitos2_annotation:
+  paths:
+    mitos2_cds_table: {mitos}
+    mitos2_fallback_selection_summary_table: {diagnostic}
+''')
+                result = subprocess.run([sys.executable, str(ROOT / 'qc_analysis/scripts/build_primate_codon_table.py'), '--config', str(config), '--workers', str(workers)], cwd=ROOT, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('Built 13 coding-position rows for 2 samples (1 GenBank, 1 MITOS2 fallback; 1 failed, 0 other).', result.stdout)
+                outputs.append(tuple(path.read_text() for path in (output, summary, failures, diagnostic)))
+                self.assertIn('  1 parse targets', result.stderr)
+            self.assertEqual(outputs[0], outputs[1])
+            self.assertEqual({row['sample'] for row in csv.DictReader((d / 'table-1.tsv').open(), delimiter='\t')}, {'GB', 'FB'})
+            self.assertEqual([row['sample'] for row in csv.DictReader((d / 'failed-1.tsv').open(), delimiter='\t')], ['FAIL'])
+
+    def test_seven_mitos2_only_samples_need_no_genbank_parse_targets(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            samples = [f'S{i}' for i in range(7)]
+            refs = d / 'refs.tsv'; refs.write_text('sample\tspecies\n' + ''.join(f'{sample}\tSpecies {sample}\n' for sample in samples))
+            mitos = d / 'mitos.tsv'
+            mitos.write_text('sample\tspecies\tgene\tpos\tcodon_index\tcodon_pos_in_triplet\tcodon_pos1_genomic\tcodon_pos2_genomic\tcodon_pos3_genomic\tcodon_seq\n' +
+                             ''.join(f'{sample}\tSpecies {sample}\tND1\t1\t1\t1\t1\t2\t3\tATG\n' for sample in samples))
+            config = d / 'config.yaml'; output, summary, failures = d / 'table.tsv', d / 'summary.tsv', d / 'failed.tsv'
+            config.write_text(f'''build_primate_codon_table:
+  paths:
+    sample_ref_file: {refs}
+    genbank_dir: {d / 'gb'}
+    output_table: {output}
+    failed_downloads_table: {failures}
+    summary_table: {summary}
+  settings:
+    accession_columns: accession
+    use_mitos2_if_genbank_fails: true
+mitos2_annotation:
+  paths:
+    mitos2_cds_table: {mitos}
+''')
+            result = subprocess.run([sys.executable, str(ROOT / 'qc_analysis/scripts/build_primate_codon_table.py'), '--config', str(config), '--workers', '4'], cwd=ROOT, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('  0 parse targets', result.stderr)
+            self.assertIn('Built 7 coding-position rows for 7 samples (0 GenBank, 7 MITOS2 fallback; 0 failed, 0 other).', result.stdout)
+            self.assertEqual({row['sample'] for row in csv.DictReader(output.open(), delimiter='\t')}, set(samples))
+            self.assertEqual({row['status'] for row in csv.DictReader(summary.open(), delimiter='\t')}, {'completed_mitos2_fallback'})
+            self.assertEqual(list(csv.DictReader(failures.open(), delimiter='\t')), [])
 
 
 class BuildPrimateCodonTableParallelHelperTests(unittest.TestCase):
@@ -165,6 +236,38 @@ class BuildPrimateCodonTableParallelHelperTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     self.module.download('ACC', destination, {}, None)
             self.assertFalse(destination.exists())
+
+    def test_summarize_build_status_counts_both_success_routes(self):
+        counts = self.module.summarize_build_status([
+            {'sample': 'genbank', 'status': 'completed'},
+            {'sample': 'mitos2', 'status': 'completed_mitos2_fallback'},
+            {'sample': 'failed', 'status': 'failed'},
+        ])
+        self.assertEqual(counts, {
+            'total': 3, 'completed': 2, 'completed_genbank': 1,
+            'completed_mitos2_fallback': 1, 'failed': 1, 'other': 0,
+        })
+        self.assertEqual(counts['completed'], counts['completed_genbank'] + counts['completed_mitos2_fallback'])
+
+    def test_summarize_build_status_counts_seven_mitos2_successes(self):
+        counts = self.module.summarize_build_status([
+            {'sample': f'S{i}', 'status': 'completed_mitos2_fallback'} for i in range(7)
+        ])
+        self.assertEqual(counts['completed'], 7)
+        self.assertEqual(counts['completed_genbank'], 0)
+        self.assertEqual(counts['completed_mitos2_fallback'], 7)
+        self.assertEqual(counts['failed'], 0)
+
+    def test_output_summary_consistency_warning(self):
+        from unittest.mock import patch
+        matching = [{'sample': 'S1', 'status': 'completed'}]
+        self.assertTrue(self.module.warn_if_output_summary_disagree(matching, [{'sample': 'S1'}]))
+        with patch('sys.stderr') as stderr:
+            self.assertFalse(self.module.warn_if_output_summary_disagree(matching, [{'sample': 'S2'}]))
+        message = ''.join(str(call.args[0]) for call in stderr.write.call_args_list)
+        self.assertIn('WARNING: build summary and final codon table sample sets disagree.', message)
+        self.assertIn('Successful-without-output: S1', message)
+        self.assertIn('Output-without-success-status: S2', message)
 
 
 if __name__ == '__main__':
