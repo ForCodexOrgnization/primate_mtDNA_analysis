@@ -128,6 +128,11 @@ mitos2_annotation:
             diagnostic_row = next(csv.DictReader(diagnostic.open(), delimiter='\t'))
             self.assertEqual(diagnostic_row['fallback_match_mode'], 'coordinate_fasta')
             self.assertEqual(diagnostic_row['n_selected_rows_after_dedup'], '3')
+            diagnostic_rows = list(csv.DictReader(diagnostic.open(), delimiter='\t'))
+            self.assertEqual(len(diagnostic_rows), 2)
+            rejected = next(row for row in diagnostic_rows if row['selection_status'] == 'rejected')
+            self.assertEqual(rejected['coordinate_reference_fasta'], str(d / 'other.fa'))
+            self.assertEqual(rejected['rejection_reason'], 'no_exact_coordinate_reference_fasta')
             self.assertEqual(list(csv.DictReader((d / 'failed.tsv').open(), delimiter='\t')), [])
 
     def test_mixed_genbank_mitos2_and_failure_is_deterministic(self):
@@ -257,6 +262,33 @@ class BuildPrimateCodonTableParallelHelperTests(unittest.TestCase):
         self.assertEqual(counts['completed_genbank'], 0)
         self.assertEqual(counts['completed_mitos2_fallback'], 7)
         self.assertEqual(counts['failed'], 0)
+
+    def test_fallback_group_selection_uses_all_priorities_and_marks_pre_lexical_ties(self):
+        def rows(fasta, accession, genes, count):
+            return [{'coordinate_reference_fasta': fasta, 'coordinate_reference_accession': accession,
+                     'gene': gene, 'pos': str(index)}
+                    for index, gene in enumerate((genes * ((count + len(genes) - 1) // len(genes)))[:count], 1)]
+
+        genes = sorted(self.module.PROTEIN_CODING_GENES)
+        candidates = (
+            rows('/wrong.fa', 'ACC.1', genes, 11400) +
+            rows('/sample.fa', 'WRONG', genes, 11400) +
+            rows('/sample.fa', 'ACC.1', genes, 11400)
+        )
+        selected, mode, profiles, ambiguous = self.module.select_reference_fallback(
+            candidates, '/sample.fa', 'ACC.1')
+
+        self.assertEqual(mode, 'coordinate_fasta')
+        self.assertEqual({row['coordinate_reference_accession'] for row in selected}, {'ACC.1'})
+        self.assertFalse(ambiguous)
+        self.assertEqual(len(profiles), 3)
+        self.assertEqual(profiles[1]['rejection_reason'], 'no_exact_coordinate_reference_accession')
+
+        tied = rows('/b.fa', 'B', genes, 11400) + rows('/a.fa', 'A', genes, 11400)
+        selected, _, profiles, ambiguous = self.module.select_reference_fallback(tied, '', '')
+        self.assertTrue(ambiguous)
+        self.assertEqual(selected[0]['coordinate_reference_fasta'], '/a.fa')
+        self.assertEqual(profiles[1]['rejection_reason'], 'deterministic_lexical_tiebreaker')
 
     def test_output_summary_consistency_warning(self):
         from unittest.mock import patch

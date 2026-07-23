@@ -293,6 +293,7 @@ mitos2_annotation:
     mitos2_feature_table: results/qc/mitos2_annotation/all_mitos2_features.tsv
     mitos2_summary_table: results/qc/mitos2_annotation/mitos2_annotation_summary.tsv
     genbank_mitos2_comparison_table: results/qc/codon_table_build/genbank_vs_mitos2_cds_comparison.tsv
+    mitos2_fallback_selection_summary_table: results/qc/codon_table_build/mitos2_fallback_selection_summary.tsv
   settings:
     enabled: true
     run_for_all_references: true
