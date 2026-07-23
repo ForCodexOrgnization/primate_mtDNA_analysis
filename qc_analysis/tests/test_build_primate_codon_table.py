@@ -127,6 +127,11 @@ mitos2_annotation:
             self.assertIn('MITOS2 fallback duplicate rows collapsed: 3', summary_row['note'])
             diagnostic_row = next(csv.DictReader(diagnostic.open(), delimiter='\t'))
             self.assertEqual(diagnostic_row['fallback_match_mode'], 'coordinate_fasta')
+            self.assertEqual(diagnostic_row['original_sample_fasta'], str(coordinate_fasta))
+            self.assertEqual(diagnostic_row['canonical_sample_fasta'], str(coordinate_fasta.resolve()))
+            self.assertEqual(diagnostic_row['original_mitos2_fasta'], str(coordinate_fasta))
+            self.assertEqual(diagnostic_row['canonical_mitos2_fasta'], str(coordinate_fasta.resolve()))
+            self.assertEqual(diagnostic_row['fasta_match'], 'yes')
             self.assertEqual(diagnostic_row['n_selected_rows_after_dedup'], '3')
             diagnostic_rows = list(csv.DictReader(diagnostic.open(), delimiter='\t'))
             self.assertEqual(len(diagnostic_rows), 2)
@@ -289,6 +294,43 @@ class BuildPrimateCodonTableParallelHelperTests(unittest.TestCase):
         self.assertTrue(ambiguous)
         self.assertEqual(selected[0]['coordinate_reference_fasta'], '/a.fa')
         self.assertEqual(profiles[1]['rejection_reason'], 'deterministic_lexical_tiebreaker')
+
+    def test_canonical_fasta_paths_drive_mitos2_reference_matching(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            reference = d / 'references' / 'Ref_chrM' / 'Macaca_fascicularis.fa'
+            reference.parent.mkdir(parents=True)
+            reference.write_text('>chrM\nATG\n')
+            relative = 'references/Ref_chrM/Macaca_fascicularis.fa'
+            dotted_relative = './' + relative
+            absolute = str(reference)
+            self.assertEqual(self.module.canonical_path(relative, d), absolute)
+            self.assertEqual(self.module.canonical_path(dotted_relative, d), absolute)
+
+            alias = d / 'reference_alias.fa'
+            alias.symlink_to(reference)
+            self.assertEqual(self.module.canonical_path(str(alias), d), absolute)
+
+            same_name_elsewhere = d / 'other' / reference.name
+            same_name_elsewhere.parent.mkdir()
+            same_name_elsewhere.write_text('>chrM\nCCC\n')
+            self.assertNotEqual(self.module.canonical_path(str(same_name_elsewhere), d), absolute)
+            self.assertEqual(
+                self.module.canonical_path('missing/Macaca_fascicularis.fa', d),
+                str(d / 'missing' / 'Macaca_fascicularis.fa'))
+
+            rows = [
+                {'coordinate_reference_fasta': absolute, 'coordinate_reference_accession': 'WRONG',
+                 '_canonical_coordinate_reference_fasta': absolute, 'gene': 'ND1', 'pos': '1'},
+                {'coordinate_reference_fasta': str(same_name_elsewhere), 'coordinate_reference_accession': 'ACC.1',
+                 '_canonical_coordinate_reference_fasta': str(same_name_elsewhere.resolve()), 'gene': 'ND2', 'pos': '2'},
+            ]
+            index = {absolute: [rows[0]], str(same_name_elsewhere.resolve()): [rows[1]]}
+            selected, mode, profiles, _ = self.module.select_reference_fallback(
+                rows, self.module.canonical_path(dotted_relative, d), 'ACC.1', index)
+            self.assertEqual(mode, 'coordinate_fasta')
+            self.assertEqual(selected[0]['coordinate_reference_accession'], 'WRONG')
+            self.assertTrue(profiles[0]['fasta_match'])
 
     def test_output_summary_consistency_warning(self):
         from unittest.mock import patch
