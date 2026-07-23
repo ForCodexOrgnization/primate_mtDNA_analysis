@@ -77,6 +77,38 @@ class BuildPrimateCodonTableTests(unittest.TestCase):
             self.assertEqual(failure['sample'], 'missing')
             self.assertIn('No accession', failure['reason'])
 
+    def test_reference_level_output_deduplicates_shared_coordinate_reference(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td); gbdir = d / 'gb'; gbdir.mkdir(); self.make_record(gbdir / 'TEST.1.gb')
+            fasta_dir = d / 'fasta'; fasta_dir.mkdir()
+            (fasta_dir / 'Species_one.fa').write_text('>chrM\nATGAAAGGGCAT\n')
+            refs = d / 'refs.tsv'
+            refs.write_text('sample\tspecies\taccession\nS1\tSpecies one\tTEST.1\nS2\tSpecies one\tTEST.1\n')
+            reference_table, sample_map = d / 'reference.tsv', d / 'map.tsv'
+            config = d / 'config.yaml'
+            config.write_text(f'''build_primate_codon_table:
+  paths:
+    sample_ref_file: {refs}
+    genbank_dir: {gbdir}
+    species_fasta_dir: {fasta_dir}
+    reference_codon_table: {reference_table}
+    sample_reference_map: {sample_map}
+    failed_downloads_table: {d / 'failed.tsv'}
+    summary_table: {d / 'summary.tsv'}
+  settings:
+    accession_columns: accession
+    skip_existing_genbank: true
+''')
+            result = subprocess.run([sys.executable, str(ROOT / 'qc_analysis/scripts/build_primate_codon_table.py'), '--config', str(config)], cwd=ROOT, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            codons = list(csv.DictReader(reference_table.open(), delimiter='\t'))
+            mapping = list(csv.DictReader(sample_map.open(), delimiter='\t'))
+            self.assertEqual(len(codons), 12)
+            self.assertNotIn('sample', codons[0])
+            self.assertEqual({row['reference_key'] for row in codons}, {mapping[0]['reference_key']})
+            self.assertEqual({row['reference_key'] for row in mapping}, {mapping[0]['reference_key']})
+            self.assertTrue(mapping[0]['coordinate_reference_sequence_sha256'])
+
     def test_mitos2_reference_fallback_selects_one_group_and_normalizes_rows(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)

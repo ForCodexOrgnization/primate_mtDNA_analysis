@@ -16,16 +16,29 @@ def mutate_codon(codon,phase,alt_base):
  if len(bases)!=3 or not 1<=phase<=3 or not alt: return '.'
  bases[phase-1]=alt[0]
  return ''.join(bases)
-def load(path,species=False):
+def load(path,key_column=None):
  d={}; ident=None
  for r in rows(path):
-  if species and ident is None: ident=next((x for x in ('species_key','species','sample','file_name','seq_name','accession') if x in r),None)
+  if key_column and ident is None: ident=key_column
   try:k=((r.get(ident,'') if ident else ''),int(r['pos']))
   except (ValueError,KeyError):continue
   d.setdefault(k,r)
  return d,ident
+def load_sample_reference_map(path):
+ mapping={}
+ for row in rows(path):
+  sample=(row.get('sample') or '').strip(); reference_key=(row.get('reference_key') or '').strip()
+  if sample and reference_key: mapping[sample]=reference_key
+ return mapping
 def main():
- a=argparse.ArgumentParser();a.add_argument('--config',required=True);a.add_argument('--sample');a.add_argument('--input');a.add_argument('--output');z=a.parse_args(); c=yaml(z.config); sec=c['codon_match'];p=sec['paths'];s=sec['settings']; strict=bool(s.get('strict_phase_match',True)); sp,ident=load(p['all_primate_position_codon_table'],True); hu,_=load(p['human_codon_table']);
+ a=argparse.ArgumentParser();a.add_argument('--config',required=True);a.add_argument('--sample');a.add_argument('--input');a.add_argument('--output');z=a.parse_args(); c=yaml(z.config); sec=c['codon_match'];p=sec['paths'];s=sec['settings']; strict=bool(s.get('strict_phase_match',True))
+ reference_table=p.get('reference_codon_table')
+ map_table=p.get('sample_reference_map')
+ if reference_table and map_table:
+  sp,ident=load(reference_table,'reference_key'); sample_references=load_sample_reference_map(map_table)
+ else: # compatibility with historical sample-level tables
+  sp,ident=load(p['all_primate_position_codon_table'],'sample'); sample_references={}
+ hu,_=load(p['human_codon_table'])
  samples=[z.sample] if z.sample else sample_names(c)
  if z.input: samples=[z.sample or Path(z.input).name.split('.')[0]]
  if not samples: raise SystemExit('No samples found; supply --sample or --input.')
@@ -38,9 +51,7 @@ def main():
   with inp.open() as f:
    for line in f:
     if line.startswith('#'): header.append(line);continue
-    x=line.rstrip('\n').split('\t'); inf=info_parse(x[7]); source_chrom,pos,source_ref,source_alt=source(inf); hp=human_pos(x,inf); sr=sp.get((sample,pos)) if pos else None
-    if sr is None and pos: # permit species aliases/table identifiers
-     choices=[r for (key,k),r in sp.items() if k==pos and (key==sample or len({q for q,_ in sp})==1)] ; sr=choices[0] if choices else None
+    x=line.rstrip('\n').split('\t'); inf=info_parse(x[7]); source_chrom,pos,source_ref,source_alt=source(inf); hp=human_pos(x,inf); reference_key=sample_references.get(sample, sample); sr=sp.get((reference_key,pos)) if pos else None
     hr=hu.get(('',hp)) if hp else None
     strand=(sr or {}).get('strand','+')
     alt_for_codon=complement_base(source_alt) if strand=='-' else source_alt

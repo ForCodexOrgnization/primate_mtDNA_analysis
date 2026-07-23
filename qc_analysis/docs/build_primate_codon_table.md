@@ -1,7 +1,8 @@
 # Build primate codon table
 
-`build_primate_codon_table.py` downloads (or reuses) GenBank records and writes the
-sample-level coding-position table used by `codon_match`:
+`build_primate_codon_table.py` downloads (or reuses) GenBank records and writes a
+reference-level coding-position table plus a sample-to-reference map used by
+`codon_match`:
 
 ```bash
 python qc_analysis/scripts/build_primate_codon_table.py --config config/qc_preprocessing.yaml
@@ -33,8 +34,8 @@ overrideable (for example, `PYTHON=/path/to/python`).
 
 `sample_ref_file` requires `sample`; a headerless two-column `sample, species` file
 is also supported for existing workflows. Useful optional fields are `species` and
-`family`. Several samples may use one accession and each receives its own rows so
-`run_codon_match.py` can look up `sample + pos`.
+`family`. Several samples can share one coordinate reference; they receive one map
+row each, while codons are emitted once for that reference.
 
 ## Inferring accession from reference manifests
 
@@ -79,11 +80,20 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh \
 ```
 
 Downloaded records are cached in `data/reference_tables/primate_genbank/<accession>.gb`.
-The output `data/reference_tables/all_primate_position_codon_table.tsv` includes the
-sample, original 1-based genomic `pos`, normalized/original gene names, genomic
+The primary outputs are `data/reference_tables/reference_codon_table.tsv` and
+`data/reference_tables/sample_reference_map.tsv`. The codon table includes
+`reference_key`, original 1-based genomic `pos`, normalized/original gene names, genomic
 reference base, coding-oriented codon and phase, all three genomic codon positions,
 strand, and CDS qualifiers. Joined and minus-strand CDS features are emitted in
 coding orientation while retaining their original genomic coordinates.
+
+`reference_key` is constructed from the canonical coordinate-reference FASTA path,
+coordinate-reference accession, and SHA256 of the normalized FASTA sequence. It is
+therefore not species-based. `codon_match` first resolves `sample -> reference_key`,
+then looks up `reference_key + pos`. Set
+`write_legacy_sample_level_export: true` and configure `legacy_sample_codon_table`
+only when an older consumer still needs the duplicated sample-level table; it is
+disabled by default.
 
 Final sample failures are recorded without stopping other samples in
 `results/qc/codon_table_build/failed_genbank_downloads.tsv`; per-sample counts and
