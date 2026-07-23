@@ -91,3 +91,36 @@ sanity-check warnings are recorded in the matching summary table. Set the option
 `build_primate_codon_table.settings.email` for NCBI Entrez requests. Use `--dry-run`
 to resolve and audit every accession without downloading or parsing GenBank records,
 or `--force-download` to refresh cached records.
+
+## Parallel and HPC operation
+
+The script resolves accessions once, downloads each unique missing accession at
+most once, and then prepares/parses samples internally with worker threads.
+Final TSV construction, MITOS2 fallback selection, comparisons, validation, and
+writing are deliberately single-process, so the shared output files are written
+exactly once in sample-reference order. Do **not** run several `--sample`
+invocations concurrently against the same configuration: each invocation still
+owns the same global output paths.
+
+Use `--workers` for sample preparation and cached GenBank parsing. Its default is
+CLI value, then YAML `settings.workers`, then `SLURM_CPUS_PER_TASK`, then 1.
+`--download-workers` controls only concurrent Entrez downloads; without an API
+key it defaults to 1. The process-wide rate limiter spaces all Entrez request
+starts using `requests_per_second_without_api_key` (default 3) or
+`requests_per_second_with_api_key` (default 10). `sleep_seconds` remains for
+configuration compatibility, but the rate limiter is authoritative for parallel
+downloads. Set `email` and, where permitted, `entrez_api_key` in private
+configuration rather than committing credentials.
+
+Recommended initial HPC settings are 4--8 workers, 16G memory, and one download
+worker without an API key. With an API key, use at most 2--4 download workers
+while retaining the global limiter. For example:
+
+```bash
+SLURM_CPUS=8 CODON_TABLE_WORKERS=8 \
+  bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  --submit build_primate_codon_table config/qc_preprocessing.yaml
+```
+
+Cached `.gb` records substantially reduce runtime. More workers than unique
+accessions or selected samples do not improve throughput.
