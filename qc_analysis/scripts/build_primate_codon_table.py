@@ -17,6 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.match_utils import yaml
 
+repo_root = Path(__file__).resolve().parents[2]
+
 try:
     from Bio import Entrez, SeqIO
 except ImportError:  # checked in main so importing helpers remains possible in tests
@@ -25,7 +27,7 @@ except ImportError:  # checked in main so importing helpers remains possible in 
 OUTPUT_FIELDS = "file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used coordinate_reference_fasta coordinate_reference_accession".split()
 SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path accession_record genbank_file n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
 FAIL_FIELDS = "sample species accession_query reason".split()
-MITOS2_FALLBACK_SELECTION_FIELDS = "sample species accession coordinate_reference_fasta coordinate_reference_accession group_row_count normalized_gene_count has_all_13_protein_coding_genes coding_row_count_in_expected_range fallback_match_mode n_candidate_rows n_selected_rows_before_dedup n_selected_rows_after_dedup n_duplicate_rows_collapsed n_candidate_reference_groups selected_reference_group selection_status rejection_reason note".split()
+MITOS2_FALLBACK_SELECTION_FIELDS = "sample species accession coordinate_reference_fasta coordinate_reference_accession original_sample_fasta canonical_sample_fasta original_mitos2_fasta canonical_mitos2_fasta fasta_match group_row_count normalized_gene_count has_all_13_protein_coding_genes coding_row_count_in_expected_range fallback_match_mode n_candidate_rows n_selected_rows_before_dedup n_selected_rows_after_dedup n_duplicate_rows_collapsed n_candidate_reference_groups selected_reference_group selection_status rejection_reason note".split()
 MITOS2_NUMERIC_FIELDS = ('pos', 'codon_index', 'codon_pos_in_triplet', 'codon_pos1_genomic', 'codon_pos2_genomic', 'codon_pos3_genomic')
 EXPECTED_MAMMALIAN_CODING_TOTAL = 11400
 SUCCESS_STATUSES = {
@@ -37,6 +39,20 @@ PROTEIN_CODING_GENES = frozenset(GENES.values())
 
 def value(row, key):
     return (row.get(key) or '').strip()
+
+def canonical_path(raw, repo_root):
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+
+    path = Path(raw)
+    if not path.is_absolute():
+        path = repo_root / path
+
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path.absolute())
 
 def summarize_build_status(summary):
     """Count final sample outcomes, including both successful annotation routes."""
@@ -267,25 +283,32 @@ def deduplicate_rows(rows, key):
             unique.append(row)
     return unique, len(rows) - len(unique)
 
-def select_reference_fallback(rows, coordinate_fasta, accession):
+def select_reference_fallback(rows, coordinate_fasta, accession, mitos_reference_rows_by_canonical_fasta=None):
     """Choose one complete reference group before assigning a fallback sample.
 
     Row-level deduplication is deliberately not part of selection: a duplicated
     annotation set must not make several reference groups appear to be one.
     """
+    exact_fasta_row_ids = ({id(row) for row in
+                            mitos_reference_rows_by_canonical_fasta.get(coordinate_fasta, [])}
+                           if coordinate_fasta and mitos_reference_rows_by_canonical_fasta is not None else None)
     groups = defaultdict(list)
     for row in rows:
         group = (value(row, 'coordinate_reference_fasta'), value(row, 'coordinate_reference_accession'))
         groups[group].append(row)
     profiles = []
     for group, group_rows in groups.items():
+        canonical_group_fasta = (value(group_rows[0], '_canonical_coordinate_reference_fasta') or
+                                 canonical_path(group[0], repo_root))
         genes = {normalize_gene(value(row, 'gene')) for row in group_rows}
         n_rows = len(group_rows)
         profile = {
             'group': group, 'rows': group_rows, 'n_rows': n_rows,
             'n_genes': len(genes), 'has_13_genes': PROTEIN_CODING_GENES.issubset(genes),
             'in_expected_range': 5000 <= n_rows <= 13000,
-            'fasta_match': bool(coordinate_fasta and group[0] == coordinate_fasta),
+            'canonical_fasta': canonical_group_fasta,
+            'fasta_match': bool(coordinate_fasta and canonical_group_fasta == coordinate_fasta and
+                                (exact_fasta_row_ids is None or id(group_rows[0]) in exact_fasta_row_ids)),
             'accession_match': bool(accession and group[1] == accession),
             'distance': abs(n_rows - EXPECTED_MAMMALIAN_CODING_TOTAL),
         }
@@ -462,7 +485,9 @@ def prepare_sample(order_metadata, context):
     metadata['accession_query'] = accession
     coordinate = fasta_path or str(find_species_fasta(metadata['species'], paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna'), fasta_index) or '')
     metadata['coordinate_reference_fasta'] = coordinate; metadata['coordinate_reference_accession'] = accession
-    base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'accession_source':source, 'accession_note':accession_note, 'manifest_file':manifest_file, 'matched_manifest_species':matched_species, 'species_fasta_path':fasta_path or coordinate, 'accession_record':'', 'genbank_file':'', 'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'', 'max_pos':'', 'status':'failed', 'note':''}
+    metadata['_canonical_coordinate_reference_fasta'] = canonical_path(coordinate, repo_root)
+    original_species_fasta = fasta_path or coordinate
+    base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'accession_source':source, 'accession_note':accession_note, 'manifest_file':manifest_file, 'matched_manifest_species':matched_species, 'species_fasta_path':original_species_fasta, '_canonical_species_fasta_path':canonical_path(original_species_fasta, repo_root), 'accession_record':'', 'genbank_file':'', 'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'', 'max_pos':'', 'status':'failed', 'note':''}
     if not accession:
         reason = 'No accession found from sample_ref_file, reference manifest, or FASTA.'
         base['note'] = reason; base['status'] = 'dry_run_unresolved' if dry_run else 'failed'
@@ -553,6 +578,14 @@ def main():
     mitos_reference_path = mitos_paths.get('mitos2_reference_cds_table', '')
     mitos_rows = read_tsv(mitos_path) if mitos_path else []
     mitos_reference_rows = read_tsv(mitos_reference_path) if mitos_reference_path else []
+    for mitos_row in mitos_rows + mitos_reference_rows:
+        # Keep the source string for output, while comparing the physical file.
+        mitos_row['_canonical_coordinate_reference_fasta'] = canonical_path(
+            value(mitos_row, 'coordinate_reference_fasta'), repo_root)
+    mitos_reference_rows_by_canonical_fasta = defaultdict(list)
+    for mitos_row in mitos_reference_rows:
+        mitos_reference_rows_by_canonical_fasta[
+            value(mitos_row, '_canonical_coordinate_reference_fasta')].append(mitos_row)
     genbank_rows = list(output)
     selected, fallback_selection_summary = [], []
     genbank_rows_by_sample = defaultdict(list)
@@ -572,18 +605,25 @@ def main():
         ambiguous = False
         if candidate_rows:
             summary_row = summary_by_sample.get(sample, {})
+            original_sample_fasta = (value(summary_row, 'species_fasta_path') or
+                                     value(summary_row, 'coordinate_reference_fasta'))
             fallback, match_mode, profiles, ambiguous = select_reference_fallback(
                 candidate_rows,
-                value(summary_row, 'species_fasta_path') or value(summary_row, 'coordinate_reference_fasta'),
+                value(summary_row, '_canonical_species_fasta_path') or
+                value(summary_row, '_canonical_coordinate_reference_fasta'),
                 value(summary_row, 'accession_query'))
         else:
             summary_row = summary_by_sample.get(sample, {})
             accession = value(summary_row, 'accession_query')
-            coordinate_fasta = value(summary_row, 'species_fasta_path') or value(summary_row, 'coordinate_reference_fasta')
+            original_sample_fasta = (value(summary_row, 'species_fasta_path') or
+                                     value(summary_row, 'coordinate_reference_fasta'))
+            coordinate_fasta = (value(summary_row, '_canonical_species_fasta_path') or
+                                value(summary_row, '_canonical_coordinate_reference_fasta'))
             # Group every reference candidate before choosing; restricting the input
             # to the first matching FASTA/accession would hide competing groups.
             fallback, match_mode, profiles, ambiguous = select_reference_fallback(
-                mitos_reference_rows, coordinate_fasta, accession)
+                mitos_reference_rows, coordinate_fasta, accession,
+                mitos_reference_rows_by_canonical_fasta)
             for row in fallback:
                 row.update(sample=sample, species=value(metadata, species_col), species_key=species_key(value(metadata, species_col)))
         candidate_groups = len(profiles)
@@ -624,6 +664,12 @@ def main():
                     'sample': sample, 'species': value(metadata, species_col),
                     'accession': value(summary_by_sample.get(sample, {}), 'accession_query'),
                     'coordinate_reference_fasta': group[0], 'coordinate_reference_accession': group[1],
+                    'original_sample_fasta': original_sample_fasta,
+                    'canonical_sample_fasta': (value(summary_row, '_canonical_species_fasta_path') or
+                                               value(summary_row, '_canonical_coordinate_reference_fasta')),
+                    'original_mitos2_fasta': group[0],
+                    'canonical_mitos2_fasta': profile['canonical_fasta'],
+                    'fasta_match': 'yes' if profile['fasta_match'] else 'no',
                     'group_row_count': profile['n_rows'], 'normalized_gene_count': profile['n_genes'],
                     'has_all_13_protein_coding_genes': 'yes' if profile['has_13_genes'] else 'no',
                     'coding_row_count_in_expected_range': 'yes' if profile['in_expected_range'] else 'no',
