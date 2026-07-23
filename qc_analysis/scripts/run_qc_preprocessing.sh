@@ -25,6 +25,7 @@ Steps:
   codon_match                      Annotate lifted VCFs with codon matching.
   trna_match                       Annotate VCFs with tRNA matching.
   rrna_match                       Annotate VCFs with rRNA matching.
+  intraspecies_contamination       Run original-coordinate intra-species contamination QC only.
   all                              Run all preprocessing and downstream annotation steps.
 
 Run modes:
@@ -82,7 +83,7 @@ case "$STEP" in
     usage
     exit 0
     ;;
-  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|trna_match|rrna_match|all)
+  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|trna_match|rrna_match|intraspecies_contamination|all)
     ;;
   *)
     echo "ERROR: unknown step: $STEP" >&2
@@ -141,6 +142,7 @@ CODON_TABLE_SCRIPT="qc_analysis/scripts/build_primate_codon_table.py"
 MITOS2_SCRIPT="qc_analysis/scripts/run_mitos2_annotation.py"
 TRNA_SCRIPT="qc_analysis/scripts/run_trna_match.py"
 RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
+INTRASPECIES_SCRIPT="qc_analysis/scripts/run_intraspecies_contamination.sh"
 GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
 
 # Read the small, optional environment.biopython section without depending on
@@ -346,6 +348,7 @@ case "$STEP" in
   codon_match) run_annotation codon_match "$CODON_SCRIPT" ;;
   trna_match) run_annotation trna_match "$TRNA_SCRIPT" ;;
   rrna_match) run_annotation rrna_match "$RRNA_SCRIPT" ;;
+  intraspecies_contamination) bash "$INTRASPECIES_SCRIPT" "$CONFIG" ;;
   all)
     run_collect_variant_calling_results
     run_discover_global_anchor
