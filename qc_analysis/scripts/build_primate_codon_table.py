@@ -25,13 +25,15 @@ except ImportError:  # checked in main so importing helpers remains possible in 
 OUTPUT_FIELDS = "file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used coordinate_reference_fasta coordinate_reference_accession".split()
 SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path accession_record genbank_file n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
 FAIL_FIELDS = "sample species accession_query reason".split()
-MITOS2_FALLBACK_SELECTION_FIELDS = "sample species accession coordinate_reference_fasta coordinate_reference_accession fallback_match_mode n_candidate_rows n_selected_rows_before_dedup n_selected_rows_after_dedup n_duplicate_rows_collapsed n_candidate_reference_groups selected_reference_group note".split()
+MITOS2_FALLBACK_SELECTION_FIELDS = "sample species accession coordinate_reference_fasta coordinate_reference_accession group_row_count normalized_gene_count has_all_13_protein_coding_genes coding_row_count_in_expected_range fallback_match_mode n_candidate_rows n_selected_rows_before_dedup n_selected_rows_after_dedup n_duplicate_rows_collapsed n_candidate_reference_groups selected_reference_group selection_status rejection_reason note".split()
 MITOS2_NUMERIC_FIELDS = ('pos', 'codon_index', 'codon_pos_in_triplet', 'codon_pos1_genomic', 'codon_pos2_genomic', 'codon_pos3_genomic')
+EXPECTED_MAMMALIAN_CODING_TOTAL = 11400
 SUCCESS_STATUSES = {
     'completed',
     'completed_mitos2_fallback',
 }
 GENES = {'ND1':'MT-ND1','ND2':'MT-ND2','ND3':'MT-ND3','ND4':'MT-ND4','ND4L':'MT-ND4L','ND5':'MT-ND5','ND6':'MT-ND6','COX1':'MT-CO1','COI':'MT-CO1','COX2':'MT-CO2','COII':'MT-CO2','COX3':'MT-CO3','COIII':'MT-CO3','CYTB':'MT-CYB','ATP6':'MT-ATP6','ATP8':'MT-ATP8'}
+PROTEIN_CODING_GENES = frozenset(GENES.values())
 
 def value(row, key):
     return (row.get(key) or '').strip()
@@ -266,25 +268,58 @@ def deduplicate_rows(rows, key):
     return unique, len(rows) - len(unique)
 
 def select_reference_fallback(rows, coordinate_fasta, accession):
-    """Select one reference annotation set, preferring the coordinate FASTA."""
-    fasta_candidates = [row for row in rows if coordinate_fasta and value(row, 'coordinate_reference_fasta') == coordinate_fasta]
-    candidates, mode = (fasta_candidates, 'coordinate_fasta') if fasta_candidates else (
-        [row for row in rows if value(row, 'coordinate_reference_accession') == accession], 'accession')
-    groups = {}
-    for row in candidates:
+    """Choose one complete reference group before assigning a fallback sample.
+
+    Row-level deduplication is deliberately not part of selection: a duplicated
+    annotation set must not make several reference groups appear to be one.
+    """
+    groups = defaultdict(list)
+    for row in rows:
         group = (value(row, 'coordinate_reference_fasta'), value(row, 'coordinate_reference_accession'))
-        groups.setdefault(group, []).append(row)
-    if not groups:
-        return [], mode, 0, ''
-    # Prefer the most complete CDS gene set, then a biologically plausible number
-    # of coding rows, then row count, with lexical ordering as a stable tie-breaker.
-    def score(item):
-        group, group_rows = item
-        n_genes = len({normalize_gene(value(row, 'gene')) for row in group_rows})
+        groups[group].append(row)
+    profiles = []
+    for group, group_rows in groups.items():
+        genes = {normalize_gene(value(row, 'gene')) for row in group_rows}
         n_rows = len(group_rows)
-        return (-n_genes, -(5000 <= n_rows <= 13000), -n_rows, group[0], group[1])
-    selected_group, selected_rows = min(groups.items(), key=score)
-    return [dict(row) for row in selected_rows], mode, len(groups), '|'.join(selected_group)
+        profile = {
+            'group': group, 'rows': group_rows, 'n_rows': n_rows,
+            'n_genes': len(genes), 'has_13_genes': PROTEIN_CODING_GENES.issubset(genes),
+            'in_expected_range': 5000 <= n_rows <= 13000,
+            'fasta_match': bool(coordinate_fasta and group[0] == coordinate_fasta),
+            'accession_match': bool(accession and group[1] == accession),
+            'distance': abs(n_rows - EXPECTED_MAMMALIAN_CODING_TOTAL),
+        }
+        # The lexical group key is intentionally last: it makes selection stable
+        # while preserving whether the biological criteria were tied.
+        profile['rank'] = (-profile['fasta_match'], -profile['accession_match'],
+                           -profile['has_13_genes'], -profile['in_expected_range'],
+                           profile['distance'])
+        profiles.append(profile)
+    if not profiles:
+        return [], 'none', [], False
+    profiles.sort(key=lambda p: (*p['rank'], p['group'][0], p['group'][1]))
+    selected = profiles[0]
+    ambiguous = sum(profile['rank'] == selected['rank'] for profile in profiles) > 1
+    for profile in profiles:
+        if profile is selected:
+            profile['rejection_reason'] = ''
+            continue
+        reason = []
+        for label, key in (('no_exact_coordinate_reference_fasta', 'fasta_match'),
+                           ('no_exact_coordinate_reference_accession', 'accession_match'),
+                           ('does_not_contain_all_13_normalized_protein_coding_genes', 'has_13_genes'),
+                           ('coding_row_count_outside_5000_13000', 'in_expected_range')):
+            if selected[key] and not profile[key]:
+                reason.append(label)
+                break
+        if not reason and profile['distance'] > selected['distance']:
+            reason.append('coding_row_count_farther_from_expected_mammalian_total')
+        if not reason:
+            reason.append('deterministic_lexical_tiebreaker')
+        profile['rejection_reason'] = ';'.join(reason)
+    match_mode = ('coordinate_fasta' if selected['fasta_match'] else
+                  'accession' if selected['accession_match'] else 'gene_count_row_count')
+    return [dict(row) for row in selected['rows']], match_mode, profiles, ambiguous
 
 def coding_coordinates(feature):
     """Return genomic 0-based positions in coding orientation, including joined CDSs."""
@@ -524,11 +559,6 @@ def main():
     for row in output: genbank_rows_by_sample[row['sample']].append(row)
     mitos_rows_by_sample = defaultdict(list)
     for row in mitos_rows: mitos_rows_by_sample[value(row, 'sample')].append(row)
-    mitos_reference_rows_by_accession = defaultdict(list)
-    mitos_reference_rows_by_coordinate_fasta = defaultdict(list)
-    for row in mitos_reference_rows:
-        mitos_reference_rows_by_accession[value(row, 'coordinate_reference_accession')].append(row)
-        mitos_reference_rows_by_coordinate_fasta[value(row, 'coordinate_reference_fasta')].append(row)
     summary_by_sample = {row['sample']: row for row in summary}
     for metadata in sample_rows:
         sample = value(metadata, sample_col)
@@ -536,19 +566,30 @@ def main():
         if gb_rows:
             selected.extend(gb_rows)
             continue
-        fallback = [dict(row) for row in mitos_rows_by_sample[sample]]
+        candidate_rows = [dict(row) for row in mitos_rows_by_sample[sample]]
         match_mode = 'sample_level'
-        candidate_groups = 1 if fallback else 0
-        selected_group = ''
-        if not fallback:
+        profiles = []
+        ambiguous = False
+        if candidate_rows:
+            summary_row = summary_by_sample.get(sample, {})
+            fallback, match_mode, profiles, ambiguous = select_reference_fallback(
+                candidate_rows,
+                value(summary_row, 'species_fasta_path') or value(summary_row, 'coordinate_reference_fasta'),
+                value(summary_row, 'accession_query'))
+        else:
             summary_row = summary_by_sample.get(sample, {})
             accession = value(summary_row, 'accession_query')
             coordinate_fasta = value(summary_row, 'species_fasta_path') or value(summary_row, 'coordinate_reference_fasta')
-            reference_candidates = mitos_reference_rows_by_coordinate_fasta.get(coordinate_fasta) or mitos_reference_rows_by_accession.get(accession, [])
-            fallback, match_mode, candidate_groups, selected_group = select_reference_fallback(
-                reference_candidates, coordinate_fasta, accession)
+            # Group every reference candidate before choosing; restricting the input
+            # to the first matching FASTA/accession would hide competing groups.
+            fallback, match_mode, profiles, ambiguous = select_reference_fallback(
+                mitos_reference_rows, coordinate_fasta, accession)
             for row in fallback:
                 row.update(sample=sample, species=value(metadata, species_col), species_key=species_key(value(metadata, species_col)))
+        candidate_groups = len(profiles)
+        selected_group_tuple = (value(fallback[0], 'coordinate_reference_fasta'),
+                                value(fallback[0], 'coordinate_reference_accession')) if fallback else ('', '')
+        selected_group = '|'.join(selected_group_tuple) if fallback else ''
         n_candidate_rows = len(fallback)
         if fallback and settings.get('use_mitos2_if_genbank_fails', True):
             for row in fallback:
@@ -562,10 +603,13 @@ def main():
             duplicates_collapsed = reference_duplicates + sample_duplicates
             assert len({fallback_duplicate_key(row, include_sample=True) for row in fallback}) == len(fallback), \
                 f'MITOS2 fallback duplicate keys remain for {sample}'
+            assert len(fallback) <= 13000, f'MITOS2 fallback coding rows exceed 13000 for {sample}: {len(fallback)}'
             selected.extend(fallback)
             notes = ['GenBank CDS unavailable; MITOS2 fallback used.']
             if candidate_groups > 1:
                 notes.append(f'MITOS2 fallback selected one reference group from {candidate_groups} candidates: {selected_group}')
+            if ambiguous:
+                notes.append('MITOS2 fallback reference-group selection ambiguous before deterministic lexical tie-breaker.')
             if duplicates_collapsed:
                 notes.append(f'MITOS2 fallback duplicate rows collapsed: {duplicates_collapsed}')
             if len(fallback) < 5000 or len(fallback) > 13000:
@@ -573,17 +617,24 @@ def main():
             row = summary_by_sample.get(sample)
             if row:
                 row['status'] = 'completed_mitos2_fallback'; row['n_coding_position_rows'] = len(fallback); row['n_genes'] = len({normalize_gene(value(x, 'gene')) for x in fallback}); row['note'] = '; '.join(filter(None, [row['note'], *notes]))
-            fallback_selection_summary.append({
-                'sample': sample, 'species': value(metadata, species_col),
-                'accession': value(summary_by_sample.get(sample, {}), 'accession_query'),
-                'coordinate_reference_fasta': value(fallback[0], 'coordinate_reference_fasta'),
-                'coordinate_reference_accession': value(fallback[0], 'coordinate_reference_accession'),
-                'fallback_match_mode': match_mode, 'n_candidate_rows': n_candidate_rows,
-                'n_selected_rows_before_dedup': n_candidate_rows,
-                'n_selected_rows_after_dedup': len(fallback), 'n_duplicate_rows_collapsed': duplicates_collapsed,
-                'n_candidate_reference_groups': candidate_groups, 'selected_reference_group': selected_group,
-                'note': '; '.join(notes[1:]),
-            })
+            for profile in profiles:
+                group = profile['group']
+                is_selected = group == selected_group_tuple
+                fallback_selection_summary.append({
+                    'sample': sample, 'species': value(metadata, species_col),
+                    'accession': value(summary_by_sample.get(sample, {}), 'accession_query'),
+                    'coordinate_reference_fasta': group[0], 'coordinate_reference_accession': group[1],
+                    'group_row_count': profile['n_rows'], 'normalized_gene_count': profile['n_genes'],
+                    'has_all_13_protein_coding_genes': 'yes' if profile['has_13_genes'] else 'no',
+                    'coding_row_count_in_expected_range': 'yes' if profile['in_expected_range'] else 'no',
+                    'fallback_match_mode': match_mode, 'n_candidate_rows': n_candidate_rows,
+                    'n_selected_rows_before_dedup': n_candidate_rows,
+                    'n_selected_rows_after_dedup': len(fallback) if is_selected else '',
+                    'n_duplicate_rows_collapsed': duplicates_collapsed if is_selected else '',
+                    'n_candidate_reference_groups': candidate_groups, 'selected_reference_group': selected_group,
+                    'selection_status': ('ambiguous_selected' if ambiguous else 'selected') if is_selected else 'rejected',
+                    'rejection_reason': profile['rejection_reason'], 'note': '; '.join(notes[1:]),
+                })
     output = selected
     # A final successful fallback supersedes an earlier GenBank-resolution failure.
     final_status_by_sample = {value(row, 'sample'): value(row, 'status') for row in summary}
