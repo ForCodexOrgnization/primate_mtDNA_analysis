@@ -129,5 +129,43 @@ mitos2_annotation:
             self.assertEqual(diagnostic_row['n_selected_rows_after_dedup'], '3')
 
 
+class BuildPrimateCodonTableParallelHelperTests(unittest.TestCase):
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('codon_builder', ROOT / 'qc_analysis/scripts/build_primate_codon_table.py')
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+
+    def test_worker_resolution_uses_slurm_and_rejects_bad_values(self):
+        from unittest.mock import patch
+        with patch.dict('os.environ', {'SLURM_CPUS_PER_TASK': '7'}, clear=False):
+            self.assertEqual(self.module.resolve_workers(None, {}, 'workers'), 7)
+        with self.assertRaises(SystemExit) as error:
+            self.module.resolve_workers('zero', {}, 'workers')
+        self.assertIn('positive integer', str(error.exception))
+
+    def test_fasta_index_matches_find_species_fasta(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td); (d / 'Species_one.fa').write_text('>x\nA\n'); (d / 'Species_one.fasta.gz').write_text('not a real gzip')
+            # The longer configured gzip extension takes precedence, as in the legacy lookup.
+            index = self.module.build_fasta_index(d, '.fa,.fasta,.fasta.gz')
+            self.assertEqual(self.module.find_species_fasta('Species one', d, '.fa,.fasta,.fasta.gz', index), self.module.find_species_fasta('Species one', d, '.fa,.fasta,.fasta.gz'))
+
+    def test_atomic_failed_download_leaves_no_cache_file(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            destination = Path(td) / 'ACC.gb'
+            class EmptyHandle:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def read(self): return ''
+            import types
+            self.module.Entrez = types.SimpleNamespace(efetch=None)
+            with patch.object(self.module.Entrez, 'efetch', return_value=EmptyHandle()):
+                with self.assertRaises(RuntimeError):
+                    self.module.download('ACC', destination, {}, None)
+            self.assertFalse(destination.exists())
+
+
 if __name__ == '__main__':
     unittest.main()

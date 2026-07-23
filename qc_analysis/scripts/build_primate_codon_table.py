@@ -6,6 +6,12 @@ import re
 import sys
 import time
 import gzip
+import os
+import tempfile
+import threading
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -85,7 +91,28 @@ def choose_manifest_match(matches, accession_columns):
     note = 'multiple_manifest_matches' if len(matches) > 1 and all(score(row) == score(best) for row in matches) else ''
     return best, note
 
-def find_species_fasta(species, fasta_dir, extensions):
+def build_fasta_index(fasta_dir, extensions):
+    """Index the first deterministic FASTA for each normalized species name."""
+    directory = Path(fasta_dir)
+    if not directory.is_dir():
+        return {}
+    # Preserve legacy longest-extension matching; lexical filenames break ties.
+    normalized_extensions = sorted((item.strip() for item in str(extensions).split(',') if item.strip()), key=len, reverse=True)
+    index = {}
+    # Match the legacy directory scan: lexical file order first, longest matching
+    # extension second, then retain the first matching species.
+    for path in sorted(directory.iterdir()):
+        if not path.is_file():
+            continue
+        for extension in normalized_extensions:
+            if path.name.endswith(extension):
+                index.setdefault(species_key(path.name[:-len(extension)]), path)
+                break
+    return index
+
+def find_species_fasta(species, fasta_dir, extensions, fasta_index=None):
+    if fasta_index is not None:
+        return fasta_index.get(species_key(species))
     directory = Path(fasta_dir)
     if not directory.is_dir():
         return None
@@ -116,7 +143,7 @@ def fasta_accession(path, regex):
                 return (match.group(1), 'fasta_header') if match else ('', '')
     return '', ''
 
-def resolve_accession(metadata, direct_columns, manifests, settings, paths):
+def resolve_accession(metadata, direct_columns, manifests, settings, paths, fasta_index=None):
     """Resolve direct sample metadata, then chrM manifests, then a species FASTA."""
     direct = accession_for(metadata, direct_columns)
     if direct:
@@ -136,7 +163,7 @@ def resolve_accession(metadata, direct_columns, manifests, settings, paths):
                 matched = next((value(selected, column) for column in manifest_species_columns if species_key(value(selected, column)) == target), '')
                 return accession, 'reference_manifest' if index == 0 else 'reference_manifest_fallback', note, manifest_file, matched, ''
     if settings.get('infer_accession_from_fasta', False):
-        fasta_path = find_species_fasta(metadata['species'], paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna,.fa.gz,.fasta.gz,.fna.gz'))
+        fasta_path = find_species_fasta(metadata['species'], paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna,.fa.gz,.fasta.gz,.fna.gz'), fasta_index)
         if fasta_path:
             accession, source = fasta_accession(fasta_path, settings.get('accession_regex', r'([A-Z]{1,3}_[0-9]+(?:\\.[0-9]+)?)'))
             if accession:
@@ -277,73 +304,166 @@ def parse_record(record, metadata, filename):
                 })
     return rows, n_cds
 
-def download(accession, destination, settings):
+class EntrezRateLimiter:
+    """Thread-safe limiter that spaces Entrez request starts globally."""
+    def __init__(self, requests_per_second):
+        if requests_per_second <= 0:
+            raise ValueError('requests per second must be a positive number')
+        self.interval = 1.0 / requests_per_second
+        self.lock = threading.Lock()
+        self.next_request = 0.0
+
+    def wait(self):
+        with self.lock:
+            now = time.monotonic()
+            scheduled = max(now, self.next_request)
+            self.next_request = scheduled + self.interval
+        time.sleep(max(0, scheduled - now))
+
+
+def positive_integer(raw, option):
+    try:
+        number = int(raw)
+    except (TypeError, ValueError):
+        raise SystemExit(f'{option} must be a positive integer.')
+    if number < 1:
+        raise SystemExit(f'{option} must be a positive integer.')
+    return number
+
+
+def resolve_workers(cli_value, settings, setting_name, fallback=1):
+    if cli_value is not None:
+        return positive_integer(cli_value, '--' + setting_name.replace('_', '-'))
+    configured = settings.get(setting_name)
+    if configured not in (None, ''):
+        return positive_integer(configured, f'build_primate_codon_table.settings.{setting_name}')
+    if setting_name == 'workers' and os.environ.get('SLURM_CPUS_PER_TASK'):
+        return positive_integer(os.environ['SLURM_CPUS_PER_TASK'], 'SLURM_CPUS_PER_TASK')
+    return fallback
+
+
+def download(accession, destination, settings, limiter=None):
     if not settings.get('email'): print('WARNING: NCBI Entrez email is unset; set build_primate_codon_table.settings.email to identify requests.', file=sys.stderr)
     else: Entrez.email = str(settings['email'])
+    if settings.get('entrez_api_key'):
+        Entrez.api_key = str(settings['entrez_api_key'])
+    if limiter:
+        limiter.wait()
     with Entrez.efetch(db='nuccore', id=accession, rettype=settings.get('rettype', 'gb'), retmode=settings.get('retmode', 'text')) as handle:
         text = handle.read()
     if not text.strip(): raise RuntimeError('NCBI returned an empty GenBank record')
-    destination.parent.mkdir(parents=True, exist_ok=True); destination.write_text(text)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # A same-directory temporary file and replace prevent readers seeing partial cache files.
+    fd, temporary = tempfile.mkstemp(prefix=destination.name + '.', suffix='.tmp', dir=destination.parent)
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(text)
+        if not Path(temporary).stat().st_size:
+            raise RuntimeError('NCBI returned an empty GenBank record')
+        Path(temporary).replace(destination)
+    except Exception:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+@dataclass
+class SampleResult:
+    sample: str
+    order: int
+    metadata: dict
+    rows: list
+    summary: dict
+    failure: dict | None
+    accession: str
+    genbank_file: str
+    status: str
+    error: str = ''
+
+
+def prepare_sample(order_metadata, context):
+    order, raw_metadata = order_metadata
+    settings, paths, columns, manifests, fasta_index, dry_run = context
+    sample_col, species_col = settings.get('sample_column', 'sample'), settings.get('species_column', 'species')
+    metadata = dict(raw_metadata); metadata['sample'] = value(metadata, sample_col); metadata['species'] = value(metadata, species_col)
+    accession, source, accession_note, manifest_file, matched_species, fasta_path = resolve_accession(metadata, columns, manifests, settings, paths, fasta_index)
+    manifest_fasta, manifest_accession, _ = manifest_coordinate_reference(metadata, manifest_file, manifests, settings)
+    if manifest_fasta: fasta_path = manifest_fasta
+    if manifest_accession: accession = manifest_accession
+    metadata['accession_query'] = accession
+    coordinate = fasta_path or str(find_species_fasta(metadata['species'], paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna'), fasta_index) or '')
+    metadata['coordinate_reference_fasta'] = coordinate; metadata['coordinate_reference_accession'] = accession
+    base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'accession_source':source, 'accession_note':accession_note, 'manifest_file':manifest_file, 'matched_manifest_species':matched_species, 'species_fasta_path':fasta_path or coordinate, 'accession_record':'', 'genbank_file':'', 'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'', 'max_pos':'', 'status':'failed', 'note':''}
+    if not accession:
+        reason = 'No accession found from sample_ref_file, reference manifest, or FASTA.'
+        base['note'] = reason; base['status'] = 'dry_run_unresolved' if dry_run else 'failed'
+        return SampleResult(metadata['sample'], order, metadata, [], base, {**base, 'reason':reason}, accession, '', base['status'], reason)
+    gb = Path(paths['genbank_dir']) / safe_filename(accession); base['genbank_file'] = str(gb)
+    return SampleResult(metadata['sample'], order, metadata, [], base, None, accession, str(gb), 'prepared')
+
+
+def parse_sample(result):
+    if result.status != 'prepared': return result
+    try:
+        record = SeqIO.read(result.genbank_file, 'genbank')
+        rows, n_cds = parse_record(record, result.metadata, result.genbank_file)
+        notes = []
+        if len(rows) < 5000 or len(rows) > 13000: notes.append(f'Coding rows outside expected mammalian range: {len(rows)}')
+        result.rows = rows
+        result.summary.update(accession_record=record.id, n_cds_features=n_cds, n_coding_position_rows=len(rows), n_genes=len({r['gene'] for r in rows}), min_pos=min((r['pos'] for r in rows), default=''), max_pos=max((r['pos'] for r in rows), default=''), status='completed' if rows else 'failed', note='; '.join(notes or ([] if rows else ['No CDS codon rows parsed.'])))
+        result.status = result.summary['status']
+        if not rows: result.failure = {'sample':result.sample, 'species':result.metadata['species'], 'accession_query':result.accession, 'reason':'No CDS codon rows parsed.'}
+    except Exception as exc:
+        result.error = f'{type(exc).__name__}: {exc}'; result.summary['note'] = result.error; result.failure = {'sample':result.sample, 'species':result.metadata['species'], 'accession_query':result.accession, 'reason':result.error}; result.status = 'failed'
+    return result
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True); parser.add_argument('--sample'); parser.add_argument('--force-download', action='store_true'); parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--workers'); parser.add_argument('--download-workers')
     args = parser.parse_args()
     section = yaml(args.config).get('build_primate_codon_table')
     if not section: raise SystemExit('Missing build_primate_codon_table section in config.')
     paths, settings = section['paths'], section.get('settings', {})
+    workers = resolve_workers(args.workers, settings, 'workers')
+    api_key = bool(settings.get('entrez_api_key'))
+    download_workers = resolve_workers(args.download_workers, settings, 'download_workers', 1) if args.download_workers is not None or settings.get('download_workers') not in (None, '') else 1
     sample_col, species_col = settings.get('sample_column', 'sample'), settings.get('species_column', 'species')
     sample_rows = read_samples(paths['sample_ref_file'], sample_col, species_col)
     if args.sample: sample_rows = [r for r in sample_rows if value(r, sample_col) == args.sample]
     if not sample_rows: raise SystemExit('No samples selected.')
-    columns = configured_columns(settings, 'accession_columns', 'accession,accession_version,reference_id,seq_name')
-    manifests = manifest_rows(paths, settings)
-    if SeqIO is None and not args.dry_run:
-        raise SystemExit('Biopython is required for GenBank download/parsing.')
-    failures, output, summary, cache = [], [], [], {}
-    for raw_metadata in sample_rows:
-        metadata = dict(raw_metadata); metadata['sample'] = value(metadata, sample_col); metadata['species'] = value(metadata, species_col)
-        accession, source, accession_note, manifest_file, matched_species, fasta_path = resolve_accession(metadata, columns, manifests, settings, paths)
-        manifest_fasta, manifest_accession, manifest_species = manifest_coordinate_reference(metadata, manifest_file, manifests, settings)
-        # A manifest is coordinate authority: never fall back to original-species FASTA.
-        if manifest_fasta:
-            fasta_path = manifest_fasta
-        if manifest_accession:
-            accession = manifest_accession
-        metadata['accession_query'] = accession
-        coordinate_fasta = fasta_path or (str(find_species_fasta(metadata['species'], paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna'))) or '')
-        metadata['coordinate_reference_fasta'] = coordinate_fasta
-        metadata['coordinate_reference_accession'] = accession
-        base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession,
-                'accession_source':source, 'accession_note':accession_note,
-                'manifest_file':manifest_file, 'matched_manifest_species':matched_species,
-                'species_fasta_path':fasta_path or coordinate_fasta, 'accession_record':'', 'genbank_file':'',
-                'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'',
-                'max_pos':'', 'status':'failed', 'note':''}
-        if not accession:
-            reason = 'No accession found from sample_ref_file, reference manifest, or FASTA.'
-            failures.append({**base, 'reason':reason}); base['note'] = reason
-            base['status'] = 'dry_run_unresolved' if args.dry_run else 'failed'
-            summary.append(base); continue
-        gb = Path(paths['genbank_dir']) / safe_filename(accession); base['genbank_file'] = str(gb)
-        try:
-            force = args.force_download or bool(settings.get('force_download', False))
-            if not args.dry_run and (force or not (gb.exists() and settings.get('skip_existing_genbank', True))):
-                download(accession, gb, settings); time.sleep(float(settings.get('sleep_seconds', 0.34)))
-            if args.dry_run and not gb.exists():
-                base.update(status='dry_run_resolved', note='Would download GenBank record.'); summary.append(base); continue
-            if args.dry_run:
-                base.update(status='dry_run_resolved', note='Would reuse cached GenBank record.'); summary.append(base); continue
-            if not gb.exists(): raise FileNotFoundError(f'GenBank file is missing: {gb}')
-            if accession not in cache: cache[accession] = SeqIO.read(str(gb), 'genbank')
-            parsed, n_cds = parse_record(cache[accession], metadata, gb); output.extend(parsed)
-            notes = []
-            if len(parsed) < 5000 or len(parsed) > 13000: notes.append(f'Coding rows outside expected mammalian range: {len(parsed)}')
-            base.update(accession_record=cache[accession].id, n_cds_features=n_cds, n_coding_position_rows=len(parsed), n_genes=len({r['gene'] for r in parsed}), min_pos=min((r['pos'] for r in parsed), default=''), max_pos=max((r['pos'] for r in parsed), default=''), status='completed' if parsed else 'failed', note='; '.join(notes or ([] if parsed else ['No CDS codon rows parsed.'])))
-            if not parsed: failures.append({'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'reason':'No CDS codon rows parsed.'})
-        except Exception as exc:
-            reason = f'{type(exc).__name__}: {exc}'; failures.append({'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'reason':reason}); base['note'] = reason
-        summary.append(base)
+    columns = configured_columns(settings, 'accession_columns', 'accession,accession_version,reference_id,seq_name'); manifests = manifest_rows(paths, settings)
+    if SeqIO is None and not args.dry_run: raise SystemExit('Biopython is required for GenBank download/parsing.')
+    fasta_index = build_fasta_index(paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna,.fa.gz,.fasta.gz,.fna.gz'))
+    context = (settings, paths, columns, manifests, fasta_index, args.dry_run)
+    # Resolution is serial (manifest/FASTA coordination); parsing is parallel and immutable per sample.
+    prepared = [prepare_sample(item, context) for item in enumerate(sample_rows)]
+    force = args.force_download or bool(settings.get('force_download', False))
+    if args.dry_run:
+        for result in prepared:
+            if result.status == 'prepared':
+                result.summary.update(status='dry_run_resolved', note='Would reuse cached GenBank record.' if Path(result.genbank_file).exists() else 'Would download GenBank record.')
+                result.status = 'dry_run_resolved'
+    else:
+        unique = {r.accession: Path(r.genbank_file) for r in prepared if r.status == 'prepared'}
+        missing = [(a, p) for a, p in unique.items() if force or not (p.exists() and p.stat().st_size > 0 and settings.get('skip_existing_genbank', True))]
+        rate = float(settings.get('requests_per_second_with_api_key' if api_key else 'requests_per_second_without_api_key', 10 if api_key else 3))
+        limiter = EntrezRateLimiter(rate)
+        def fetch(item):
+            accession, path = item
+            # Another invocation may finish safely before this worker begins.
+            if not force and path.exists() and path.stat().st_size > 0: return accession, None
+            try: download(accession, path, settings, limiter); return accession, None
+            except Exception as exc: return accession, f'{type(exc).__name__}: {exc}'
+        with ThreadPoolExecutor(max_workers=min(download_workers, max(1, len(missing)))) as executor:
+            download_errors = dict(executor.map(fetch, missing))
+        for result in prepared:
+            if result.status == 'prepared' and result.accession in download_errors and download_errors[result.accession]:
+                result.error = download_errors[result.accession]; result.summary['note'] = result.error; result.failure = {'sample':result.sample, 'species':result.metadata['species'], 'accession_query':result.accession, 'reason':result.error}; result.status = 'failed'
+        with ThreadPoolExecutor(max_workers=min(workers, max(1, len(prepared)))) as executor:
+            prepared = list(executor.map(parse_sample, prepared))
+    prepared.sort(key=lambda r: r.order)
+    failures = [r.failure for r in prepared if r.failure]; summary = [r.summary for r in prepared]; output = [row for r in prepared for row in r.rows]
     # Select exactly one source per sample: valid GenBank first, then MITOS2 fallback.
     mitos_paths = yaml(args.config).get('mitos2_annotation', {}).get('paths', {})
     mitos_path = mitos_paths.get('mitos2_cds_table', '')
@@ -352,22 +472,33 @@ def main():
     mitos_reference_rows = read_tsv(mitos_reference_path) if mitos_reference_path else []
     genbank_rows = list(output)
     selected, fallback_selection_summary = [], []
+    genbank_rows_by_sample = defaultdict(list)
+    for row in output: genbank_rows_by_sample[row['sample']].append(row)
+    mitos_rows_by_sample = defaultdict(list)
+    for row in mitos_rows: mitos_rows_by_sample[value(row, 'sample')].append(row)
+    mitos_reference_rows_by_accession = defaultdict(list)
+    mitos_reference_rows_by_coordinate_fasta = defaultdict(list)
+    for row in mitos_reference_rows:
+        mitos_reference_rows_by_accession[value(row, 'coordinate_reference_accession')].append(row)
+        mitos_reference_rows_by_coordinate_fasta[value(row, 'coordinate_reference_fasta')].append(row)
+    summary_by_sample = {row['sample']: row for row in summary}
     for metadata in sample_rows:
         sample = value(metadata, sample_col)
-        gb_rows = [row for row in output if row['sample'] == sample]
+        gb_rows = genbank_rows_by_sample[sample]
         if gb_rows:
             selected.extend(gb_rows)
             continue
-        fallback = [dict(row) for row in mitos_rows if value(row, 'sample') == sample]
+        fallback = [dict(row) for row in mitos_rows_by_sample[sample]]
         match_mode = 'sample_level'
         candidate_groups = 1 if fallback else 0
         selected_group = ''
         if not fallback:
-            summary_row = next((r for r in summary if r['sample'] == sample), {})
+            summary_row = summary_by_sample.get(sample, {})
             accession = value(summary_row, 'accession_query')
             coordinate_fasta = value(summary_row, 'species_fasta_path') or value(summary_row, 'coordinate_reference_fasta')
+            reference_candidates = mitos_reference_rows_by_coordinate_fasta.get(coordinate_fasta) or mitos_reference_rows_by_accession.get(accession, [])
             fallback, match_mode, candidate_groups, selected_group = select_reference_fallback(
-                mitos_reference_rows, coordinate_fasta, accession)
+                reference_candidates, coordinate_fasta, accession)
             for row in fallback:
                 row.update(sample=sample, species=value(metadata, species_col), species_key=species_key(value(metadata, species_col)))
         n_candidate_rows = len(fallback)
@@ -391,12 +522,12 @@ def main():
                 notes.append(f'MITOS2 fallback duplicate rows collapsed: {duplicates_collapsed}')
             if len(fallback) < 5000 or len(fallback) > 13000:
                 notes.append(f'Coding rows outside expected mammalian range after MITOS2 fallback: {len(fallback)}')
-            for row in summary:
-                if row['sample'] == sample:
-                    row['status'] = 'completed_mitos2_fallback'; row['n_coding_position_rows'] = len(fallback); row['n_genes'] = len({normalize_gene(value(x, 'gene')) for x in fallback}); row['note'] = '; '.join(filter(None, [row['note'], *notes]))
+            row = summary_by_sample.get(sample)
+            if row:
+                row['status'] = 'completed_mitos2_fallback'; row['n_coding_position_rows'] = len(fallback); row['n_genes'] = len({normalize_gene(value(x, 'gene')) for x in fallback}); row['note'] = '; '.join(filter(None, [row['note'], *notes]))
             fallback_selection_summary.append({
                 'sample': sample, 'species': value(metadata, species_col),
-                'accession': value(next((r for r in summary if r['sample'] == sample), {}), 'accession_query'),
+                'accession': value(summary_by_sample.get(sample, {}), 'accession_query'),
                 'coordinate_reference_fasta': value(fallback[0], 'coordinate_reference_fasta'),
                 'coordinate_reference_accession': value(fallback[0], 'coordinate_reference_accession'),
                 'fallback_match_mode': match_mode, 'n_candidate_rows': n_candidate_rows,
@@ -410,10 +541,10 @@ def main():
     comparison_path = yaml(args.config).get('mitos2_annotation', {}).get('paths', {}).get('genbank_mitos2_comparison_table', 'results/qc/codon_table_build/genbank_vs_mitos2_cds_comparison.tsv')
     comparison_fields = 'record_type sample original_species reference_species coordinate_reference_accession gene genbank_start genbank_end genbank_strand genbank_length mitos2_start mitos2_end mitos2_strand mitos2_length start_delta end_delta length_delta strand_match coordinate_match_status n_genbank_cds_genes n_mitos2_cds_genes n_gene_matches n_exact_boundary_matches n_near_boundary_matches n_strand_mismatches missing_in_genbank missing_in_mitos2 comparison_status'.split()
     comparisons = []
-    for sample in sorted({value(r, 'sample') for r in genbank_rows + mitos_rows}):
+    for sample in sorted(set(genbank_rows_by_sample) | set(mitos_rows_by_sample)):
         g = {}; m = {}
-        for row in [x for x in genbank_rows if value(x, 'sample') == sample]: g.setdefault(normalize_gene(value(row, 'gene')), []).append(row)
-        for row in [x for x in mitos_rows if value(x, 'sample') == sample]: m.setdefault(normalize_gene(value(row, 'gene')), []).append(row)
+        for row in genbank_rows_by_sample[sample]: g.setdefault(normalize_gene(value(row, 'gene')), []).append(row)
+        for row in mitos_rows_by_sample[sample]: m.setdefault(normalize_gene(value(row, 'gene')), []).append(row)
         exact = near = mismatch = matches = 0
         for gene in sorted(set(g) | set(m)):
             gr, mr = g.get(gene, []), m.get(gene, [])

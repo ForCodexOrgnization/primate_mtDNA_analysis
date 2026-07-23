@@ -35,6 +35,8 @@ Environment overrides:
   PYTHON                           Python executable (default: python3).
   BIOPYTHON_USE_MODULE             Load the configured Biopython module for build_primate_codon_table (default: 1).
   BIOPYTHON_MODULE                 Biopython module to load (default: Biopython/1.83-foss-2022b).
+  CODON_TABLE_WORKERS              Positive worker count for internal codon-table preparation.
+  CODON_TABLE_DOWNLOAD_WORKERS     Positive concurrent Entrez download count (rate limited).
   SAMPLE                           Optional sample name for coordinate_liftover.
   SLURM_PARTITION                  Optional partition/queue for --submit.
   SLURM_TIME                       Walltime for --submit (default: 24:00:00).
@@ -50,6 +52,7 @@ Examples:
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
   SAMPLE=SAMPLE_NAME bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
   BIOPYTHON_MODULE=Biopython/1.83-foss-2022b bash qc_analysis/scripts/run_qc_preprocessing.sh build_primate_codon_table config/qc_preprocessing.yaml
+  SLURM_CPUS=8 CODON_TABLE_WORKERS=8 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit build_primate_codon_table config/qc_preprocessing.yaml
   sbatch qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yaml
 USAGE
 }
@@ -302,6 +305,19 @@ PY
 
   local cmd=("$PYTHON" "$CODON_TABLE_SCRIPT" --config "$CONFIG")
   [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
+  local workers="${CODON_TABLE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
+  if [[ "$workers" =~ ^[1-9][0-9]*$ ]]; then
+    cmd+=(--workers "$workers")
+  else
+    echo "WARNING: ignoring invalid CODON_TABLE_WORKERS value: ${workers}" >&2
+  fi
+  if [[ -n "${CODON_TABLE_DOWNLOAD_WORKERS:-}" ]]; then
+    if [[ "${CODON_TABLE_DOWNLOAD_WORKERS}" =~ ^[1-9][0-9]*$ ]]; then
+      cmd+=(--download-workers "${CODON_TABLE_DOWNLOAD_WORKERS}")
+    else
+      echo "WARNING: ignoring invalid CODON_TABLE_DOWNLOAD_WORKERS value: ${CODON_TABLE_DOWNLOAD_WORKERS}" >&2
+    fi
+  fi
   "${cmd[@]}"
 }
 

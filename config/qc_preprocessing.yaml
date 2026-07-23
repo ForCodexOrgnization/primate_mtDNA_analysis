@@ -167,6 +167,12 @@ build_primate_codon_table:
     species_column: species
     sample_column: sample
     email: ""
+    # Internal parsing workers; downloads remain separately globally rate-limited.
+    workers: 4
+    download_workers: 1
+    entrez_api_key: ""
+    requests_per_second_without_api_key: 3
+    requests_per_second_with_api_key: 10
     force_download: false
     skip_existing_genbank: true
     sleep_seconds: 0.34
