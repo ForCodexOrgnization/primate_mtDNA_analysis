@@ -64,7 +64,7 @@ sbatch qc_analysis/scripts/submit_intraspecies_contamination.slurm config/qc_pre
 The main results are under `tables/`, six diagnostic plot placeholders/plots are
 under `plots/`, and reproducibility logs and `run_parameters.tsv` record paths,
 thresholds, timestamp, and R version. Runtime scales approximately with the
-number of within-species sample pairs and variants. Required R packages for the
-full configured workflow are `data.table`, `dplyr`, `tidyr`, `purrr`, `readr`,
-`stringr`, `ggplot2`, `optparse` (or `argparse`), and `yaml`; this portable script
-uses base R and optionally uses `yaml` for overrides.
+number of within-species sample pairs and variants. The Python driver reads configuration with the repository's standard-library-only
+restricted YAML parser, consistent with coordinate liftover and codon match. PyYAML
+is not required. The R analysis uses base R; all configured thresholds are passed
+explicitly by the Python driver.

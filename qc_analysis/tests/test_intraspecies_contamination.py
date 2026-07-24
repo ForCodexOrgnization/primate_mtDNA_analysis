@@ -22,13 +22,12 @@ def write_config(path, section):
     path.write_text("intraspecies_contamination:\n" + section, encoding="utf-8")
 
 
-def test_missing_pyyaml_exits_without_unbound_variable(tmp_path):
+def test_execution_does_not_require_pyyaml(tmp_path):
     config = tmp_path / "config.yaml"
     write_config(config, "  enabled: false\n  outdir: output\n")
-    result = run_wrapper(config, env={"PYTHON": str(tmp_path / "no-python")})
-    assert result.returncode != 0
-    assert "PyYAML is required" in result.stderr
-    assert "unbound variable" not in result.stderr
+    result = run_wrapper(config)
+    assert result.returncode == 0, result.stderr
+    assert "PyYAML" not in result.stderr
 
 
 def test_malformed_yaml_exits_nonzero(tmp_path):
@@ -36,7 +35,7 @@ def test_malformed_yaml_exits_nonzero(tmp_path):
     config.write_text("intraspecies_contamination: [\n", encoding="utf-8")
     result = run_wrapper(config)
     assert result.returncode != 0
-    assert "failed to parse configuration" in result.stderr
+    assert "YAML mapping" in result.stderr
     assert "unbound variable" not in result.stderr
 
 
