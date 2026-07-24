@@ -111,67 +111,7 @@ class SampleStats:
 
 
 
-def parse_scalar(value: str) -> object:
-    value = value.strip()
-    if value == "" or value.lower() in {"null", "none", "~"}:
-        return None
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-        return value[1:-1]
-    lowered = value.lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    try:
-        return int(value)
-    except ValueError:
-        try:
-            return float(value)
-        except ValueError:
-            return value
-
-
-def strip_yaml_comment(line: str) -> str:
-    in_single = False
-    in_double = False
-    for idx, char in enumerate(line):
-        if char == "'" and not in_double:
-            in_single = not in_single
-        elif char == '"' and not in_single:
-            in_double = not in_double
-        elif char == "#" and not in_single and not in_double:
-            return line[:idx]
-    return line
-
-
-def read_simple_yaml(path: Path) -> Dict[str, object]:
-    root: Dict[str, object] = {}
-    stack: List[Tuple[int, Dict[str, object]]] = [(-1, root)]
-    with path.open() as handle:
-        for raw_line in handle:
-            line = strip_yaml_comment(raw_line.rstrip("\n"))
-            if not line.strip():
-                continue
-            indent = len(line) - len(line.lstrip(" "))
-            text = line.strip()
-            if ":" not in text:
-                raise SystemExit(f"Unsupported YAML line in {path}: {raw_line.rstrip()}")
-            key, value = text.split(":", 1)
-            key = key.strip().strip('"\'')
-            value = value.strip()
-            while stack and indent <= stack[-1][0]:
-                stack.pop()
-            parent = stack[-1][1]
-            if value == "":
-                child: Dict[str, object] = {}
-                parent[key] = child
-                stack.append((indent, child))
-            elif value == "{}":
-                parent[key] = {}
-            else:
-                parent[key] = parse_scalar(value)
-    return root
-
+from qc_analysis.lib.simple_yaml import read_simple_yaml
 
 def _set_section_from_mapping(cfg: configparser.ConfigParser, section_name: str, mapping: Dict[str, object]) -> None:
     cfg[section_name] = {key: "" if value is None else str(value) for key, value in mapping.items() if not isinstance(value, dict)}

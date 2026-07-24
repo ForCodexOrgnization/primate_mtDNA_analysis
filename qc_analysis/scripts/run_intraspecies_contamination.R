@@ -3,10 +3,22 @@
 # coordinates and never compares, lifts, or filters between species.
 args <- commandArgs(trailingOnly=TRUE)
 getarg <- function(n, required=FALSE) { i <- match(n,args); if (is.na(i)) { if(required) stop("missing ",n); return(NULL) }; if(i==length(args)) stop("missing value for ",n); args[i+1] }
-vt <- getarg("--variant-table",TRUE); out <- getarg("--outdir",TRUE); nc <- getarg("--negative-control-pairs"); cfg <- getarg("--config"); overwrite <- "--overwrite" %in% args
+vt <- getarg("--variant-table",TRUE); out <- getarg("--outdir",TRUE); nc <- getarg("--negative-control-pairs"); overwrite <- "--overwrite" %in% args
 P <- list(dp_min=100,use_snv_only=TRUE,low_vaf_min=.01,low_vaf_max=.20,high_vaf_min=.99,mt_lower=.80,mt_depressed_upper=.998,mt_anchor_upper=1,min_n_lowA=5,min_overlap=3,min_frac_lowA_in_highB_candidate=.50,min_frac_lowA_in_highB_highconf=.6213636363636358,contam_threshold_candidate=.036420574377757434,contam_threshold_highconf=.07103935483870959,mirror_low_vaf_min=.01,mirror_low_vaf_max=.20,mirror_high_vaf_min=.80,mirror_high_vaf_max=.998,mirror_tolerance=0,min_mirror_pairs_for_raw_flag=3,min_low_variants_with_mirror_for_flag=3,target_negative_control_tier="tier2_location_and_batch_different")
-# YAML is optional at runtime; use yaml when installed, otherwise accept defaults.
-if(!is.null(cfg) && requireNamespace("yaml",quietly=TRUE)) { y <- yaml::read_yaml(cfg)$intraspecies_contamination; if(!is.null(y)) for(n in intersect(names(P),names(y))) if(!is.null(y[[n]])) P[[n]] <- y[[n]] }
+# Configuration is parsed by the Python driver.  Accept only its explicit scalar
+# overrides so this analysis has no YAML-package dependency.
+pi <- which(args == "--parameter")
+for(i in pi) {
+ if(i == length(args)) stop("missing value for --parameter")
+ pair <- strsplit(args[i + 1], "=", fixed=TRUE)[[1]]
+ if(length(pair) < 2 || !nzchar(pair[1])) stop("invalid --parameter value")
+ n <- pair[1]; v <- paste(pair[-1], collapse="=")
+ if(n %in% names(P)) {
+  if(is.logical(P[[n]])) P[[n]] <- tolower(v) == "true"
+  else if(is.numeric(P[[n]])) P[[n]] <- as.numeric(v)
+  else P[[n]] <- v
+ }
+}
 dir.create(out,recursive=TRUE,showWarnings=FALSE); for(x in c("tables","plots","logs")) dir.create(file.path(out,x),showWarnings=FALSE)
 tabdir <- file.path(out,"tables"); write_tsv <- function(x,n) write.table(x,file.path(tabdir,n),sep="\t",row.names=FALSE,quote=FALSE,na="NA")
 logcon <- file(file.path(out,"logs/intraspecies_contamination.log"),"wt"); sink(logcon,type="message"); on.exit({sink(type="message");close(logcon)},add=TRUE)
