@@ -14,6 +14,12 @@ module load miniconda/24.11.3
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate mitos2
 
-python qc_analysis/scripts/run_mitos2_annotation.py \
+MITOS2_PYTHON="${CONDA_PREFIX}/bin/python"
+
+echo "Python: ${MITOS2_PYTHON}"
+"${MITOS2_PYTHON}" -c \
+'import sys, Bio; print(sys.executable); print(Bio.__version__)'
+
+"${MITOS2_PYTHON}" qc_analysis/scripts/run_mitos2_annotation.py \
   --config config/qc_preprocessing.yaml \
   --task-id "${SLURM_ARRAY_TASK_ID}"
