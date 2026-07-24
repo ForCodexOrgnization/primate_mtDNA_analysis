@@ -688,15 +688,25 @@ def main_reference(args, section):
         stage('Writing reference codon table...')
         write_tsv(reference_path, OUTPUT_FIELDS, output)
         write_tsv(paths.get('sample_reference_map', str(Path(reference_path).with_name('sample_reference_map.tsv'))), SAMPLE_REFERENCE_MAP_FIELDS, sample_map)
+        print('Reference codon table build completed successfully.')
         comparison = yaml(args.config).get('genbank_mitos2_comparison', {})
         if settings.get('compare_genbank_and_mitos2', True) and comparison.get('settings', {}).get('enabled', False):
             from qc_analysis.scripts.compare_genbank_mitos2_reference_annotations import compare
             cp, cs = comparison.get('paths', {}), comparison.get('settings', {})
-            compare(reference_path, cp.get('mitos2_reference_codon_table'), cp.get('gene_comparison_table'),
-                    cp.get('reference_summary_table'), cp.get('sequence_mismatch_table'),
-                    bool(cs.get('strict_sequence_match', True)), bool(cs.get('allow_rotation_equivalent', False)),
-                    bool(cs.get('fail_on_no_shared_references', True)), float(cs.get('minor_position_jaccard_threshold', .99)),
-                    float(cs.get('moderate_position_jaccard_threshold', .90)))
+            try:
+                compare(reference_path, cp.get('mitos2_reference_codon_table'), cp.get('gene_comparison_table'),
+                        cp.get('reference_summary_table'), cp.get('sequence_mismatch_table'),
+                        bool(cs.get('strict_sequence_match', True)), bool(cs.get('allow_rotation_equivalent', False)),
+                        bool(cs.get('fail_on_no_shared_references', True)), float(cs.get('minor_position_jaccard_threshold', .99)),
+                        float(cs.get('moderate_position_jaccard_threshold', .90)),
+                        paths.get('sample_reference_map'), paths.get('species_fasta_dir', ''),
+                        paths.get('species_fasta_extensions', '.fa,.fasta,.fna,.fa.gz,.fasta.gz,.fna.gz'))
+            except Exception as exc:
+                unresolved = re.search(r'(\d+) unresolved references', str(exc))
+                count = unresolved.group(1) if unresolved else 'unknown'
+                print(f'GenBank-MITOS2 comparison failed for {count} unresolved references.', file=sys.stderr)
+                print(f'Comparison detail: {exc}', file=sys.stderr)
+                print(f'Diagnostic outputs: {cp.get("reference_summary_table")}, {cp.get("sequence_mismatch_table")}', file=sys.stderr)
     write_tsv(mitos_paths.get('mitos2_fallback_selection_summary_table', 'results/qc/codon_table_build/mitos2_fallback_selection_summary.tsv'), MITOS2_FALLBACK_SELECTION_FIELDS, fallback_summary)
     write_tsv(paths['failed_downloads_table'], FAIL_FIELDS, failures); write_tsv(paths['summary_table'], SUMMARY_FIELDS, summary)
     counts = summarize_build_status(summary)
