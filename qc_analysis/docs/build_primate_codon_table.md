@@ -160,3 +160,14 @@ SLURM_CPUS=8 CODON_TABLE_WORKERS=8 \
 
 Cached `.gb` records substantially reduce runtime. More workers than unique
 accessions or selected samples do not improve throughput.
+
+## GenBank versus MITOS2 reference comparison
+
+`compare_genbank_mitos2_reference_annotations.py` compares the two **reference-level**
+CDS tables once per coordinate reference.  It never expands annotations by sample.
+Species or accession equality is only candidate metadata: neither establishes a shared
+coordinate system. Direct position comparisons require matching normalized FASTA SHA256
+values. Sequence mismatches and missing hashes are emitted in the separate diagnostic
+table rather than being labelled annotation disagreement. Circular rotations can be
+detected when enabled, but raw coordinates are intentionally skipped unless a coordinate
+origin transformation is performed.

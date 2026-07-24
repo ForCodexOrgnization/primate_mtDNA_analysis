@@ -353,3 +353,20 @@ mitos2_annotation:
     genetic_code: 2
     # MITOS2 tRNA/rRNA results are interval annotations only.
     accepted_feature_types: "CDS,gene,tRNA,rRNA"
+
+genbank_mitos2_comparison:
+  paths:
+    genbank_reference_codon_table: data/reference_tables/reference_codon_table.tsv
+    mitos2_reference_codon_table: results/qc/mitos2_annotation/all_mitos2_reference_position_codon_table.tsv
+    sample_reference_map: data/reference_tables/sample_reference_map.tsv
+    gene_comparison_table: results/qc/codon_table_build/genbank_vs_mitos2_cds_comparison.tsv
+    reference_summary_table: results/qc/codon_table_build/genbank_vs_mitos2_reference_summary.tsv
+    sequence_mismatch_table: results/qc/codon_table_build/genbank_vs_mitos2_sequence_mismatches.tsv
+  settings:
+    enabled: true
+    strict_sequence_match: true
+    allow_rotation_equivalent: false
+    fail_on_no_shared_references: true
+    minor_position_jaccard_threshold: 0.99
+    moderate_position_jaccard_threshold: 0.90
+    expected_protein_coding_gene_count: 13

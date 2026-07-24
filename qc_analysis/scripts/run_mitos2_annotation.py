@@ -4,15 +4,16 @@ import argparse, csv, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.match_utils import yaml
+from qc_analysis.lib.reference_utils import normalized_fasta_sequence_sha256
 try:
  from Bio import SeqIO
 except ImportError: SeqIO = None
 REFERENCE_METADATA_FIELDS='target_species final_chrM_species final_chrM_accession coordinate_reference_fasta_from_manifest mitos2_input_fasta'.split()
 FEATURE_FIELDS=('reference_key reference_species coordinate_reference_accession coordinate_reference_fasta '+ ' '.join(REFERENCE_METADATA_FIELDS) +' feature_type gene gene_raw start end strand score source_file annotation_source').split()
-CODON_FIELDS=('file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source coordinate_reference_fasta coordinate_reference_accession '+ ' '.join(REFERENCE_METADATA_FIELDS)).split()
+CODON_FIELDS=('file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS)).split()
 DEBUG_FIELDS='gff_seqid fasta_record_id fasta_length sequence_length original_gff_start original_gff_end canonical_start canonical_end circular_wrap_used wrapped_segment_count cds_length usable_cds_length n_codons n_position_rows status error gene gene_raw start end strand'.split()
-TASK_FIELDS=('task_id reference_key reference_species coordinate_reference_accession coordinate_reference_fasta '+ ' '.join(REFERENCE_METADATA_FIELDS) +' n_samples_using_reference status').split()
-SUMMARY_FIELDS=('reference_key reference_species coordinate_reference_accession coordinate_reference_fasta '+ ' '.join(REFERENCE_METADATA_FIELDS) +' status command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_linked_samples n_reference_coding_position_rows n_sample_level_coding_position_rows n_coding_position_rows n_output_files_scanned n_parseable_files result_gff_exists n_gff_gene_rows n_gff_cds_like_gene_rows n_gff_trna_rows n_gff_rrna_rows parser_status note').split()
+TASK_FIELDS=('task_id reference_key reference_species coordinate_reference_accession coordinate_reference_fasta coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS) +' n_samples_using_reference status').split()
+SUMMARY_FIELDS=('reference_key reference_species coordinate_reference_accession coordinate_reference_fasta coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS) +' status command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_linked_samples n_reference_coding_position_rows n_sample_level_coding_position_rows n_coding_position_rows n_output_files_scanned n_parseable_files result_gff_exists n_gff_gene_rows n_gff_cds_like_gene_rows n_gff_trna_rows n_gff_rrna_rows parser_status note').split()
 DIAG_FIELDS='reference_key file suffix n_lines n_candidate_feature_lines parser_used n_features_parsed'.split()
 GENES = {
  'ND1':'MT-ND1', 'NAD1':'MT-ND1', 'ND2':'MT-ND2', 'NAD2':'MT-ND2',
@@ -204,7 +205,7 @@ def build_reference_codon_rows(features,fasta,ref,code):
    usable=len(dna)//3*3; d.update(cds_length=len(dna),usable_cds_length=usable,n_codons=usable//3)
    for i in range(0,usable,3):
     trip=coords[i:i+3]
-    for phase,pos in enumerate(trip,1): base.append({'file_name':Path(fasta).name,'seq_name':rec.id,'sample':'','species':'','species_key':'','accession':ref['coordinate_reference_accession'],'accession_version':ref['coordinate_reference_accession'],'reference_id':ref['coordinate_reference_accession'],'family':'','pos':pos+1,'ref_base_genome':seq[pos],'gene':f['gene'],'gene_raw':f['gene_raw'],'product':f['gene_raw'],'protein_id':'','strand':strand,'codon_index':i//3+1,'codon_pos_in_triplet':phase,'codon_seq':dna[i:i+3],'codon_pos1_genomic':trip[0]+1,'codon_pos2_genomic':trip[1]+1,'codon_pos3_genomic':trip[2]+1,'codon_start_qualifier':'1','transl_table':code,'cds_tail_incomplete_bases':len(dna)-usable,'annotation_source':'MITOS2','coordinate_reference_fasta':str(fasta),'coordinate_reference_accession':ref['coordinate_reference_accession'],**{k:ref.get(k,'') for k in REFERENCE_METADATA_FIELDS}})
+    for phase,pos in enumerate(trip,1): base.append({'file_name':Path(fasta).name,'seq_name':rec.id,'sample':'','species':'','species_key':'','accession':ref['coordinate_reference_accession'],'accession_version':ref['coordinate_reference_accession'],'reference_id':ref['coordinate_reference_accession'],'family':'','pos':pos+1,'ref_base_genome':seq[pos],'gene':f['gene'],'gene_raw':f['gene_raw'],'product':f['gene_raw'],'protein_id':'','strand':strand,'codon_index':i//3+1,'codon_pos_in_triplet':phase,'codon_seq':dna[i:i+3],'codon_pos1_genomic':trip[0]+1,'codon_pos2_genomic':trip[1]+1,'codon_pos3_genomic':trip[2]+1,'codon_start_qualifier':'1','transl_table':code,'cds_tail_incomplete_bases':len(dna)-usable,'annotation_source':'MITOS2','coordinate_reference_fasta':str(fasta),'coordinate_reference_accession':ref['coordinate_reference_accession'],'coordinate_reference_sequence_sha256':ref.get('coordinate_reference_sequence_sha256',''),'mitos2_input_sequence_sha256':ref.get('mitos2_input_sequence_sha256',''),'mitos2_input_sequence_length':ref.get('mitos2_input_sequence_length',''),**{k:ref.get(k,'') for k in REFERENCE_METADATA_FIELDS}})
    d.update(n_position_rows=usable,status='completed')
   except Exception as exc: d.update(status='failed',error=f'{type(exc).__name__}: {exc}')
   debug.append(d)
@@ -270,10 +271,17 @@ def references(paths, sample_filter=None):
   elif manifest_fasta: fasta=sanitized_fallback_fasta(manifest_fasta,target,paths); status='pending'
   else: fasta=str(standardized); status='skipped_no_chrM_reference' if no_chrm else 'pending'
   acc=val(m,'final_chrM_accession') or val(m,'final_chrM_refseq_accn') or val(m,'final_chrM_genbank_accn')
+  try:
+   hash_info=normalized_fasta_sequence_sha256(fasta) if fasta and Path(fasta).is_file() else {}
+  except (OSError, ValueError) as exc:
+   hash_info={}
   # A target species is the task identity: cross-species targets can share an accession but not a FASTA.
   key=re.sub(r'[^A-Za-z0-9_.-]+','_',target or Path(fasta).stem)
   refs[key]={'reference_key':key,'reference_species':species,'coordinate_reference_accession':acc,
-             'coordinate_reference_fasta':str(Path(fasta)) if fasta else '','coordinate_reference_fasta_from_manifest':manifest_fasta,
+             'coordinate_reference_fasta':str(Path(fasta)) if fasta else '',
+             'coordinate_reference_sequence_sha256':hash_info.get('sequence_sha256',''),
+             'mitos2_input_sequence_sha256':hash_info.get('sequence_sha256',''),
+             'mitos2_input_sequence_length':hash_info.get('sequence_length',''),'coordinate_reference_fasta_from_manifest':manifest_fasta,
              'mitos2_input_fasta':str(Path(fasta)) if fasta else '','target_species':target,'final_chrM_species':val(m,'final_chrM_species'),
              'final_chrM_accession':val(m,'final_chrM_accession'),'chrM_selection_status':val(m,'chrM_selection_status'),
              'final_reference_strategy':val(m,'final_reference_strategy'),'reference_pairing_status':val(m,'reference_pairing_status'),

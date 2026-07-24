@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.match_utils import yaml
+from qc_analysis.lib.reference_utils import normalized_sequence_sha256
 
 repo_root = Path(__file__).resolve().parents[2]
 
@@ -26,7 +27,7 @@ try:
 except ImportError:  # checked in main so importing helpers remains possible in tests
     Entrez = SeqIO = None
 
-OUTPUT_FIELDS = "reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 file_name seq_name accession accession_version reference_id pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used".split()
+OUTPUT_FIELDS = "reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 genbank_record_sequence_sha256 genbank_record_length file_name seq_name accession accession_version reference_id pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used".split()
 LEGACY_OUTPUT_FIELDS = ['sample', 'species', *OUTPUT_FIELDS]
 SAMPLE_REFERENCE_MAP_FIELDS = "sample species species_key reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 status annotation_source".split()
 SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path accession_record genbank_file n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
@@ -402,6 +403,8 @@ def parse_record(record, metadata, filename):
                     'coordinate_reference_fasta': value(metadata, '_canonical_coordinate_reference_fasta'),
                     'coordinate_reference_accession': value(metadata, 'coordinate_reference_accession') or value(metadata, 'accession_query'),
                     'coordinate_reference_sequence_sha256': value(metadata, 'coordinate_reference_sequence_sha256'),
+                    'genbank_record_sequence_sha256': normalized_sequence_sha256(record.seq),
+                    'genbank_record_length': len(record.seq),
                     'file_name': Path(filename).name, 'seq_name': record.id,
                     'accession': value(metadata, 'accession_query'),
                     'accession_version': record.id, 'reference_id': value(metadata, 'reference_id'), 'pos': coordinate + 1,
@@ -685,6 +688,15 @@ def main_reference(args, section):
         stage('Writing reference codon table...')
         write_tsv(reference_path, OUTPUT_FIELDS, output)
         write_tsv(paths.get('sample_reference_map', str(Path(reference_path).with_name('sample_reference_map.tsv'))), SAMPLE_REFERENCE_MAP_FIELDS, sample_map)
+        comparison = yaml(args.config).get('genbank_mitos2_comparison', {})
+        if settings.get('compare_genbank_and_mitos2', True) and comparison.get('settings', {}).get('enabled', False):
+            from qc_analysis.scripts.compare_genbank_mitos2_reference_annotations import compare
+            cp, cs = comparison.get('paths', {}), comparison.get('settings', {})
+            compare(reference_path, cp.get('mitos2_reference_codon_table'), cp.get('gene_comparison_table'),
+                    cp.get('reference_summary_table'), cp.get('sequence_mismatch_table'),
+                    bool(cs.get('strict_sequence_match', True)), bool(cs.get('allow_rotation_equivalent', False)),
+                    bool(cs.get('fail_on_no_shared_references', True)), float(cs.get('minor_position_jaccard_threshold', .99)),
+                    float(cs.get('moderate_position_jaccard_threshold', .90)))
     write_tsv(mitos_paths.get('mitos2_fallback_selection_summary_table', 'results/qc/codon_table_build/mitos2_fallback_selection_summary.tsv'), MITOS2_FALLBACK_SELECTION_FIELDS, fallback_summary)
     write_tsv(paths['failed_downloads_table'], FAIL_FIELDS, failures); write_tsv(paths['summary_table'], SUMMARY_FIELDS, summary)
     counts = summarize_build_status(summary)
