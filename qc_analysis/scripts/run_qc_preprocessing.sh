@@ -83,7 +83,7 @@ case "$STEP" in
     usage
     exit 0
     ;;
-  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|trna_match|rrna_match|intraspecies_contamination|all)
+  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|trna_match|rrna_match|intraspecies_contamination|all)
     ;;
   *)
     echo "ERROR: unknown step: $STEP" >&2
@@ -142,6 +142,7 @@ LIFTOVER_SCRIPT="qc_analysis/scripts/run_coordinate_liftover.py"
 CODON_SCRIPT="qc_analysis/scripts/run_codon_match.py"
 CODON_TABLE_SCRIPT="qc_analysis/scripts/build_primate_codon_table.py"
 MITOS2_SCRIPT="qc_analysis/scripts/run_mitos2_annotation.py"
+COMPARISON_SCRIPT="qc_analysis/scripts/compare_genbank_mitos2_reference_annotations.py"
 TRNA_SCRIPT="qc_analysis/scripts/run_trna_match.py"
 RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
 INTRASPECIES_SCRIPT="qc_analysis/scripts/run_intraspecies_contamination.sh"
@@ -341,6 +342,18 @@ PY
   "${cmd[@]}"
 }
 
+run_compare_genbank_mitos2() {
+  echo "[qc_preprocessing] Running compare_genbank_mitos2 with config: ${CONFIG}" >&2
+  "$BASE_PYTHON" "$COMPARISON_SCRIPT" --config "$CONFIG"
+}
+
+comparison_enabled() {
+  awk '
+    /^[^[:space:]]/ { in_section = ($0 ~ /^genbank_mitos2_comparison:/) }
+    in_section && /^[[:space:]]+enabled:[[:space:]]*/ { value=$0; sub(/.*enabled:[[:space:]]*/, "", value); print value; exit }
+  ' "$CONFIG" | grep -Eiq '^(true|yes|1)$'
+}
+
 run_annotation() {
   local name="$1" script="$2"
   echo "[qc_preprocessing] Running ${name} with config: ${CONFIG}" >&2
@@ -363,6 +376,7 @@ case "$STEP" in
   mitos2_merge) run_mitos2_annotation --merge-only ;;
   mitos2_annotation) run_mitos2_annotation ;;
   build_primate_codon_table) run_build_primate_codon_table ;;
+  compare_genbank_mitos2) run_compare_genbank_mitos2 ;;
   codon_match) run_annotation codon_match "$CODON_SCRIPT" ;;
   trna_match) run_annotation trna_match "$TRNA_SCRIPT" ;;
   rrna_match) run_annotation rrna_match "$RRNA_SCRIPT" ;;
@@ -373,6 +387,9 @@ case "$STEP" in
     run_coordinate_liftover
     run_mitos2_annotation
     run_build_primate_codon_table
+    if comparison_enabled; then
+      run_compare_genbank_mitos2
+    fi
     run_annotation codon_match "$CODON_SCRIPT"
     run_annotation trna_match "$TRNA_SCRIPT"
     run_annotation rrna_match "$RRNA_SCRIPT"
