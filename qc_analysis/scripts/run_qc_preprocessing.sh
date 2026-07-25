@@ -72,7 +72,7 @@ Examples:
 USAGE
 }
 
-SUBMIT_TO_SLURM=0; DRY_RUN_SUBMIT=0; PREPARE_ONLY=0; PREPARE_RETRY=0
+SUBMIT_TO_SLURM=0; DRY_RUN_SUBMIT=0; PREPARE_ONLY=0; PREPARE_RETRY=0; ARRAY_TASK_MODE=0
 SAMPLE="${SAMPLE:-}"; TASK_FILE=""; ARRAY_CONCURRENCY="${SLURM_ARRAY_CONCURRENCY:-20}"
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
@@ -80,12 +80,31 @@ while [[ "${1:-}" == --* ]]; do
     --dry-run-submit) SUBMIT_TO_SLURM=1; DRY_RUN_SUBMIT=1; shift ;;
     --prepare-only) PREPARE_ONLY=1; shift ;;
     --prepare-retry) PREPARE_RETRY=1; shift ;;
-    --sample) [[ $# -ge 2 ]] || { echo "ERROR: --sample requires a value" >&2; exit 2; }; SAMPLE="$2"; shift 2 ;;
-    --task-file) TASK_FILE="$2"; shift 2 ;;
-    --array-concurrency) ARRAY_CONCURRENCY="$2"; shift 2 ;;
-    --array-task) shift; break ;;
+    --sample)
+      [[ $# -ge 2 ]] || { echo "ERROR: --sample requires a value" >&2; exit 2; }
+      SAMPLE="$2"
+      shift 2
+      ;;
+    --task-file)
+      [[ $# -ge 2 ]] || { echo "ERROR: --task-file requires a value" >&2; exit 2; }
+      TASK_FILE="$2"
+      shift 2
+      ;;
+    --array-concurrency)
+      [[ $# -ge 2 ]] || { echo "ERROR: --array-concurrency requires a value" >&2; exit 2; }
+      ARRAY_CONCURRENCY="$2"
+      shift 2
+      ;;
+    --array-task)
+      ARRAY_TASK_MODE=1
+      shift
+      ;;
     --help) usage; exit 0 ;;
-    *) break ;;
+    *)
+      echo "ERROR: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
   esac
 done
 [[ "$ARRAY_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: array concurrency must be a positive integer: $ARRAY_CONCURRENCY" >&2; exit 2; }
@@ -113,7 +132,10 @@ resolve_array_item() {
  (( SLURM_ARRAY_TASK_ID <= count )) || { echo "ERROR: task index $SLURM_ARRAY_TASK_ID exceeds $count" >&2; exit 2; }
  ITEM=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$TASK_FILE"); [[ -n "$ITEM" ]] || { echo 'ERROR: selected array item is empty' >&2; exit 2; }
  printf '[qc_preprocessing] step=%s array_job_id=%s array_task_id=%s selected_item=%s config=%s hostname=%s start_time=%s\n' "$STEP" "${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-unknown}}" "$SLURM_ARRAY_TASK_ID" "$ITEM" "$CONFIG" "$(hostname)" "$(date -u +%FT%TZ)" >&2
-  SAMPLE="$ITEM"; [[ "$STEP" == mitos2_annotation ]] && SAMPLE=""
+  SAMPLE="$ITEM"
+  if [[ "$STEP" == mitos2_annotation ]]; then
+    SAMPLE=""
+  fi
 }
 prepare_task_manifest() {
  local args=(python3 qc_analysis/scripts/qc_array_manifest.py "$1" "$CONFIG")
@@ -145,7 +167,10 @@ submit_workflow() {
    TASK_FILE=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
  done
 }
-if [[ -n "$TASK_FILE" ]]; then resolve_array_item; fi
+if [[ "$ARRAY_TASK_MODE" == "1" ]]; then
+ [[ -n "$TASK_FILE" ]] || { echo "ERROR: --array-task requires --task-file" >&2; exit 2; }
+ resolve_array_item
+fi
 if [[ "$SUBMIT_TO_SLURM" == 1 ]]; then
  [[ -z "${SLURM_JOB_ID:-}" ]] || { echo 'ERROR: cannot submit from a Slurm job' >&2;exit 2; }
  if [[ "$STEP" == all ]];then submit_workflow
