@@ -15,7 +15,8 @@ SCRIPT = Path(__file__).parents[1] / 'scripts' / 'run_codon_match.py'
 
 
 def row(gene, codon='AAA', phase='1', strand='+'):
-    return {'gene': gene, 'codon_seq': codon, 'codon_pos_in_triplet': phase, 'strand': strand}
+    return {'gene': gene, 'codon_seq': codon, 'codon_pos_in_triplet': phase, 'strand': strand,
+            'ref_base_genome': 'A'}
 
 
 def test_streaming_plain_and_gzip_preserves_duplicate_positions(tmp_path, monkeypatch):
