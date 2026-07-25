@@ -48,12 +48,17 @@ Environment overrides:
   SLURM_TIME                       Walltime for --submit (default: 24:00:00).
   SLURM_MEM                        Memory for --submit (default: 16G).
   SLURM_CPUS                       CPUs for --submit (default: 4).
-  SLURM_LOG_DIR                    Log directory for --submit (default: logs/qc_preprocessing).
+  SLURM_LOG_DIR                    Override the step-specific scheduler log directory.
   SLURM_JOB_NAME                   Job name for --submit (default: qc_preprocessing_<step>).
 
 Options: --array-concurrency N, --task-file PATH, --prepare-only,
          --prepare-retry, --dry-run-submit. Direct mode remains sequential;
          --submit is recommended for HPC execution.
+
+New array metadata is stored in <step output>/job_arrays and logs default to
+<step output>/logs/job_arrays. Optional paths.job_array_dir and paths.log_dir
+settings override those derived paths. Historical results/qc/job_arrays files
+are left untouched; move them manually only after confirming no old job uses them.
 
 Examples:
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit all config/qc_preprocessing.yaml
@@ -143,6 +148,11 @@ prepare_task_manifest() {
  [[ "${FORCE_RERUN:-false}" == true || "${SKIP_COMPLETED:-true}" != true ]] && args+=(--force)
  [[ "$PREPARE_RETRY" == 1 ]] && args+=(--retry)
  local output; output=$("${args[@]}"); TASK_FILE=$(printf '%s\n' "$output"|sed -n 's/^TASK_FILE=//p'); MANIFEST=$(printf '%s\n' "$output"|sed -n 's/^MANIFEST=//p'); TASK_COUNT=$(printf '%s\n' "$output"|sed -n 's/^COUNT=//p')
+ OUTPUT_DIR=$(printf '%s\n' "$output"|sed -n 's/^OUTPUT_DIR=//p'); JOB_ARRAY_DIR=$(printf '%s\n' "$output"|sed -n 's/^JOB_ARRAY_DIR=//p'); CONFIG_LOG_DIR=$(printf '%s\n' "$output"|sed -n 's/^LOG_DIR=//p')
+}
+resolve_runtime_paths() {
+ local output; output=$(python3 qc_analysis/scripts/qc_array_manifest.py "$1" "$CONFIG" --resolve-paths)
+ OUTPUT_DIR=$(printf '%s\n' "$output"|sed -n 's/^OUTPUT_DIR=//p'); JOB_ARRAY_DIR=$(printf '%s\n' "$output"|sed -n 's/^JOB_ARRAY_DIR=//p'); CONFIG_LOG_DIR=$(printf '%s\n' "$output"|sed -n 's/^LOG_DIR=//p')
 }
 submit_array() {
  local step="$1" dependency="${2:-}"; STEP="$step"
@@ -151,20 +161,24 @@ submit_array() {
    TASK_COUNT=$(awk 'NF{n++} END{print n+0}' "$TASK_FILE")
    (( TASK_COUNT > 0 )) || { echo "ERROR: task file is empty: $TASK_FILE" >&2; exit 1; }
  else prepare_task_manifest "$step"; fi
+ [[ -n "${OUTPUT_DIR:-}" ]] || resolve_runtime_paths "$step"
  local kind array;kind=$(classify_step "$step");array=$(build_array_expression "$TASK_COUNT" "$kind");resolve_step_resources "$step"
- local logs="${SLURM_LOG_DIR:-logs/qc_preprocessing}/$step";mkdir -p "$logs"
+ local logs="${SLURM_LOG_DIR:-$CONFIG_LOG_DIR}";mkdir -p "$logs"
  local cmd=(sbatch --parsable --job-name="qc_preprocessing_${step}" --array="$array" --output="$logs/%A_%a.out" --error="$logs/%A_%a.err" --time="$RES_TIME" --mem="$RES_MEM" --cpus-per-task="$RES_CPUS")
  [[ -n "${SLURM_PARTITION:-}" ]] && cmd+=(--partition="$SLURM_PARTITION"); [[ -n "$dependency" ]] && cmd+=(--dependency="afterok:$dependency")
  cmd+=("$(readlink -f "${BASH_SOURCE[0]}")" --array-task --task-file "$TASK_FILE" "$step" "$CONFIG")
- printf '[qc_preprocessing] step=%s array=%s concurrency=%s dependency=%s task_file=%s resources=%s,%s,%s logs=%s/%%A_%%a.{out,err}\n' "$step" "$array" "$ARRAY_CONCURRENCY" "${dependency:-none}" "$TASK_FILE" "$RES_TIME" "$RES_MEM" "$RES_CPUS" "$logs" >&2
+ printf '[qc_preprocessing] step=%s\n[qc_preprocessing] output_dir=%s\n[qc_preprocessing] task_file=%s\n[qc_preprocessing] manifest=%s\n[qc_preprocessing] logs=%s/%%A_%%a.{out,err}\n[qc_preprocessing] task_count=%s\n[qc_preprocessing] array=%s\n' "$step" "$OUTPUT_DIR" "$TASK_FILE" "${MANIFEST:-unknown}" "$logs" "$TASK_COUNT" "$array" >&2
+ printf '[qc_preprocessing] concurrency=%s dependency=%s resources=%s,%s,%s\n' "$ARRAY_CONCURRENCY" "${dependency:-none}" "$RES_TIME" "$RES_MEM" "$RES_CPUS" >&2
  if [[ "$PREPARE_ONLY" == 1 ]]; then LAST_JOB_ID="prepared_${step}"; return; fi
  if [[ "$DRY_RUN_SUBMIT" == 1 ]]; then printf 'DRY RUN:';printf ' %q' "${cmd[@]}";printf '\n'; LAST_JOB_ID="dry_${step}"; else command -v sbatch >/dev/null || { echo 'ERROR: --submit requires sbatch on PATH' >&2;exit 127; };LAST_JOB_ID=$("${cmd[@]}");LAST_JOB_ID=${LAST_JOB_ID%%;*};fi
+ local submission="${TASK_FILE%.tasks.txt}.submission.tsv" submitted_at; submitted_at=$(date -u +%FT%TZ)
+ printf 'step\tjob_id\ttask_file\tmanifest\tlog_dir\tarray\tsubmitted_at\n%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$step" "$LAST_JOB_ID" "$TASK_FILE" "${MANIFEST:-}" "$logs" "$array" "$submitted_at" >"$submission"
 }
 submit_workflow() {
  local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results discover_global_anchor coordinate_liftover mitos2_prepare_tasks mitos2_annotation mitos2_merge build_primate_codon_table compare_genbank_mitos2 codon_match_validate codon_match codon_match_merge trna_match rrna_match)
  for s in "${steps[@]}"; do
    # Automatic merges are explicit graph nodes here, never also submitted by producers.
-   TASK_FILE=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
+   TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
  done
 }
 if [[ "$ARRAY_TASK_MODE" == "1" ]]; then

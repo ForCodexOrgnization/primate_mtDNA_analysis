@@ -9,15 +9,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.match_utils import (human_pos, info_format, info_parse, inject_headers,
     open_text, sample_names, source, write_summary, yaml)
 
-CODON_MATCH_VERSION = "2.1"
-DNA = set("ACGT")
+CODON_MATCH_VERSION = "2.2"
+RESOLVED_DNA = set("ACGT")
+DNA = RESOLVED_DNA  # Backwards-compatible name used by codon helpers.
 IUPAC_DNA = set("ACGTRYSWKMBDHVN")
 STRING_FIELDS = ['MTCODON_STATUS','MTCODON_SUPPORTED_SNV','MTCODON_MATCH','MTCODON_STRICT_PHASE',
 'MTCODON_GENE_MATCH','MTCODON_PHASE_MATCH','MTCODON_PRIMATE_GENE','MTCODON_PRIMATE_CODON',
 'MTCODON_PRIMATE_ALT_CODON','MTCODON_PRIMATE_PHASE','MTCODON_HUMAN_GENE','MTCODON_HUMAN_CODON',
 'MTCODON_HUMAN_PHASE','MTCODON_OVERLAPPING_CDS','MTCODON_AMBIGUOUS_BEST_MATCH',
 'MTCODON_SOURCE_REF_MATCH','MTCODON_DUPLICATE_ANNOTATIONS','MTCODON_SOURCE_CODON_RESOLVED',
-'MTCODON_HUMAN_CODON_RESOLVED','MTCODON_ANY_RESOLVED_PAIR']
+'MTCODON_HUMAN_CODON_RESOLVED','MTCODON_ANY_RESOLVED_PAIR','MTCODON_SOURCE_REF_RESOLVED',
+'MTCODON_ANY_RESOLVED_SOURCE_REF']
 INTEGER_FIELDS = ['MTCODON_N_PRIMATE_ANNOTATIONS','MTCODON_N_HUMAN_ANNOTATIONS','MTCODON_N_PAIR_CANDIDATES']
 MULTI_FIELDS = ['MTCODON_PRIMATE_GENES','MTCODON_HUMAN_GENES','MTCODON_MATCHING_GENES']
 DESCRIPTIONS = {
@@ -42,9 +44,15 @@ class CodonAnnotation:
 
 class CodonIndex(defaultdict):
     def __init__(self):
-        super().__init__(list); self.duplicates=Counter(); self.duplicate_details=[]; self.ambiguous_details=[]; self.loaded=0
+        super().__init__(list); self.duplicates=Counter(); self.duplicate_details=[]; self.ambiguous_details=[]
+        self.ambiguous_ref_details=[]; self.resolved_ref_rows=0; self.conflicting_resolved_ref_positions=0; self.loaded=0
 
 def normalize_codon(codon): return str(codon or '').strip().upper()
+def normalize_base(base): return str(base or '').strip().upper()
+def is_valid_iupac_base(base):
+    base=normalize_base(base); return len(base)==1 and base in IUPAC_DNA
+def is_resolved_base(base):
+    base=normalize_base(base); return len(base)==1 and base in RESOLVED_DNA
 def is_resolved_codon(codon):
     codon=normalize_codon(codon); return len(codon)==3 and set(codon)<=DNA
 def is_valid_iupac_codon(codon):
@@ -75,9 +83,13 @@ def _validate_annotation(row,path,kind,line,key_column,strict=True):
     if row['codon_pos_in_triplet'].strip() not in {'1','2','3'}: bad('codon_pos_in_triplet must be 1, 2, or 3')
     codon=normalize_codon(row['codon_seq'])
     if not is_valid_iupac_codon(codon): bad('codon_seq must contain exactly three valid IUPAC DNA symbols (ACGTRYSWKMBDHVN)')
-    base=(row.get('ref_base_genome') or '').strip().upper()
-    if base and (len(base)!=1 or base not in DNA): bad('non-empty ref_base_genome must be A/C/G/T')
+    base=normalize_base(row.get('ref_base_genome'))
+    if 'ref_base_genome' in required_for_kind(kind) and not base: bad('ref_base_genome must be non-empty')
+    if base and not is_valid_iupac_base(base): bad('ref_base_genome must be exactly one valid IUPAC DNA symbol (ACGTRYSWKMBDHVN)')
     if key_column and not (row.get(key_column) or '').strip(): bad(f'{key_column} must be non-empty')
+
+def required_for_kind(kind):
+    return REQ_HUMAN if kind == 'human codon' else REQ_REFERENCE if kind == 'reference codon' else REQ_HISTORICAL
 
 def load_codon_index(path,key_column=None,table_type=None,strict=True):
     kind=table_type or ('reference codon' if key_column=='reference_key' else 'historical sample codon' if key_column=='sample' else 'human codon')
@@ -105,7 +117,14 @@ def load_codon_index(path,key_column=None,table_type=None,strict=True):
                     'gene':values[0],'codon_seq':values[3],'annotation_source':(row.get('annotation_source') or '').strip(),
                     'file_name':str(path)})
             if values[4]: bases[key].add(values[4])
-    inconsistent={k:v for k,v in bases.items() if len(v)>1}
+            if is_resolved_base(values[4]): index.resolved_ref_rows+=1
+            elif is_valid_iupac_base(values[4]):
+                index.ambiguous_ref_details.append({'table':kind,'reference_key':key[0],'position':pos,
+                    'gene':values[0],'ref_base_genome':values[4],'codon_seq':values[3],
+                    'annotation_source':(row.get('annotation_source') or '').strip(),'file_name':str(path)})
+    inconsistent={k:{b for b in v if is_resolved_base(b)} for k,v in bases.items()
+                  if len({b for b in v if is_resolved_base(b)})>1}
+    index.conflicting_resolved_ref_positions=len(inconsistent)
     if inconsistent:
         example=next(iter(inconsistent.items()))
         raise SystemExit(f'Inconsistent ref_base_genome values in {kind} table {path}: position {example[0]} has {sorted(example[1])}; inconsistent positions={len(inconsistent)}')
@@ -152,59 +171,68 @@ def mutate_codon(codon,phase,alt_base):
     if not is_resolved_codon(codon) or phase not in (1,2,3) or alt not in DNA:return '.'
     bases[phase-1]=alt; return ''.join(bases)
 
-def evaluate_candidates(source_rows,human_rows,source_alt,supported_snv=True):
+def evaluate_candidates(source_rows,human_rows,source_alt,supported_snv=True,source_ref=''):
     result=[]
     for s in source_rows:
         strand_alt=complement_base(source_alt) if supported_snv and _get(s,'strand','+')=='-' else source_alt
         sg=_get(s,'gene',''); sp=str(_get(s,'codon_pos_in_triplet','')); sc=_get(s,'codon_seq','.')
-        ac=mutate_codon(sc,sp,strand_alt) if supported_snv else '.'
+        sb=normalize_base(_get(s,'ref_base_genome','')); sr=normalize_base(source_ref)
+        ref_resolved=is_resolved_base(sb); ref_match=ref_resolved and is_resolved_base(sr) and sb==sr
+        ac=mutate_codon(sc,sp,strand_alt) if supported_snv and ref_match else '.'
         for h in human_rows:
             hg=_get(h,'gene',''); hp=str(_get(h,'codon_pos_in_triplet','')); hc=_get(h,'codon_seq','')
             result.append({'source':s,'human':h,'source_gene':sg,'human_gene':hg,'source_phase':sp,'human_phase':hp,
             'source_codon':sc,'human_codon':hc,'alternate_codon':ac,'gene_match':sg==hg,'phase_match':sp==hp,
             'source_resolved':is_resolved_codon(sc),'human_resolved':is_resolved_codon(hc),
-            'codon_match':supported_snv and is_resolved_codon(sc) and is_resolved_codon(hc) and hc in {sc,ac}})
+            'source_ref_base':sb,'source_ref_resolved':ref_resolved,'source_ref_match':ref_match,
+            'codon_match':supported_snv and ref_match and is_resolved_codon(sc) and is_resolved_codon(hc) and hc in {sc,ac}})
     return result
 
 def _score(c): return (int(c['gene_match']),int(c['gene_match'] and c['phase_match']),int(c['gene_match'] and c['phase_match'] and c['codon_match']))
 def _tie(c): return tuple(str(c[n]) for n in ('source_gene','human_gene','source_codon','human_codon','source_phase','human_phase','alternate_codon'))
 
 def annotate(source_rows,human_rows,source_alt,strict,source_ref='A',source_duplicate=False,human_duplicate=False):
-    supported=is_supported_snv(source_ref,source_alt); refs={str(_get(r,'ref_base_genome','')).upper() for r in source_rows if _get(r,'ref_base_genome','')}
-    source_ref_match='NA' if not source_rows or not refs else ('yes' if len(refs)==1 and str(source_ref or '').strip().upper() in DNA and str(source_ref).strip().upper() in refs else 'no')
-    trusted=supported and source_ref_match!='no'; candidates=evaluate_candidates(source_rows,human_rows,source_alt,trusted)
+    supported=is_supported_snv(source_ref,source_alt)
+    candidates=evaluate_candidates(source_rows,human_rows,source_alt,supported,source_ref)
     sg,hg=_genes(source_rows),_genes(human_rows); valid=[c for c in candidates if c['gene_match'] and c['phase_match'] and c['codon_match']]
     any_gene=any(c['gene_match'] for c in candidates); any_phase=any(c['gene_match'] and c['phase_match'] for c in candidates)
     vals={'MTCODON_SUPPORTED_SNV':'yes' if supported else 'no','MTCODON_STRICT_PHASE':'yes' if strict else 'no',
-    'MTCODON_SOURCE_REF_MATCH':source_ref_match,'MTCODON_DUPLICATE_ANNOTATIONS':'yes' if source_duplicate or human_duplicate else 'no',
+    'MTCODON_DUPLICATE_ANNOTATIONS':'yes' if source_duplicate or human_duplicate else 'no',
     'MTCODON_N_PRIMATE_ANNOTATIONS':str(len(source_rows)),'MTCODON_N_HUMAN_ANNOTATIONS':str(len(human_rows)),
     'MTCODON_N_PAIR_CANDIDATES':str(len(candidates)),'MTCODON_OVERLAPPING_CDS':'yes' if len(sg)>1 or len(hg)>1 else 'no',
     'MTCODON_PRIMATE_GENES':','.join(sg) or '.','MTCODON_HUMAN_GENES':','.join(hg) or '.',
     'MTCODON_GENE_MATCH':'yes' if any_gene else 'no','MTCODON_PHASE_MATCH':'yes' if any_phase else 'no',
     'MTCODON_MATCH':'yes' if valid else 'no','MTCODON_MATCHING_GENES':','.join(sorted({c['source_gene'] for c in valid})) or '.',
-    'MTCODON_ANY_RESOLVED_PAIR':'yes' if any(c['source_resolved'] and c['human_resolved'] for c in candidates) else 'no'}
+    'MTCODON_ANY_RESOLVED_PAIR':'yes' if any(c['source_resolved'] and c['human_resolved'] for c in candidates) else 'no',
+    'MTCODON_ANY_RESOLVED_SOURCE_REF':'yes' if any(is_resolved_base(_get(r,'ref_base_genome','')) for r in source_rows) else 'no'}
     best=None; ambiguous=False
     if candidates:
         score=max(map(_score,candidates)); tied=[c for c in candidates if _score(c)==score]; ambiguous=len({_tie(c) for c in tied})>1; best=min(tied,key=_tie)
     vals['MTCODON_AMBIGUOUS_BEST_MATCH']='yes' if ambiguous else 'no'
     ss=best['source'] if best else min(source_rows,key=_row_tie_break,default=None); hh=best['human'] if best else min(human_rows,key=_row_tie_break,default=None)
     alt='.'
-    if ss and trusted:
+    selected_base=normalize_base(_get(ss,'ref_base_genome','')) if ss else ''
+    selected_ref_resolved=is_resolved_base(selected_base)
+    selected_ref_match=selected_ref_resolved and is_resolved_base(source_ref) and selected_base==normalize_base(source_ref)
+    if ss and supported and selected_ref_match:
         a=complement_base(source_alt) if _get(ss,'strand','+')=='-' else source_alt; alt=mutate_codon(_get(ss,'codon_seq'),_get(ss,'codon_pos_in_triplet'),a)
     vals.update(MTCODON_PRIMATE_GENE=_get(ss,'gene'),MTCODON_PRIMATE_CODON=_get(ss,'codon_seq'),MTCODON_PRIMATE_ALT_CODON=alt,
     MTCODON_PRIMATE_PHASE=_get(ss,'codon_pos_in_triplet'),MTCODON_HUMAN_GENE=_get(hh,'gene'),MTCODON_HUMAN_CODON=_get(hh,'codon_seq'),MTCODON_HUMAN_PHASE=_get(hh,'codon_pos_in_triplet'))
     vals['MTCODON_SOURCE_CODON_RESOLVED']='NA' if not ss else ('yes' if is_resolved_codon(_get(ss,'codon_seq')) else 'no')
     vals['MTCODON_HUMAN_CODON_RESOLVED']='NA' if not hh else ('yes' if is_resolved_codon(_get(hh,'codon_seq')) else 'no')
+    vals['MTCODON_SOURCE_REF_RESOLVED']='NA' if not ss or not selected_base else ('yes' if selected_ref_resolved else 'no')
+    vals['MTCODON_SOURCE_REF_MATCH']='NA' if not ss or not selected_base or not selected_ref_resolved else ('yes' if selected_ref_match else 'no')
     return vals,candidates
 
 def determine_status(source_pos,human_position,source_rows,human_rows,values,candidates,strict=True):
     if not source_pos or not human_position:return 'MISSING_COORD'
     if not source_rows:return 'SKIPPED_NONCODING'
     if not human_rows:return 'NO_HUMAN_CODON'
-    if values['MTCODON_SOURCE_REF_MATCH']=='no':return 'SOURCE_REF_MISMATCH'
+    compatible=[c for c in candidates if c['gene_match'] and c['phase_match']]
+    if compatible and any(c['source_ref_resolved'] and not c['source_ref_match'] for c in compatible) and not any(c['source_ref_match'] for c in compatible):return 'SOURCE_REF_MISMATCH'
     if values['MTCODON_SUPPORTED_SNV']=='no':return 'UNSUPPORTED_NON_SNV'
     if values['MTCODON_MATCH']=='yes':return 'PASS'
-    compatible=[c for c in candidates if c['gene_match'] and c['phase_match']]
+    if compatible and all(is_valid_iupac_base(c['source_ref_base']) and not c['source_ref_resolved'] for c in compatible):return 'AMBIGUOUS_SOURCE_REF'
     if compatible and not any(c['source_resolved'] and c['human_resolved'] for c in compatible):return 'AMBIGUOUS_CODON'
     if strict and values['MTCODON_GENE_MATCH']=='no':return 'GENE_MISMATCH'
     if strict and values['MTCODON_PHASE_MATCH']=='no':return 'PHASE_MISMATCH'
@@ -258,6 +286,9 @@ def _diagnostics(paths,primate,human,report_overlaps=None):
     ambiguous=[{**x,'table':'source'} for x in primate.ambiguous_details]+[{**x,'table':'human'} for x in human.ambiguous_details]
     if ambiguous:_write_rows(Path(paths['reports_dir'])/'codon_annotation_ambiguous_codons.tsv',
         ['table','reference_key','position','gene','codon_seq','annotation_source','file_name'],ambiguous)
+    ambiguous_refs=[{**x,'table':'source'} for x in primate.ambiguous_ref_details]
+    if ambiguous_refs:_write_rows(Path(paths['reports_dir'])/'codon_annotation_ambiguous_reference_bases.tsv',
+        ['table','reference_key','position','gene','ref_base_genome','codon_seq','annotation_source','file_name'],ambiguous_refs)
     return overlap
 
 def main():
@@ -274,6 +305,10 @@ def main():
         for label,index in [('source',primate),('human',human)]:
             print(f'{label} ambiguous codon rows: {len(index.ambiguous_details)}')
             print(f'{label} ambiguous codon positions: {len({(x["reference_key"],x["position"]) for x in index.ambiguous_details})}')
+        print(f'source_ambiguous_ref_base_rows: {len(primate.ambiguous_ref_details)}')
+        print(f'source_ambiguous_ref_base_positions: {len({(x["reference_key"],x["position"]) for x in primate.ambiguous_ref_details})}')
+        print(f'source_resolved_ref_base_rows: {primate.resolved_ref_rows}')
+        print(f'source_conflicting_resolved_ref_base_positions: {primate.conflicting_resolved_ref_positions}')
         return
     samples=[args.sample] if args.sample else sample_names(cfg)
     if args.input:samples=[args.sample or Path(args.input).name.split('.')[0]]
@@ -306,7 +341,7 @@ def main():
         provenance=[f'##MTCODONVersion={CODON_MATCH_VERSION}\n',f'##MTCODONReferenceCodonTable={paths.get("reference_codon_table",paths.get("all_primate_position_codon_table"))}\n',f'##MTCODONHumanCodonTable={paths["human_codon_table"]}\n']
         existing=''.join(header); provenance=[x for x in provenance if x.split('=',1)[0] not in existing]
         _atomic_text(out,lambda h:(h.writelines(inject_headers(provenance+header,FIELDS,'MTCODON')),h.writelines(body)))
-        statuses=['PASS','SKIPPED_NONCODING','NO_HUMAN_CODON','SOURCE_REF_MISMATCH','UNSUPPORTED_NON_SNV','AMBIGUOUS_CODON','GENE_MISMATCH','PHASE_MISMATCH','MISMATCH','MISSING_COORD']
+        statuses=['PASS','SKIPPED_NONCODING','NO_HUMAN_CODON','SOURCE_REF_MISMATCH','UNSUPPORTED_NON_SNV','AMBIGUOUS_SOURCE_REF','AMBIGUOUS_CODON','GENE_MISMATCH','PHASE_MISMATCH','MISMATCH','MISSING_COORD']
         metric_names=['records_with_overlapping_source_cds','records_with_overlapping_human_cds','records_with_overlapping_cds','records_with_ambiguous_best_match','records_with_multiple_pair_candidates','records_with_duplicate_source_annotations','records_with_duplicate_human_annotations','records_with_duplicate_annotations']
         metric_names += ['records_with_ambiguous_source_codon','records_with_ambiguous_human_codon','records_without_any_resolved_pair']
         row={'sample':sample,'input_vcf':str(inp),'output_vcf':str(out),'total_records':len(body),**{f'status_{x}':counts[x] for x in statuses},**{x:metrics[x] for x in metric_names},
@@ -314,6 +349,10 @@ def main():
         'sample_reference_map':str(paths.get('sample_reference_map','')),'reference_key':reference_key,'strict_gene_phase_status':strict_status,'strict_input_validation':strict_validation,'strict_phase_match':strict_status,
         'source_ambiguous_codon_rows':len(primate.ambiguous_details),'human_ambiguous_codon_rows':len(human.ambiguous_details),
         'source_ambiguous_codon_positions':len({(x['reference_key'],x['position']) for x in primate.ambiguous_details}),
-        'human_ambiguous_codon_positions':len({(x['reference_key'],x['position']) for x in human.ambiguous_details}),'status':'completed'}
+        'human_ambiguous_codon_positions':len({(x['reference_key'],x['position']) for x in human.ambiguous_details}),
+        'source_ambiguous_ref_base_rows':len(primate.ambiguous_ref_details),
+        'source_ambiguous_ref_base_positions':len({(x['reference_key'],x['position']) for x in primate.ambiguous_ref_details}),
+        'source_resolved_ref_base_rows':primate.resolved_ref_rows,
+        'source_conflicting_resolved_ref_base_positions':primate.conflicting_resolved_ref_positions,'status':'completed'}
         write_summary(Path(paths['reports_dir'])/f'{sample}.codon_match_summary.tsv',row)
 if __name__=='__main__':main()
