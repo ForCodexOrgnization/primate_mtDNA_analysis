@@ -841,7 +841,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     dirs = {d: outdir / d for d in OUTDIRS}
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
-    reset_liftover_outputs(dirs)
+    # A Slurm array worker owns only its sample's files.  Clearing the shared
+    # tree here would race with every other worker.
+    if not args.sample:
+        reset_liftover_outputs(dirs)
 
     human_raw = read_fasta(Path(cfg["paths"]["human_fasta"]), cfg.get("fasta", "human_target_sequence", fallback="").strip() or None)
     human_name = cfg.get("fasta", "human_sequence_name", fallback="human_chrM")
@@ -936,6 +939,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         write_report(stats, dirs["reports"] / f"{sample.name}.coordinate_liftover_qc.tsv")
         summaries.append(stats)
 
+    if args.sample:
+        return 0
     summary_path = dirs["reports"] / "all_samples.coordinate_liftover_summary.tsv"
     fields = [f for f in SampleStats.__dataclass_fields__ if f != "notes"]
     with summary_path.open("w", newline="") as out:

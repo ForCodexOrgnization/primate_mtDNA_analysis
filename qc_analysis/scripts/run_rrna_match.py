@@ -77,7 +77,7 @@ def main():
    v.update(structural);inf.update(v);x[7]=info_format(inf);body.append('\t'.join(x)+'\n');co[status]+=1
   with out.open('w') as f:f.writelines(inject_headers(head,FIELDS,'MTRRNA'));f.writelines(body)
   row={'sample':sample,'input_vcf':str(inp),'output_vcf':str(out),'total_records':len(body),**{f'status_{q}':co[q] for q in ['OK','NO_SPECIES_RRNA','NO_HUMAN_RRNA','NO_SPECIES_OR_HUMAN_RRNA','GENE_MISMATCH','MISSING_COORD']},'rrna_region_match_yes':yes,'rrna_region_match_no':len(body)-yes,'status':'completed'};write_summary(Path(p['reports_dir'])/f'{sample}.rrna_match_summary.tsv',row);allrows.append(row)
- if allrows:
+ if allrows and not a.sample and not a.input:
   q=Path(p['reports_dir'])/'all_samples.rrna_match_summary.tsv';q.parent.mkdir(parents=True,exist_ok=True)
   with q.open('w',newline='') as f:w=csv.DictWriter(f,fieldnames=list(allrows[0]),delimiter='\t');w.writeheader();w.writerows(allrows)
 if __name__=='__main__':main()
