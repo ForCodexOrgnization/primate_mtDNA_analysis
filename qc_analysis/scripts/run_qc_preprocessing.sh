@@ -40,7 +40,10 @@ Environment overrides:
   BIOPYTHON_MODULE                 Biopython module to load (default: Biopython/1.83-foss-2022b).
   CODON_TABLE_WORKERS              Positive worker count for internal codon-table preparation.
   CODON_TABLE_DOWNLOAD_WORKERS     Positive concurrent Entrez download count (rate limited).
-  SAMPLE                           Optional sample name for coordinate_liftover.
+  SAMPLE                           Optional sample name for sample-level steps.
+  SLURM_ARRAY_CONCURRENCY          Maximum concurrent array tasks (default: 20).
+  AUTO_SUBMIT_MERGE                Submit codon/MITOS2 merge afterok (default: true).
+  SKIP_COMPLETED / FORCE_RERUN     Resume controls (defaults: true / false).
   SLURM_PARTITION                  Optional partition/queue for --submit.
   SLURM_TIME                       Walltime for --submit (default: 24:00:00).
   SLURM_MEM                        Memory for --submit (default: 16G).
@@ -48,11 +51,20 @@ Environment overrides:
   SLURM_LOG_DIR                    Log directory for --submit (default: logs/qc_preprocessing).
   SLURM_JOB_NAME                   Job name for --submit (default: qc_preprocessing_<step>).
 
+Options: --array-concurrency N, --task-file PATH, --prepare-only,
+         --prepare-retry, --dry-run-submit. Direct mode remains sequential;
+         --submit is recommended for HPC execution.
+
 Examples:
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit all config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit collect_variant_calling_results config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit discover_global_anchor config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
+  bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match_validate config/qc_preprocessing.yaml
+  bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match config/qc_preprocessing.yaml
+  SLURM_ARRAY_CONCURRENCY=40 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match config/qc_preprocessing.yaml
+  bash qc_analysis/scripts/run_qc_preprocessing.sh --submit --sample SAMPLE_NAME codon_match config/qc_preprocessing.yaml
+  bash qc_analysis/scripts/run_qc_preprocessing.sh --dry-run-submit codon_match config/qc_preprocessing.yaml
   SAMPLE=SAMPLE_NAME bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
   BIOPYTHON_MODULE=Biopython/1.83-foss-2022b bash qc_analysis/scripts/run_qc_preprocessing.sh build_primate_codon_table config/qc_preprocessing.yaml
   SLURM_CPUS=8 CODON_TABLE_WORKERS=8 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit build_primate_codon_table config/qc_preprocessing.yaml
@@ -60,80 +72,87 @@ Examples:
 USAGE
 }
 
-SUBMIT_TO_SLURM=0
-if [[ "${1:-}" == "--submit" ]]; then
-  SUBMIT_TO_SLURM=1
-  shift
-fi
-
-if [[ "${1:-}" == "--sample" ]]; then
-  SAMPLE="$2"
-  export SAMPLE
-  shift 2
-fi
-
-if [[ $# -lt 1 || $# -gt 2 ]]; then
-  usage >&2
-  exit 2
-fi
-
-STEP="$1"
-CONFIG="${2:-config/qc_preprocessing.yaml}"
-
+SUBMIT_TO_SLURM=0; DRY_RUN_SUBMIT=0; PREPARE_ONLY=0; PREPARE_RETRY=0
+SAMPLE="${SAMPLE:-}"; TASK_FILE=""; ARRAY_CONCURRENCY="${SLURM_ARRAY_CONCURRENCY:-20}"
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --submit) SUBMIT_TO_SLURM=1; shift ;;
+    --dry-run-submit) SUBMIT_TO_SLURM=1; DRY_RUN_SUBMIT=1; shift ;;
+    --prepare-only) PREPARE_ONLY=1; shift ;;
+    --prepare-retry) PREPARE_RETRY=1; shift ;;
+    --sample) [[ $# -ge 2 ]] || { echo "ERROR: --sample requires a value" >&2; exit 2; }; SAMPLE="$2"; shift 2 ;;
+    --task-file) TASK_FILE="$2"; shift 2 ;;
+    --array-concurrency) ARRAY_CONCURRENCY="$2"; shift 2 ;;
+    --array-task) shift; break ;;
+    --help) usage; exit 0 ;;
+    *) break ;;
+  esac
+done
+[[ "$ARRAY_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: array concurrency must be a positive integer: $ARRAY_CONCURRENCY" >&2; exit 2; }
+[[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
+STEP="$1"; CONFIG="${2:-config/qc_preprocessing.yaml}"
 case "$STEP" in
-  -h|--help|help)
-    usage
-    exit 0
-    ;;
-  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|trna_match|rrna_match|intraspecies_contamination|all)
-    ;;
-  *)
-    echo "ERROR: unknown step: $STEP" >&2
-    usage >&2
-    exit 2
-    ;;
-esac
+ collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|trna_match|rrna_match|intraspecies_contamination|all) ;;
+ -h|--help|help) usage; exit 0;; *) echo "ERROR: unknown step: $STEP" >&2; exit 2;; esac
+[[ -s "$CONFIG" ]] || { echo "ERROR: missing or empty config file: $CONFIG" >&2; exit 1; }
+export SAMPLE
 
-if [[ ! -s "$CONFIG" ]]; then
-  echo "ERROR: missing or empty config file: $CONFIG" >&2
-  exit 1
-fi
-
-submit_to_slurm() {
-  if [[ -n "${SLURM_JOB_ID:-}" ]]; then
-    echo "ERROR: --submit was requested from inside an existing Slurm job (${SLURM_JOB_ID})." >&2
-    exit 2
-  fi
-  if ! command -v sbatch >/dev/null 2>&1; then
-    echo "ERROR: --submit requires sbatch on PATH. Run with bash without --submit to execute immediately." >&2
-    exit 127
-  fi
-
-  local script_path log_dir job_name
-  script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-  log_dir="${SLURM_LOG_DIR:-logs/qc_preprocessing}"
-  job_name="${SLURM_JOB_NAME:-qc_preprocessing_${STEP}}"
-  mkdir -p "$log_dir"
-
-  local sbatch_args=(
-    --job-name="$job_name"
-    --output="${log_dir}/%x_%j.out"
-    --error="${log_dir}/%x_%j.err"
-    --time="${SLURM_TIME:-24:00:00}"
-    --cpus-per-task="${SLURM_CPUS:-4}"
-    --mem="${SLURM_MEM:-16G}"
-  )
-  if [[ -n "${SLURM_PARTITION:-}" ]]; then
-    sbatch_args+=(--partition="$SLURM_PARTITION")
-  fi
-
-  echo "[qc_preprocessing] Submitting ${STEP} to Slurm with config: ${CONFIG}" >&2
-  sbatch "${sbatch_args[@]}" "$script_path" "$STEP" "$CONFIG"
+classify_step() { case "$1" in coordinate_liftover|codon_match|trna_match|rrna_match) echo sample;; mitos2_annotation) echo reference;; *) echo singleton;; esac; }
+build_array_expression() { local n="$1" kind="$2"; if [[ "$kind" == singleton || "$n" == 1 ]]; then echo 1-1; else echo "1-${n}%${ARRAY_CONCURRENCY}"; fi; }
+resolve_step_resources() {
+ local prefix=""; case "$1" in codon_match*) prefix=CODON_MATCH;; coordinate_liftover) prefix=LIFTOVER;; trna_match) prefix=TRNA_MATCH;; rrna_match) prefix=RRNA_MATCH;; mitos2*) prefix=MITOS2;; esac
+ local specific=""
+ [[ -n "$prefix" ]] && { local vn="${prefix}_SLURM_TIME"; specific="${!vn:-}"; }; RES_TIME="${specific:-${SLURM_TIME:-24:00:00}}"
+ specific=""; [[ -n "$prefix" ]] && { local vn="${prefix}_SLURM_MEM"; specific="${!vn:-}"; }; RES_MEM="${specific:-${SLURM_MEM:-16G}}"
+ specific=""; [[ -n "$prefix" ]] && { local vn="${prefix}_SLURM_CPUS"; specific="${!vn:-}"; }; RES_CPUS="${specific:-${SLURM_CPUS:-4}}"
 }
-
-if [[ "$SUBMIT_TO_SLURM" == "1" ]]; then
-  submit_to_slurm
-  exit 0
+resolve_array_item() {
+ [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]] || { echo 'ERROR: SLURM_ARRAY_TASK_ID is required in an array task' >&2; exit 2; }
+ [[ "$SLURM_ARRAY_TASK_ID" =~ ^[1-9][0-9]*$ && -f "$TASK_FILE" ]] || { echo "ERROR: invalid task index or missing task file: $TASK_FILE" >&2; exit 2; }
+ local count; count=$(awk 'NF{n++} END{print n+0}' "$TASK_FILE")
+ (( SLURM_ARRAY_TASK_ID <= count )) || { echo "ERROR: task index $SLURM_ARRAY_TASK_ID exceeds $count" >&2; exit 2; }
+ ITEM=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$TASK_FILE"); [[ -n "$ITEM" ]] || { echo 'ERROR: selected array item is empty' >&2; exit 2; }
+ printf '[qc_preprocessing] step=%s array_job_id=%s array_task_id=%s selected_item=%s config=%s hostname=%s start_time=%s\n' "$STEP" "${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-unknown}}" "$SLURM_ARRAY_TASK_ID" "$ITEM" "$CONFIG" "$(hostname)" "$(date -u +%FT%TZ)" >&2
+  SAMPLE="$ITEM"; [[ "$STEP" == mitos2_annotation ]] && SAMPLE=""
+}
+prepare_task_manifest() {
+ local args=(python3 qc_analysis/scripts/qc_array_manifest.py "$1" "$CONFIG")
+ [[ -n "$SAMPLE" ]] && args+=(--sample "$SAMPLE")
+ [[ "${FORCE_RERUN:-false}" == true || "${SKIP_COMPLETED:-true}" != true ]] && args+=(--force)
+ [[ "$PREPARE_RETRY" == 1 ]] && args+=(--retry)
+ local output; output=$("${args[@]}"); TASK_FILE=$(printf '%s\n' "$output"|sed -n 's/^TASK_FILE=//p'); MANIFEST=$(printf '%s\n' "$output"|sed -n 's/^MANIFEST=//p'); TASK_COUNT=$(printf '%s\n' "$output"|sed -n 's/^COUNT=//p')
+}
+submit_array() {
+ local step="$1" dependency="${2:-}"; STEP="$step"
+ if [[ -n "$TASK_FILE" ]]; then
+   [[ -f "$TASK_FILE" ]] || { echo "ERROR: task file does not exist: $TASK_FILE" >&2; exit 1; }
+   TASK_COUNT=$(awk 'NF{n++} END{print n+0}' "$TASK_FILE")
+   (( TASK_COUNT > 0 )) || { echo "ERROR: task file is empty: $TASK_FILE" >&2; exit 1; }
+ else prepare_task_manifest "$step"; fi
+ local kind array;kind=$(classify_step "$step");array=$(build_array_expression "$TASK_COUNT" "$kind");resolve_step_resources "$step"
+ local logs="${SLURM_LOG_DIR:-logs/qc_preprocessing}/$step";mkdir -p "$logs"
+ local cmd=(sbatch --parsable --job-name="qc_preprocessing_${step}" --array="$array" --output="$logs/%A_%a.out" --error="$logs/%A_%a.err" --time="$RES_TIME" --mem="$RES_MEM" --cpus-per-task="$RES_CPUS")
+ [[ -n "${SLURM_PARTITION:-}" ]] && cmd+=(--partition="$SLURM_PARTITION"); [[ -n "$dependency" ]] && cmd+=(--dependency="afterok:$dependency")
+ cmd+=("$(readlink -f "${BASH_SOURCE[0]}")" --array-task --task-file "$TASK_FILE" "$step" "$CONFIG")
+ printf '[qc_preprocessing] step=%s array=%s concurrency=%s dependency=%s task_file=%s resources=%s,%s,%s logs=%s/%%A_%%a.{out,err}\n' "$step" "$array" "$ARRAY_CONCURRENCY" "${dependency:-none}" "$TASK_FILE" "$RES_TIME" "$RES_MEM" "$RES_CPUS" "$logs" >&2
+ if [[ "$PREPARE_ONLY" == 1 ]]; then LAST_JOB_ID="prepared_${step}"; return; fi
+ if [[ "$DRY_RUN_SUBMIT" == 1 ]]; then printf 'DRY RUN:';printf ' %q' "${cmd[@]}";printf '\n'; LAST_JOB_ID="dry_${step}"; else command -v sbatch >/dev/null || { echo 'ERROR: --submit requires sbatch on PATH' >&2;exit 127; };LAST_JOB_ID=$("${cmd[@]}");LAST_JOB_ID=${LAST_JOB_ID%%;*};fi
+}
+submit_workflow() {
+ local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results discover_global_anchor coordinate_liftover mitos2_prepare_tasks mitos2_annotation mitos2_merge build_primate_codon_table compare_genbank_mitos2 codon_match_validate codon_match codon_match_merge trna_match rrna_match)
+ for s in "${steps[@]}"; do
+   # Automatic merges are explicit graph nodes here, never also submitted by producers.
+   TASK_FILE=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
+ done
+}
+if [[ -n "$TASK_FILE" ]]; then resolve_array_item; fi
+if [[ "$SUBMIT_TO_SLURM" == 1 ]]; then
+ [[ -z "${SLURM_JOB_ID:-}" ]] || { echo 'ERROR: cannot submit from a Slurm job' >&2;exit 2; }
+ if [[ "$STEP" == all ]];then submit_workflow
+ else submit_array "$STEP"; producer="$LAST_JOB_ID"
+   if [[ "${AUTO_SUBMIT_MERGE:-true}" == true ]];then case "$STEP" in codon_match) TASK_FILE=""; submit_array codon_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; mitos2_annotation) TASK_FILE=""; submit_array mitos2_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; esac;fi
+ fi
+ exit 0
 fi
 
 # Keep the workflow interpreter stable: activating MITOS2 must not change the
@@ -245,7 +264,9 @@ run_mitos2_annotation() {
   echo "[qc_preprocessing] Running mitos2_annotation ${mode} with config: ${CONFIG}" >&2
   local cmd=("$MITOS2_PYTHON" "$MITOS2_SCRIPT" --config "$CONFIG")
   [[ -n "$mode" ]] && cmd+=("$mode")
-  [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
+  if [[ "$STEP" == mitos2_annotation && "${ITEM:-}" == task:* ]]; then cmd+=(--task-id "${ITEM#task:}")
+  elif [[ "$STEP" == mitos2_annotation && "${ITEM:-}" == reference:* ]]; then cmd+=(--reference "${ITEM#reference:}")
+  elif [[ -n "${SAMPLE:-}" ]]; then cmd+=(--sample "$SAMPLE"); fi
   "${cmd[@]}"
 }
 
