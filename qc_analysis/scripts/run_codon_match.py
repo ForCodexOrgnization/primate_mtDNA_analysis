@@ -14,6 +14,7 @@ from qc_analysis.lib.match_utils import (  # noqa: E402
 
 FIELDS = [
     ('MTCODON_STATUS', 'Codon match status'),
+    ('MTCODON_SUPPORTED_SNV', 'Whether SRC_REF and SRC_ALT describe a simple biallelic SNV'),
     ('MTCODON_MATCH', 'A gene/phase-matched human codon matches the source reference or alternate codon'),
     ('MTCODON_STRICT_PHASE', 'Strict phase matching enabled'),
     ('MTCODON_GENE_MATCH', 'At least one source-human pair has matching genes'),
@@ -40,6 +41,14 @@ def complement_base(base):
     return {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}.get(str(base).upper(), str(base).upper())
 
 
+def is_supported_snv(ref, alt):
+    """Return whether source alleles are single, unambiguous DNA bases."""
+    ref = str(ref or '').strip().upper()
+    alt = str(alt or '').strip().upper()
+    return (len(ref) == 1 and len(alt) == 1
+            and ref in {'A', 'C', 'G', 'T'} and alt in {'A', 'C', 'G', 'T'})
+
+
 def mutate_codon(codon, phase, alt_base):
     if codon in {'', None, '.', 'NA'} or phase in {'', None, '.', 'NA'} or alt_base in {'', None, '.', 'NA'}:
         return '.'
@@ -47,10 +56,10 @@ def mutate_codon(codon, phase, alt_base):
         phase = int(phase)
     except (TypeError, ValueError):
         return '.'
-    bases, alt = list(str(codon).upper()), str(alt_base).upper()
-    if len(bases) != 3 or not 1 <= phase <= 3 or not alt:
+    bases, alt = list(str(codon).upper()), str(alt_base).strip().upper()
+    if len(bases) != 3 or not 1 <= phase <= 3 or len(alt) != 1 or alt not in {'A', 'C', 'G', 'T'}:
         return '.'
-    bases[phase - 1] = alt[0]
+    bases[phase - 1] = alt
     return ''.join(bases)
 
 
@@ -89,6 +98,11 @@ def load_sample_reference_map(path):
     for row in rows(path):
         sample, reference_key = (row.get('sample') or '').strip(), (row.get('reference_key') or '').strip()
         if sample and reference_key:
+            if sample in mapping and mapping[sample] != reference_key:
+                raise SystemExit(
+                    f"Conflicting reference keys for sample {sample!r}: "
+                    f"{mapping[sample]!r} versus {reference_key!r}"
+                )
             mapping[sample] = reference_key
     return mapping
 
@@ -102,21 +116,22 @@ def _row_tie_break(row):
                  ('gene', 'codon_seq', 'codon_pos_in_triplet', 'strand'))
 
 
-def evaluate_candidates(source_rows, human_rows, source_alt):
+def evaluate_candidates(source_rows, human_rows, source_alt, supported_snv=True):
     candidates = []
     for source_row in source_rows:
-        strand_alt = complement_base(source_alt) if source_row.get('strand', '+') == '-' else source_alt
+        strand_alt = (complement_base(source_alt)
+                      if supported_snv and source_row.get('strand', '+') == '-' else source_alt)
         source_gene = source_row.get('gene', '')
         source_phase = str(source_row.get('codon_pos_in_triplet', ''))
         source_codon = source_row.get('codon_seq', '.')
-        alternate_codon = mutate_codon(source_codon, source_phase, strand_alt)
+        alternate_codon = mutate_codon(source_codon, source_phase, strand_alt) if supported_snv else '.'
         for human_row in human_rows:
             human_gene = human_row.get('gene', '')
             human_phase = str(human_row.get('codon_pos_in_triplet', ''))
             human_codon = human_row.get('codon_seq', '')
             gene_match = source_gene == human_gene
             phase_match = source_phase == human_phase
-            codon_match = human_codon in {source_codon, alternate_codon}
+            codon_match = supported_snv and human_codon in {source_codon, alternate_codon}
             candidates.append({
                 'source': source_row, 'human': human_row, 'source_gene': source_gene,
                 'human_gene': human_gene, 'source_phase': source_phase, 'human_phase': human_phase,
@@ -140,13 +155,15 @@ def _tie_break(candidate):
         'alternate_codon'))
 
 
-def annotate(source_rows, human_rows, source_alt, strict):
+def annotate(source_rows, human_rows, source_alt, strict, source_ref='A'):
     """Build INFO values for all annotation pairs and a deterministic representative."""
-    candidates = evaluate_candidates(source_rows, human_rows, source_alt)
+    supported_snv = is_supported_snv(source_ref, source_alt)
+    candidates = evaluate_candidates(source_rows, human_rows, source_alt, supported_snv)
     source_genes = sorted({row.get('gene', '') for row in source_rows if row.get('gene')})
     human_genes = sorted({row.get('gene', '') for row in human_rows if row.get('gene')})
     overlap = len(source_rows) > 1 or len(human_rows) > 1
     vals = {
+        'MTCODON_SUPPORTED_SNV': 'yes' if supported_snv else 'no',
         'MTCODON_STRICT_PHASE': 'yes' if strict else 'no',
         'MTCODON_N_PRIMATE_ANNOTATIONS': str(len(source_rows)),
         'MTCODON_N_HUMAN_ANNOTATIONS': str(len(human_rows)),
@@ -175,7 +192,7 @@ def annotate(source_rows, human_rows, source_alt, strict):
     selected_source = best['source'] if best else min(source_rows, key=_row_tie_break, default=None)
     selected_human = best['human'] if best else min(human_rows, key=_row_tie_break, default=None)
     selected_alt = '.'
-    if selected_source:
+    if selected_source and supported_snv:
         strand_alt = complement_base(source_alt) if selected_source.get('strand', '+') == '-' else source_alt
         selected_alt = mutate_codon(selected_source.get('codon_seq'),
                                     selected_source.get('codon_pos_in_triplet'), strand_alt)
@@ -198,7 +215,8 @@ def main():
     args = parser.parse_args(); config = yaml(args.config); section = config['codon_match']
     paths, settings = section['paths'], section['settings']; strict = bool(settings.get('strict_phase_match', True))
     reference_table, map_table = paths.get('reference_codon_table'), paths.get('sample_reference_map')
-    if reference_table and map_table:
+    reference_level_mode = bool(reference_table and map_table)
+    if reference_level_mode:
         primate = load_codon_index(reference_table, 'reference_key')
         sample_references = load_sample_reference_map(map_table)
     else:  # compatibility with historical sample-level tables
@@ -212,6 +230,14 @@ def main():
         raise SystemExit('No samples found; supply --sample or --input.')
     allrows = []
     for sample in samples:
+        if reference_level_mode:
+            if sample not in sample_references:
+                raise SystemExit(
+                    f"Sample {sample!r} is missing from sample_reference_map: {map_table}"
+                )
+            reference_key = sample_references[sample]
+        else:
+            reference_key = sample
         inp = Path(args.input) if args.input else Path(paths['input_vcf_dir']) / str(settings['input_vcf_pattern']).format(sample=sample)
         out = Path(args.output) if args.output else Path(paths['output_dir']) / 'vcf_codon' / f"{sample}{settings['output_suffix']}"
         if not inp.exists():
@@ -222,14 +248,14 @@ def main():
                 if line.startswith('#'):
                     header.append(line); continue
                 fields = line.rstrip('\n').split('\t'); info = info_parse(fields[7])
-                _, source_pos, _, source_alt = source(info); lifted_pos = human_pos(fields, info)
-                reference_key = sample_references.get(sample, sample)
+                _, source_pos, source_ref, source_alt = source(info); lifted_pos = human_pos(fields, info)
                 source_rows = primate.get((reference_key, source_pos), []) if source_pos else []
                 human_rows = human.get(('', lifted_pos), []) if lifted_pos else []
-                vals, candidates = annotate(source_rows, human_rows, source_alt, strict)
+                vals, candidates = annotate(source_rows, human_rows, source_alt, strict, source_ref)
                 if not source_pos or not lifted_pos: status = 'MISSING_COORD'
                 elif not source_rows: status = 'SKIPPED_NONCODING'
                 elif not human_rows: status = 'NO_HUMAN_CODON'
+                elif vals['MTCODON_SUPPORTED_SNV'] == 'no': status = 'UNSUPPORTED_NON_SNV'
                 elif vals['MTCODON_MATCH'] == 'yes': status = 'PASS'
                 elif strict and vals['MTCODON_GENE_MATCH'] == 'no': status = 'GENE_MISMATCH'
                 elif strict and vals['MTCODON_PHASE_MATCH'] == 'no': status = 'PHASE_MISMATCH'
@@ -244,7 +270,7 @@ def main():
         with out.open('w') as handle:
             handle.writelines(inject_headers(header, FIELDS, 'MTCODON')); handle.writelines(body)
         row = {'sample': sample, 'input_vcf': str(inp), 'output_vcf': str(out), 'total_records': len(body),
-               **{f'status_{name}': counts[name] for name in ['PASS', 'SKIPPED_NONCODING', 'NO_HUMAN_CODON', 'GENE_MISMATCH', 'PHASE_MISMATCH', 'MISMATCH', 'MISSING_COORD']},
+               **{f'status_{name}': counts[name] for name in ['PASS', 'SKIPPED_NONCODING', 'NO_HUMAN_CODON', 'UNSUPPORTED_NON_SNV', 'GENE_MISMATCH', 'PHASE_MISMATCH', 'MISMATCH', 'MISSING_COORD']},
                **{name: metrics[name] for name in ['records_with_overlapping_source_cds', 'records_with_overlapping_human_cds', 'records_with_overlapping_cds', 'records_with_ambiguous_best_match', 'records_with_multiple_pair_candidates']},
                'strict_phase_match': strict, 'status': 'completed'}
         write_summary(Path(paths['reports_dir']) / f'{sample}.codon_match_summary.tsv', row); allrows.append(row)
