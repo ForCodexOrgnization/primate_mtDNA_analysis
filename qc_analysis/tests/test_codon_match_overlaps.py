@@ -62,6 +62,7 @@ def test_nonoverlap_regression_and_minus_strand_alt():
     assert len(candidates) == 1
     assert values['MTCODON_OVERLAPPING_CDS'] == 'no'
     assert values['MTCODON_PRIMATE_ALT_CODON'] == 'ATG'  # complement(A) is T
+    assert values['MTCODON_SUPPORTED_SNV'] == 'yes'
     assert values['MTCODON_GENE_MATCH'] == values['MTCODON_PHASE_MATCH'] == values['MTCODON_MATCH'] == 'yes'
 
 
