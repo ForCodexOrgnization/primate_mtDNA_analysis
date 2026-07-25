@@ -10,6 +10,44 @@ GLOBAL_STEPS = {"collect_variant_calling_results", "discover_global_anchor", "bu
  "compare_genbank_mitos2", "mitos2_prepare_tasks", "mitos2_merge", "codon_match_validate",
  "codon_match_merge", "intraspecies_contamination"}
 
+STEP_SECTIONS = {
+    "collect_variant_calling_results": "collect_variant_calling",
+    "discover_global_anchor": "global_anchor_discovery",
+    "coordinate_liftover": "coordinate_liftover",
+    "mitos2_prepare_tasks": "mitos2_annotation", "mitos2_annotation": "mitos2_annotation",
+    "mitos2_merge": "mitos2_annotation", "build_primate_codon_table": "build_primate_codon_table",
+    "compare_genbank_mitos2": "genbank_mitos2_comparison",
+    "codon_match_validate": "codon_match", "codon_match": "codon_match", "codon_match_merge": "codon_match",
+    "trna_match": "trna_match", "rrna_match": "rrna_match",
+    "intraspecies_contamination": "intraspecies_contamination",
+}
+FALLBACK_OUTPUTS = {
+    "collect_variant_calling_results": "results/qc/variant_calling_collection",
+    "discover_global_anchor": "results/qc/coordinate_liftover/global_anchor",
+    "coordinate_liftover": "results/qc/coordinate_liftover",
+    "mitos2_prepare_tasks": "results/qc/mitos2_annotation", "mitos2_annotation": "results/qc/mitos2_annotation",
+    "mitos2_merge": "results/qc/mitos2_annotation", "build_primate_codon_table": "results/qc/codon_table_build",
+    "compare_genbank_mitos2": "results/qc/genbank_mitos2_comparison",
+    "codon_match_validate": "results/qc/codon_match", "codon_match": "results/qc/codon_match",
+    "codon_match_merge": "results/qc/codon_match", "trna_match": "results/qc/trna_match",
+    "rrna_match": "results/qc/rrna_match", "intraspecies_contamination": "results/qc/intraspecies_contamination",
+}
+
+def resolve_runtime_paths(step, cfg):
+    """Resolve biological output, scheduler metadata, and log roots for a step."""
+    section=cfg.get(STEP_SECTIONS.get(step,''),{}) or {}; paths=section.get('paths',{}) or {}
+    explicit=paths.get('job_array_dir')
+    output=paths.get('output_dir')
+    if not output:
+        reports=paths.get('reports_dir')
+        if reports: output=str(Path(reports).parent)
+    configured_output=bool(output)
+    output=str(output or FALLBACK_OUTPUTS.get(step, f'.workflow/qc_preprocessing/{step}'))
+    fallback_metadata=step not in FALLBACK_OUTPUTS and not configured_output
+    job_array=str(explicit or (Path(output) if fallback_metadata else Path(output)/'job_arrays'))
+    log_dir=paths.get('log_dir') or str(Path(output)/'logs'/'job_arrays')
+    return {'output_dir':output, 'job_array_dir':job_array, 'log_dir':str(log_dir)}
+
 def table_samples(path):
     path=Path(path)
     if not path.is_file(): return []
@@ -42,8 +80,11 @@ def paths_for(step,s,cfg):
     return str(inp),str(Path(p['output_dir'])/folder/f'{s}{suffix}'),tag
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('step');ap.add_argument('config');ap.add_argument('--sample');ap.add_argument('--outdir',default='results/qc/job_arrays');ap.add_argument('--force',action='store_true');ap.add_argument('--retry',action='store_true');a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('step');ap.add_argument('config');ap.add_argument('--sample');ap.add_argument('--outdir');ap.add_argument('--force',action='store_true');ap.add_argument('--retry',action='store_true');ap.add_argument('--resolve-paths',action='store_true');a=ap.parse_args()
     cfg=read_simple_yaml(Path(a.config)); step=a.step
+    runtime=resolve_runtime_paths(step,cfg)
+    if a.resolve_paths:
+        print(f'OUTPUT_DIR={runtime["output_dir"]}');print(f'JOB_ARRAY_DIR={runtime["job_array_dir"]}');print(f'LOG_DIR={runtime["log_dir"]}');return
     if a.sample: candidates=[a.sample]
     elif step in GLOBAL_STEPS: candidates=[step]
     elif step=='mitos2_annotation':
@@ -73,8 +114,9 @@ def main():
         include=(not complete or a.force) if not a.retry else (not complete)
         if include:rows.append((item,inp,out,'force_rerun' if complete else 'pending'))
     if not rows: raise SystemExit(f'ERROR: no eligible tasks for {step} (candidates={len(candidates)}, completed={done}, missing_inputs={missing})')
-    outdir=Path(a.outdir);outdir.mkdir(parents=True,exist_ok=True);stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-    task=outdir/f'{step}.{stamp}.tasks.txt'; manifest=outdir/f'{step}.{stamp}.manifest.tsv'
+    outdir=Path(a.outdir or runtime['job_array_dir']);outdir.mkdir(parents=True,exist_ok=True);stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    purpose='.retry' if a.retry else ''
+    task=outdir/f'{step}.{stamp}{purpose}.tasks.txt'; manifest=outdir/f'{step}.{stamp}{purpose}.manifest.tsv'
     tmp=task.with_suffix(task.suffix+'.tmp');tmp.write_text(''.join(r[0]+'\n' for r in rows));os.replace(tmp,task)
     mt=manifest.with_suffix(manifest.suffix+'.tmp')
     with mt.open('w',newline='') as f:
@@ -84,5 +126,6 @@ def main():
     os.replace(mt,manifest)
     pointer=outdir/f'{step}.current.tsv';pt=pointer.with_suffix('.tmp');pt.write_text(str(manifest)+'\n');os.replace(pt,pointer)
     print(f'TASK_FILE={task}');print(f'MANIFEST={manifest}');print(f'COUNT={len(rows)}')
+    print(f'OUTPUT_DIR={runtime["output_dir"]}');print(f'JOB_ARRAY_DIR={outdir}');print(f'LOG_DIR={runtime["log_dir"]}')
     print(f'STATS=total candidates {len(candidates)}; already completed {done}; scheduled {len(rows)}; missing inputs {missing}; invalid existing outputs {invalid}',file=sys.stderr)
 if __name__=='__main__':main()

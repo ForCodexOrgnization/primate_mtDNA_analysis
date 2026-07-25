@@ -14,18 +14,50 @@ environment variable or `--array-concurrency`; the value must be positive.
 `CODON_MATCH_`, `LIFTOVER_`, `TRNA_MATCH_`, `RRNA_MATCH_`, and `MITOS2_`
 prefixes override `SLURM_TIME`, `SLURM_MEM`, and `SLURM_CPUS` for their steps.
 
-Each submission gets immutable `.tasks.txt` and `.manifest.tsv` files in
-`results/qc/job_arrays`.  Candidate samples come respectively from the
+Each submission gets immutable, UTC-timestamped `.tasks.txt`, `.manifest.tsv`,
+and `.submission.tsv` files under that step's biological output root. Path
+resolution uses `paths.job_array_dir` when configured, then
+`paths.output_dir/job_arrays`, then the parent of `paths.reports_dir` plus
+`job_arrays`. Steps without those configured locations use their documented
+step defaults; unknown future steps fall back to
+`.workflow/qc_preprocessing/<step>`. Candidate samples come respectively from the
 liftover sample/reference table, the codon sample/reference map plus lifted
 VCFs, and the configured tRNA/rRNA fallback chains.  Valid completed annotated
 VCFs are skipped by default; use `FORCE_RERUN=true` (or
 `SKIP_COMPLETED=false`) to include them. `--prepare-retry --prepare-only`
-creates a list containing missing or invalid outputs without submission.
+creates a timestamped retry list and manifest containing missing or invalid
+outputs without submission. A submitted worker always receives that immutable
+timestamped task-file path; `<step>.current.tsv` is only a convenience pointer
+and is never read by running jobs.
 
 Codon and MITOS2 producer arrays automatically submit their singleton merge
 with `afterok` unless `AUTO_SUBMIT_MERGE=false`. `--submit all` creates the
 ordered dependency graph printed by the wrapper rather than one monolithic
-job. Per-task logs are `logs/qc_preprocessing/<step>/%A_%a.{out,err}`.
+job. Logs resolve in this order: `SLURM_LOG_DIR`, configured `paths.log_dir`,
+then `<step output>/logs/job_arrays`. `SLURM_LOG_DIR` remains a global override
+but is no longer required for a useful layout.
+
+For example, codon matching keeps biological results, workflow metadata, and
+scheduler logs separate:
+
+```text
+results/qc/codon_match/
+├── vcf_codon/
+├── reports/
+├── job_arrays/
+└── logs/job_arrays/
+```
+
+The wrapper prints the resolved step, output directory, immutable task file,
+manifest, log pattern, task count, and array expression. Paths containing
+spaces are passed as individual shell arguments and remain supported.
+
+Historical files under `results/qc/job_arrays/` are intentionally not moved or
+deleted because pending or running arrays may still reference them. All new
+submissions use the step-specific layout. After confirming with Slurm that no
+old arrays are active, administrators may archive those files manually. No
+automatic migration is provided because safe reference detection is site- and
+scheduler-dependent.
 
 ```bash
 # Validate codon inputs (singleton array)
