@@ -1,0 +1,159 @@
+# QC analysis pipeline
+
+本目录包含变异检测结果收集、全局锚点发现、坐标转换以及密码子、tRNA、rRNA
+注释等 QC 步骤。推荐统一通过
+[`scripts/run_qc_preprocessing.sh`](scripts/run_qc_preprocessing.sh) 运行，而不是直接调用各个
+Python/R 脚本。默认配置文件是
+[`../config/qc_preprocessing.yaml`](../config/qc_preprocessing.yaml)。运行前请先检查其中的输入、
+输出、参考序列和软件环境路径。
+
+## 快速开始（推荐：Slurm）
+
+在仓库根目录、集群登录节点运行：
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit all config/qc_preprocessing.yaml
+```
+
+`--submit all` 会把各步骤作为独立 Slurm job/array 提交，并用 `afterok` 依赖保证下游只在
+上游成功后启动。这是完整数据集的推荐运行方式；不要在计算节点或已有 Slurm job 中再次
+使用 `--submit`。
+
+如需在当前 shell 中按顺序串行执行（适合调试或小数据集）：
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yaml
+```
+
+直接模式不会提交 job array，所有样本会由当前进程依次处理。MITOS2 等耗时步骤在生产数据
+上通常应使用 `--submit`。
+
+## `all` 的运行顺序
+
+完整主流程按以下依赖顺序运行：
+
+| 顺序 | wrapper step | 作用 | 主要下游依赖 |
+|---:|---|---|---|
+| 1 | `collect_variant_calling_results` | 收集并标准化 variant-calling 的 VCF、coverage 和 mtCN 结果 | 坐标转换输入 |
+| 2 | `discover_global_anchor` | 对参考线粒体序列做全局比对并生成经过验证的 anchor 表 | 坐标转换 anchor |
+| 3 | `coordinate_liftover` | 将每个样本的原始物种坐标转换到人 chrM 坐标 | 后续 VCF 注释 |
+| 4 | `mitos2_prepare_tasks` | 生成每个目标参考序列一条记录的 MITOS2 任务表 | 仅 `--submit all` 中的显式节点 |
+| 5 | `mitos2_annotation` | 按参考序列运行 MITOS2 | MITOS2 合并结果 |
+| 6 | `mitos2_merge` | 合并所有已完成参考序列的 MITOS2 原始结果 | 密码子表的 fallback 输入 |
+| 7 | `build_primate_codon_table` | 优先使用 GenBank、必要时使用 MITOS2，构建参考级密码子表和样本映射 | `codon_match` |
+| 8 | `compare_genbank_mitos2` | 在配置启用时比较 GenBank 与 MITOS2 CDS 注释 | 注释一致性报告 |
+| 9 | `codon_match_validate` | 在读取 VCF 前校验并建立密码子输入索引 | 仅 `--submit all` 中的显式校验节点 |
+| 10 | `codon_match` | 给 lifted VCF 添加密码子匹配注释 | tRNA 注释输入 |
+| 11 | `codon_match_merge` | 原子合并每个样本的密码子汇总 | cohort 汇总 |
+| 12 | `trna_match` | 给 VCF 添加 tRNA 匹配和结构相关注释 | rRNA 注释输入 |
+| 13 | `rrna_match` | 给 VCF 添加 rRNA 区域/可选结构注释 | 最终注释 VCF |
+
+上表是 `--submit all` 创建的完整依赖图。直接运行 `all` 时，wrapper 会在单一进程中完成相同
+的主要生物学步骤，但任务准备、输入校验和部分合并操作会由相应步骤内部处理，而不是作为
+独立 Slurm 节点显示。
+
+`intraspecies_contamination` 是使用原始物种坐标的独立 QC，不属于 `all`，需要按需单独运行；
+详见 [`docs/intraspecies_contamination.md`](docs/intraspecies_contamination.md)。
+
+## 分步骤运行
+
+如果需要检查中间结果或重跑失败阶段，应保持上表顺序。例如：
+
+```bash
+CONFIG=config/qc_preprocessing.yaml
+
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit collect_variant_calling_results "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit discover_global_anchor "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit mitos2_annotation "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit build_primate_codon_table "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match_validate "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit trna_match "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit rrna_match "$CONFIG"
+```
+
+注意：单独以 `--submit` 运行 `mitos2_annotation` 或 `codon_match` 时，wrapper 默认分别自动提交
+`mitos2_merge` 或 `codon_match_merge`，并设置 `afterok` 依赖。通常不需要再次手动提交 merge。
+如需自行控制依赖，可在提交 producer 时设置 `AUTO_SUBMIT_MERGE=false`。
+
+运行独立的种内污染检查：
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit intraspecies_contamination config/qc_preprocessing.yaml
+```
+
+## 单样本运行与 array 并发
+
+`coordinate_liftover`、`codon_match`、`trna_match` 和 `rrna_match` 是按样本拆分的 array；
+`mitos2_annotation` 按参考序列拆分。默认最多同时运行 20 个 array task：
+
+```bash
+# 修改整个提交的 array 并发上限
+bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  --submit --array-concurrency 40 codon_match config/qc_preprocessing.yaml
+
+# 只运行一个样本
+bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  --submit --sample SAMPLE_NAME coordinate_liftover config/qc_preprocessing.yaml
+
+# SAMPLE 环境变量写法等价
+SAMPLE=SAMPLE_NAME \
+  bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  --submit codon_match config/qc_preprocessing.yaml
+```
+
+已完成且通过完整性检查的 array 项默认会被跳过。需要强制纳入任务表时使用：
+
+```bash
+FORCE_RERUN=true \
+  bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  --submit codon_match config/qc_preprocessing.yaml
+```
+
+只生成任务清单、不提交，或预览最终 `sbatch` 命令：
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  --submit --prepare-only codon_match config/qc_preprocessing.yaml
+
+bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  --dry-run-submit codon_match config/qc_preprocessing.yaml
+```
+
+任务清单、submission metadata 和日志默认写在各步骤 output 目录下的 `job_arrays/` 和
+`logs/job_arrays/`。重试、资源覆盖和目录解析规则详见
+[`docs/slurm_job_arrays.md`](docs/slurm_job_arrays.md)。
+
+## 常用资源和环境覆盖
+
+```bash
+# 通用 Slurm 资源
+SLURM_TIME=48:00:00 SLURM_MEM=32G SLURM_CPUS=8 \
+  bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  --submit build_primate_codon_table config/qc_preprocessing.yaml
+
+# 步骤专用资源（优先于通用值）
+LIFTOVER_SLURM_TIME=12:00:00 LIFTOVER_SLURM_CPUS=8 \
+  bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  --submit coordinate_liftover config/qc_preprocessing.yaml
+
+# codon table 内部 worker 数应与申请的 CPU 数相符
+SLURM_CPUS=8 CODON_TABLE_WORKERS=8 \
+  bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  --submit build_primate_codon_table config/qc_preprocessing.yaml
+```
+
+可用的步骤专用前缀包括 `LIFTOVER_`、`CODON_MATCH_`、`TRNA_MATCH_`、`RRNA_MATCH_`
+和 `MITOS2_`，后接 `SLURM_TIME`、`SLURM_MEM` 或 `SLURM_CPUS`。还可使用
+`SLURM_PARTITION` 指定分区。Biopython 与 MITOS2 的 module/conda 设置来自配置文件，必要时
+可用 wrapper `--help` 中列出的环境变量覆盖。
+
+## 查看帮助与详细文档
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh --help
+```
+
+各步骤的输入、输出和算法说明位于 [`docs/`](docs/)；遇到失败时，先查看相应步骤的
+`logs/job_arrays/*.err`、任务 manifest 以及 YAML 中的路径和 `enabled` 设置。

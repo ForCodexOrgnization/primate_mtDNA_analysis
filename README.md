@@ -14,3 +14,6 @@ data/                   # Curated small data files when present
 ```
 
 Generated artifacts should be written under `results/`. The old `outputs/` root has been removed because it duplicated `results/`; QC preprocessing now writes under `results/qc/` by default.
+
+See [`qc_analysis/README.md`](qc_analysis/README.md) for the QC pipeline order and
+the recommended `run_qc_preprocessing.sh` commands for local and Slurm execution.
