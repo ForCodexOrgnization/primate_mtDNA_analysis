@@ -273,7 +273,8 @@ trna_match:
     human_vcf_chrom_norm: none
     species_trna_lookup_ignore_chrom: false
     human_trna_lookup_ignore_chrom: false
-    run_trna_gene_qc: true
+    # Interval-level tRNA gene QC is not implemented; enabling it is rejected.
+    run_trna_gene_qc: false
     write_summary: true
     pass_only: false
     require_compensated_for_strict_stem: true
