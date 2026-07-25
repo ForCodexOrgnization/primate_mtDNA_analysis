@@ -1,6 +1,6 @@
 """Small standard-library helpers shared by downstream QC annotation modules."""
 from __future__ import annotations
-import csv, gzip
+import csv, gzip, os, tempfile
 from pathlib import Path
 
 def scalar(v):
@@ -42,16 +42,24 @@ def rows(path):
  with open_text(path) as f: return list(csv.DictReader(f,delimiter='\t'))
 def write_summary(path, row):
  path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
- with path.open('w',newline='') as f:
-  w=csv.DictWriter(f,fieldnames=list(row));w.writeheader();w.writerow(row)
+ fd,tmp=tempfile.mkstemp(prefix=f'.{path.name}.',suffix='.tmp',dir=path.parent,text=True)
+ with os.fdopen(fd,'w',newline='') as f:
+  w=csv.DictWriter(f,fieldnames=list(row),delimiter='\t');w.writeheader();w.writerow(row)
+  f.flush(); os.fsync(f.fileno())
+ os.replace(tmp,path)
 def sample_names(cfg):
  p=cfg.get('coordinate_liftover',{}).get('paths',{}).get('sample_ref_file')
  if not p or not Path(p).exists(): return []
  with open(p) as f:return [r.get('sample','') for r in csv.DictReader(f,delimiter='\t') if r.get('sample')]
 def inject_headers(header, fields, prefix):
  seen='\n'.join(header); out=[]
- for name,desc in fields:
+ for spec in fields:
+  if len(spec)==2: name,desc=spec; number,type_='1','String'
+  elif len(spec)==4: name,number,type_,desc=spec
+  else: raise ValueError(f'Invalid INFO field specification: {spec!r}')
   if f'ID={name},' not in seen: out.append(f'##INFO=<ID={name},Number=1,Type=String,Description="{desc}">\n')
+  if out and out[-1].startswith(f'##INFO=<ID={name},'):
+   out[-1]=f'##INFO=<ID={name},Number={number},Type={type_},Description="{desc}">\n'
  for i,x in enumerate(header):
   if x.startswith('#CHROM'): return header[:i]+out+header[i:]
  return header+out

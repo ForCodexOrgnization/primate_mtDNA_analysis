@@ -1,16 +1,56 @@
 # Codon match
-`run_codon_match.py` annotates, but never filters, raw lifted VCF records. It reads the reference-level primate codon table and the sample-reference map, resolves `sample -> reference_key`, then finds annotations by `reference_key + pos`. This prevents sample-level duplication while ensuring that coordinate reference identity—not species alone—selects the codon annotation. Plain TSV and gzip-compressed TSV codon tables are streamed while their position indexes are built.
 
-Codon-table positions are one-to-many: every CDS annotation at a position is preserved. In particular, the mitochondrial `MT-ATP8`/`MT-ATP6` and `MT-ND4L`/`MT-ND4` overlaps are not collapsed. Matching evaluates every source-human annotation combination, so a valid match in one overlapping CDS cannot be hidden by another annotation. The legacy single-valued source/human gene, codon, and phase INFO fields contain a deterministic best representative. `MTCODON_N_PRIMATE_ANNOTATIONS`, `MTCODON_N_HUMAN_ANNOTATIONS`, `MTCODON_N_PAIR_CANDIDATES`, `MTCODON_OVERLAPPING_CDS`, `MTCODON_PRIMATE_GENES`, `MTCODON_HUMAN_GENES`, `MTCODON_MATCHING_GENES`, and `MTCODON_AMBIGUOUS_BEST_MATCH` expose the complete overlap context.
+`run_codon_match.py` validates its inputs, builds compact one-to-many indexes, resolves `sample -> reference_key`, annotates every lifted VCF record, and atomically publishes a VCF and per-sample summary. It never filters records. A separate merge operation atomically creates the all-samples summary.
 
-Alternate codons are constructed only when `SRC_REF` and `SRC_ALT` are each one of `A`, `C`, `G`, or `T` (case-insensitive), making the source variant a simple biallelic SNV. Insertions, deletions, multi-allelic ALT values, symbolic alleles, missing alleles, and ambiguous bases receive `MTCODON_SUPPORTED_SNV=no`, `MTCODON_STATUS=UNSUPPORTED_NON_SNV`, and no alternate codon or match. Coordinate, noncoding, and missing-human-annotation statuses take precedence, so their useful annotation context is retained.
+## Inputs and preflight
 
-Reference-level mode requires both a reference codon table and sample-reference map, and every requested sample must have a mapping. A missing mapping or duplicate sample rows with conflicting reference keys is a fatal configuration error; identical duplicate mappings are tolerated. Historical sample-level tables configured with `all_primate_position_codon_table` continue to use the sample name as their lookup key without requiring a map.
+Strict validation is the default (`codon_match.settings.strict_input_validation: true`). Required columns are:
 
-The human table requires `pos`, `gene`, `strand`, codon index/phase, codon sequence, and three genomic codon positions. Statuses are `PASS`, `SKIPPED_NONCODING`, `NO_HUMAN_CODON`, `UNSUPPORTED_NON_SNV`, `GENE_MISMATCH`, `PHASE_MISMATCH`, `MISMATCH`, and `MISSING_COORD`. Summary reports additionally count records with each status, overlapping source CDSs, overlapping human CDSs, either type of overlap, ambiguous best matches, and multiple pair candidates.
+| table | required columns |
+|---|---|
+| reference codon | `reference_key`, `pos`, `gene`, `strand`, `codon_pos_in_triplet`, `codon_seq`, `ref_base_genome` |
+| historical sample codon | `sample`, `pos`, `gene`, `strand`, `codon_pos_in_triplet`, `codon_seq`, `ref_base_genome` |
+| human codon | `pos`, `gene`, `strand`, `codon_pos_in_triplet`, `codon_seq` |
+| sample-reference map | `sample`, `reference_key` |
 
-Outputs are `vcf_codon/{sample}.lifted.codon.vcf` plus per-sample and merged report TSVs. It recognizes both `SRC_*` and `MTLIFT_ORIG_*` INFO coordinate conventions.
+Positions must be positive integers; strand is `+`/`-`; phase is 1–3; nonempty codons are three A/C/G/T bases; genomic reference bases are A/C/G/T; and keys are nonempty. Malformed rows, conflicting sample mappings, and inconsistent genomic bases at one source position are fatal. Validate without a VCF, optionally writing overlap diagnostics, with:
 
 ```bash
-python qc_analysis/scripts/run_codon_match.py --config config/qc_preprocessing.yaml --sample ERS14600320
+python qc_analysis/scripts/run_codon_match.py --config config/qc_preprocessing.yaml --validate-inputs
+python qc_analysis/scripts/run_codon_match.py --config config/qc_preprocessing.yaml --validate-inputs --report-overlaps overlaps.tsv
+bash qc_analysis/scripts/run_qc_preprocessing.sh codon_match_validate config/qc_preprocessing.yaml
 ```
+
+## Matching and overlaps
+
+Every CDS annotation at a position is retained, including ATP8/ATP6 and ND4L/ND4. Exact biological duplicate rows are removed before matching and reported through `MTCODON_DUPLICATE_ANNOTATIONS` and an optional duplicate diagnostics report. Overlap means **more than one unique nonempty gene**, not more than one raw row. Annotation counts and pair counts use deduplicated rows. Every source-human pair is evaluated and deterministic scoring/tie-breaking selects the representative.
+
+Alternate codons are constructed only for single-base A/C/G/T `SRC_REF` and `SRC_ALT`. Minus-strand ALT is complemented. Before construction, genomic-orientation `SRC_REF` is compared directly (never complemented) with `ref_base_genome`; a disagreement produces `SOURCE_REF_MISMATCH`, `MTCODON_MATCH=no`, and alternate codon `.`.
+
+`strict_gene_phase_status` is the preferred setting. It only chooses whether failures are categorized as `GENE_MISMATCH`/`PHASE_MISMATCH` or collapsed to `MISMATCH`; phase-mismatched variants never pass. Legacy `strict_phase_match` remains supported. The preferred value wins, with a warning only when both values conflict.
+
+Status precedence is: `MISSING_COORD`, `SKIPPED_NONCODING`, `NO_HUMAN_CODON`, `SOURCE_REF_MISMATCH`, `UNSUPPORTED_NON_SNV`, `PASS`, `GENE_MISMATCH`, `PHASE_MISMATCH`, `MISMATCH`.
+
+## INFO schema
+
+All fields below have `Number=1,Type=String` except the explicit groups:
+
+* String scalar: `MTCODON_STATUS`, `MTCODON_SUPPORTED_SNV`, `MTCODON_MATCH`, `MTCODON_STRICT_PHASE`, `MTCODON_GENE_MATCH`, `MTCODON_PHASE_MATCH`, `MTCODON_PRIMATE_GENE`, `MTCODON_PRIMATE_CODON`, `MTCODON_PRIMATE_ALT_CODON`, `MTCODON_PRIMATE_PHASE`, `MTCODON_HUMAN_GENE`, `MTCODON_HUMAN_CODON`, `MTCODON_HUMAN_PHASE`, `MTCODON_OVERLAPPING_CDS`, `MTCODON_AMBIGUOUS_BEST_MATCH`, `MTCODON_SOURCE_REF_MATCH`, `MTCODON_DUPLICATE_ANNOTATIONS`.
+* `Number=1,Type=Integer`: `MTCODON_N_PRIMATE_ANNOTATIONS`, `MTCODON_N_HUMAN_ANNOTATIONS`, `MTCODON_N_PAIR_CANDIDATES`.
+* `Number=.,Type=String`: `MTCODON_PRIMATE_GENES`, `MTCODON_HUMAN_GENES`, `MTCODON_MATCHING_GENES`.
+
+VCFs also receive version and source-table provenance metadata. Summaries record version, table paths, reference key, and effective strict settings.
+
+## Sequential and parallel operation
+
+Each annotation invocation writes only `<sample>.codon_match_summary.tsv`; it never touches the merged report, so independent sample jobs are safe:
+
+```bash
+python qc_analysis/scripts/run_codon_match.py --config config/qc_preprocessing.yaml --sample SAMPLE_A
+python qc_analysis/scripts/run_codon_match.py --config config/qc_preprocessing.yaml --sample SAMPLE_B
+python qc_analysis/scripts/run_codon_match.py --config config/qc_preprocessing.yaml --merge-summaries
+# wrapper equivalent
+bash qc_analysis/scripts/run_qc_preprocessing.sh codon_match_merge config/qc_preprocessing.yaml
+```
+
+Merge scans only per-sample summaries, checks identical schemas, rejects conflicting rows for a sample, sorts samples, and atomically publishes `all_samples.codon_match_summary.tsv`. The wrapper `all` workflow runs one multi-sample annotation owner and then merges; parallel sample tasks must not run the merge themselves. VCFs, summaries, merge output, and diagnostics use same-directory temporary files followed by `os.replace()`.

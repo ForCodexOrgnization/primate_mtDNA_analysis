@@ -36,8 +36,8 @@ class MatchScriptSmokeTests(unittest.TestCase):
         self.assertEqual(mutate_codon('ACG', 4, 'T'), '.')
         with tempfile.TemporaryDirectory() as td:
             d = Path(td); primate = d / 'primate.tsv'; human = d / 'human.tsv'
-            primate.write_text('sample\tpos\tgene\tcodon_seq\tcodon_pos_in_triplet\nS1\t10\tMT-ND1\tACG\t2\n')
-            human.write_text('pos\tgene\tcodon_seq\tcodon_pos_in_triplet\n10\tMT-ND1\tATG\t2\n')
+            primate.write_text('sample\tpos\tgene\tstrand\tcodon_seq\tcodon_pos_in_triplet\tref_base_genome\nS1\t10\tMT-ND1\t+\tACG\t2\tC\n')
+            human.write_text('pos\tgene\tstrand\tcodon_seq\tcodon_pos_in_triplet\n10\tMT-ND1\t+\tATG\t2\n')
             config = d / 'config.yaml'
             config.write_text(f'''codon_match:
   paths:
@@ -62,8 +62,8 @@ class MatchScriptSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td); primate = d / 'primate.tsv'; human = d / 'human.tsv'
             # MT-ND6 codons are stored in coding orientation, but SRC_ALT is genomic.
-            primate.write_text('sample\tpos\tgene\tstrand\tcodon_seq\tcodon_pos_in_triplet\nS1\t10\tMT-ND6\t-\tACG\t2\n')
-            human.write_text('pos\tgene\tcodon_seq\tcodon_pos_in_triplet\n10\tMT-ND6\tATG\t2\n')
+            primate.write_text('sample\tpos\tgene\tstrand\tcodon_seq\tcodon_pos_in_triplet\tref_base_genome\nS1\t10\tMT-ND6\t-\tACG\t2\tG\n')
+            human.write_text('pos\tgene\tstrand\tcodon_seq\tcodon_pos_in_triplet\n10\tMT-ND6\t+\tATG\t2\n')
             config = d / 'config.yaml'
             config.write_text(f'''codon_match:
   paths:
@@ -87,9 +87,9 @@ class MatchScriptSmokeTests(unittest.TestCase):
     def test_codon_resolves_sample_through_reference_map(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td); primate = d / 'reference.tsv'; mapping = d / 'map.tsv'; human = d / 'human.tsv'
-            primate.write_text('reference_key\tpos\tgene\tcodon_seq\tcodon_pos_in_triplet\nref-A\t10\tMT-ND1\tACG\t2\n')
+            primate.write_text('reference_key\tpos\tgene\tstrand\tcodon_seq\tcodon_pos_in_triplet\tref_base_genome\nref-A\t10\tMT-ND1\t+\tACG\t2\tC\n')
             mapping.write_text('sample\treference_key\nS1\tref-A\n')
-            human.write_text('pos\tgene\tcodon_seq\tcodon_pos_in_triplet\n10\tMT-ND1\tATG\t2\n')
+            human.write_text('pos\tgene\tstrand\tcodon_seq\tcodon_pos_in_triplet\n10\tMT-ND1\t+\tATG\t2\n')
             config = d / 'config.yaml'
             config.write_text(f'''codon_match:
   paths:
