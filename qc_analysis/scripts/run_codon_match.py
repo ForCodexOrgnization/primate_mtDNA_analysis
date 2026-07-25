@@ -1,284 +1,285 @@
 #!/usr/bin/env python3
-"""Annotate coordinate-lifted VCF records with source and human codon matches."""
-import argparse
-import csv
-import sys
+"""Validate codon tables and annotate coordinate-lifted VCF records."""
+from __future__ import annotations
+import argparse, csv, json, os, sys, tempfile, warnings
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from qc_analysis.lib.match_utils import (  # noqa: E402
-    human_pos, info_format, info_parse, inject_headers, open_text, rows,
-    sample_names, source, write_summary, yaml,
-)
+from qc_analysis.lib.match_utils import (human_pos, info_format, info_parse, inject_headers,
+    open_text, sample_names, source, write_summary, yaml)
 
-FIELDS = [
-    ('MTCODON_STATUS', 'Codon match status'),
-    ('MTCODON_SUPPORTED_SNV', 'Whether SRC_REF and SRC_ALT describe a simple biallelic SNV'),
-    ('MTCODON_MATCH', 'A gene/phase-matched human codon matches the source reference or alternate codon'),
-    ('MTCODON_STRICT_PHASE', 'Strict phase matching enabled'),
-    ('MTCODON_GENE_MATCH', 'At least one source-human pair has matching genes'),
-    ('MTCODON_PHASE_MATCH', 'At least one gene-matched pair has matching codon phase'),
-    ('MTCODON_PRIMATE_GENE', 'Source gene for the selected best pair'),
-    ('MTCODON_PRIMATE_CODON', 'Source reference codon for the selected best pair'),
-    ('MTCODON_PRIMATE_ALT_CODON', 'Source alternate codon constructed from strand-aware SRC_ALT'),
-    ('MTCODON_PRIMATE_PHASE', 'Source codon phase for the selected best pair'),
-    ('MTCODON_HUMAN_GENE', 'Human gene for the selected best pair'),
-    ('MTCODON_HUMAN_CODON', 'Human codon for the selected best pair'),
-    ('MTCODON_HUMAN_PHASE', 'Human codon phase for the selected best pair'),
-    ('MTCODON_N_PRIMATE_ANNOTATIONS', 'Number of source CDS annotations at this position'),
-    ('MTCODON_N_HUMAN_ANNOTATIONS', 'Number of human CDS annotations at this position'),
-    ('MTCODON_N_PAIR_CANDIDATES', 'Number of evaluated source-human annotation pairs'),
-    ('MTCODON_OVERLAPPING_CDS', 'Whether either position has multiple CDS annotations'),
-    ('MTCODON_PRIMATE_GENES', 'Sorted unique source genes at this position'),
-    ('MTCODON_HUMAN_GENES', 'Sorted unique human genes at this position'),
-    ('MTCODON_MATCHING_GENES', 'Sorted unique genes with gene, phase, and codon matches'),
-    ('MTCODON_AMBIGUOUS_BEST_MATCH', 'Whether distinct annotations tie for the best score'),
-]
+CODON_MATCH_VERSION = "2.0"
+DNA = set("ACGT")
+STRING_FIELDS = ['MTCODON_STATUS','MTCODON_SUPPORTED_SNV','MTCODON_MATCH','MTCODON_STRICT_PHASE',
+'MTCODON_GENE_MATCH','MTCODON_PHASE_MATCH','MTCODON_PRIMATE_GENE','MTCODON_PRIMATE_CODON',
+'MTCODON_PRIMATE_ALT_CODON','MTCODON_PRIMATE_PHASE','MTCODON_HUMAN_GENE','MTCODON_HUMAN_CODON',
+'MTCODON_HUMAN_PHASE','MTCODON_OVERLAPPING_CDS','MTCODON_AMBIGUOUS_BEST_MATCH',
+'MTCODON_SOURCE_REF_MATCH','MTCODON_DUPLICATE_ANNOTATIONS']
+INTEGER_FIELDS = ['MTCODON_N_PRIMATE_ANNOTATIONS','MTCODON_N_HUMAN_ANNOTATIONS','MTCODON_N_PAIR_CANDIDATES']
+MULTI_FIELDS = ['MTCODON_PRIMATE_GENES','MTCODON_HUMAN_GENES','MTCODON_MATCHING_GENES']
+DESCRIPTIONS = {
+'MTCODON_STATUS':'Codon match status','MTCODON_SUPPORTED_SNV':'Whether source alleles form a simple SNV',
+'MTCODON_MATCH':'Whether a gene/phase-matched human codon matches source reference or alternate codon',
+'MTCODON_STRICT_PHASE':'Whether strict gene/phase failure-status categorization is enabled',
+'MTCODON_SOURCE_REF_MATCH':'Whether SRC_REF matches the codon-table genomic reference base',
+'MTCODON_DUPLICATE_ANNOTATIONS':'Whether duplicate source or human annotations were removed at this position'}
+FIELDS = ([(x,'1','String',DESCRIPTIONS.get(x,x.replace('MTCODON_','').replace('_',' ').title())) for x in STRING_FIELDS]
+          +[(x,'1','Integer',x.replace('MTCODON_N_','Number of ').replace('_',' ').lower()) for x in INTEGER_FIELDS]
+          +[(x,'.','String','Sorted unique '+x.replace('MTCODON_','').replace('_',' ').lower()) for x in MULTI_FIELDS])
+REQ_REFERENCE={'reference_key','pos','gene','strand','codon_pos_in_triplet','codon_seq','ref_base_genome'}
+REQ_HISTORICAL={'sample','pos','gene','strand','codon_pos_in_triplet','codon_seq','ref_base_genome'}
+REQ_HUMAN={'pos','gene','strand','codon_pos_in_triplet','codon_seq'}
+REQ_MAP={'sample','reference_key'}
 
+@dataclass(frozen=True, slots=True)
+class CodonAnnotation:
+    gene:str; strand:str; codon_pos_in_triplet:str; codon_seq:str; ref_base_genome:str=''
+    def get(self,name,default=None): return getattr(self,name,default)
+    def __getitem__(self,name): return getattr(self,name)
 
-def complement_base(base):
-    return {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}.get(str(base).upper(), str(base).upper())
+class CodonIndex(defaultdict):
+    def __init__(self):
+        super().__init__(list); self.duplicates=Counter(); self.duplicate_details=[]; self.loaded=0
 
-
-def is_supported_snv(ref, alt):
-    """Return whether source alleles are single, unambiguous DNA bases."""
-    ref = str(ref or '').strip().upper()
-    alt = str(alt or '').strip().upper()
-    return (len(ref) == 1 and len(alt) == 1
-            and ref in {'A', 'C', 'G', 'T'} and alt in {'A', 'C', 'G', 'T'})
-
-
-def mutate_codon(codon, phase, alt_base):
-    if codon in {'', None, '.', 'NA'} or phase in {'', None, '.', 'NA'} or alt_base in {'', None, '.', 'NA'}:
-        return '.'
+def _atomic_text(path, writer):
+    path=Path(path); path.parent.mkdir(parents=True,exist_ok=True)
+    fd,tmp=tempfile.mkstemp(prefix=f'.{path.name}.',suffix='.tmp',dir=path.parent,text=True)
     try:
-        phase = int(phase)
-    except (TypeError, ValueError):
-        return '.'
-    bases, alt = list(str(codon).upper()), str(alt_base).strip().upper()
-    if len(bases) != 3 or not 1 <= phase <= 3 or len(alt) != 1 or alt not in {'A', 'C', 'G', 'T'}:
-        return '.'
-    bases[phase - 1] = alt
-    return ''.join(bases)
+        with os.fdopen(fd,'w',newline='') as h: writer(h); h.flush(); os.fsync(h.fileno())
+        os.replace(tmp,path)
+    except BaseException:
+        try: os.unlink(tmp)
+        except FileNotFoundError: pass
+        raise
 
+def _schema_error(path,kind,required,observed):
+    missing=sorted(required-set(observed or []))
+    raise SystemExit(f"Invalid {kind} table {path}: required columns={sorted(required)}; missing columns={missing}; observed columns={observed or []}")
 
-def load_codon_index(path, key_column=None):
-    """Stream a plain or gzipped codon table into a one-to-many position index."""
-    index = defaultdict(list)
+def _validate_annotation(row,path,kind,line,key_column,strict=True):
+    if not strict:return
+    def bad(msg): raise SystemExit(f"Invalid {kind} table {path}, row {line}: {msg}; values={row}")
+    try: pos=int(row['pos'])
+    except (ValueError,TypeError): bad('pos must be a positive integer')
+    if pos <= 0: bad('pos must be a positive integer')
+    if row['strand'].strip() not in {'+','-'}: bad('strand must be + or -')
+    if row['codon_pos_in_triplet'].strip() not in {'1','2','3'}: bad('codon_pos_in_triplet must be 1, 2, or 3')
+    codon=row['codon_seq'].strip().upper()
+    if codon and (len(codon)!=3 or not set(codon)<=DNA): bad('non-empty codon_seq must contain exactly three A/C/G/T bases')
+    base=(row.get('ref_base_genome') or '').strip().upper()
+    if base and (len(base)!=1 or base not in DNA): bad('non-empty ref_base_genome must be A/C/G/T')
+    if key_column and not (row.get(key_column) or '').strip(): bad(f'{key_column} must be non-empty')
+
+def load_codon_index(path,key_column=None,table_type=None,strict=True):
+    kind=table_type or ('reference codon' if key_column=='reference_key' else 'historical sample codon' if key_column=='sample' else 'human codon')
+    required=REQ_REFERENCE if key_column=='reference_key' else REQ_HISTORICAL if key_column=='sample' else REQ_HUMAN
+    index=CodonIndex(); seen=defaultdict(dict); bases=defaultdict(set)
     with open_text(path) as handle:
-        for row in csv.DictReader(handle, delimiter='\t'):
-            try:
-                pos = int(row['pos'])
-            except (KeyError, TypeError, ValueError):
+        reader=csv.DictReader(handle,delimiter='\t'); observed=reader.fieldnames or []
+        if not required.issubset(observed): _schema_error(path,kind,required,observed)
+        for line,row in enumerate(reader,2):
+            _validate_annotation(row,path,kind,line,key_column,strict)
+            try: pos=int(row['pos'])
+            except (ValueError,TypeError):
+                if strict: raise
                 continue
-            reference_key = (row.get(key_column) or '').strip() if key_column else ''
-            index[(reference_key, pos)].append(row)
+            key=(row.get(key_column,'').strip() if key_column else '',pos)
+            values=(row.get('gene','').strip(),row.get('strand','').strip(),row.get('codon_pos_in_triplet','').strip(),
+                    row.get('codon_seq','').strip().upper(),row.get('ref_base_genome','').strip().upper())
+            optional=tuple((n,(row.get(n) or '').strip()) for n in ('codon_index','codon_pos1','codon_pos2','codon_pos3') if n in row)
+            signature=values+optional
+            if signature in seen[key]:
+                index.duplicates[key]+=1; seen[key][signature]+=1; continue
+            seen[key][signature]=1; index[key].append(CodonAnnotation(*values)); index.loaded+=1
+            if values[4]: bases[key].add(values[4])
+    inconsistent={k:v for k,v in bases.items() if len(v)>1}
+    if inconsistent:
+        example=next(iter(inconsistent.items()))
+        raise SystemExit(f'Inconsistent ref_base_genome values in {kind} table {path}: position {example[0]} has {sorted(example[1])}; inconsistent positions={len(inconsistent)}')
+    for key,sigs in seen.items():
+        for sig,count in sigs.items():
+            if count>1:index.duplicate_details.append((kind,key,sig[0],count-1,repr(sig)))
     return index
 
+def load(path,key_column=None): return load_codon_index(path,key_column),key_column
 
-# Historical public helper retained, now returning the one-to-many index.
-def load(path, key_column=None):
-    return load_codon_index(path, key_column), key_column
+def _genes(rows): return sorted({_get(r,'gene','').strip() for r in rows if _get(r,'gene','').strip()})
+def find_overlapping_annotations(path,table,key_column=None):
+    idx=load_codon_index(path,key_column)
+    return sorted([{'table':table,'reference_key':k,'position':p,'genes':','.join(_genes(a)),
+                    'number_of_annotations':len(a)} for (k,p),a in idx.items() if len(_genes(a))>1],
+                  key=lambda r:(r['table'],r['reference_key'],r['position']))
 
-
-def find_overlapping_annotations(path, table, key_column=None):
-    """Return a non-mutating report of positions annotated to multiple genes."""
-    report = []
-    for (reference_key, pos), annotations in load_codon_index(path, key_column).items():
-        genes = sorted({(row.get('gene') or '').strip() for row in annotations if row.get('gene')})
-        if len(genes) > 1:
-            report.append({'table': table, 'reference_key': reference_key, 'position': pos,
-                           'genes': ','.join(genes), 'number_of_annotations': len(annotations)})
-    return sorted(report, key=lambda row: (row['table'], row['reference_key'], row['position']))
-
-
-def load_sample_reference_map(path):
-    mapping = {}
-    for row in rows(path):
-        sample, reference_key = (row.get('sample') or '').strip(), (row.get('reference_key') or '').strip()
-        if sample and reference_key:
-            if sample in mapping and mapping[sample] != reference_key:
-                raise SystemExit(
-                    f"Conflicting reference keys for sample {sample!r}: "
-                    f"{mapping[sample]!r} versus {reference_key!r}"
-                )
-            mapping[sample] = reference_key
+def load_sample_reference_map(path,strict=True,stats=None):
+    mapping={}; conflicts=0
+    with open_text(path) as h:
+        reader=csv.DictReader(h,delimiter='\t'); observed=reader.fieldnames or []
+        if not REQ_MAP.issubset(observed): _schema_error(path,'sample-reference map',REQ_MAP,observed)
+        for line,row in enumerate(reader,2):
+            sample=(row.get('sample') or '').strip(); ref=(row.get('reference_key') or '').strip()
+            if strict and (not sample or not ref): raise SystemExit(f'Invalid sample-reference map {path}, row {line}: sample and reference_key must be non-empty; values={row}')
+            if not sample or not ref: continue
+            if sample in mapping and mapping[sample]!=ref:
+                conflicts+=1; raise SystemExit(f"Conflicting reference keys for sample {sample!r}: {mapping[sample]!r} versus {ref!r}")
+            mapping[sample]=ref
+    if stats is not None: stats['conflicting_mappings']=conflicts
     return mapping
 
+def _get(row,name,default='.'): return row.get(name,default) if row else default
+def _row_tie_break(row): return tuple(str(_get(row,n,'')) for n in ('gene','codon_seq','codon_pos_in_triplet','strand'))
+def complement_base(base): return {'A':'T','T':'A','C':'G','G':'C'}.get(str(base).upper(),str(base).upper())
+def is_supported_snv(ref,alt):
+    ref=str(ref or '').strip().upper(); alt=str(alt or '').strip().upper()
+    return len(ref)==len(alt)==1 and ref in DNA and alt in DNA
 
-def _value(row, name, default='.'):
-    return row.get(name, default) if row else default
+def mutate_codon(codon,phase,alt_base):
+    try: phase=int(phase)
+    except (TypeError,ValueError): return '.'
+    bases=list(str(codon or '').upper()); alt=str(alt_base or '').strip().upper()
+    if len(bases)!=3 or phase not in (1,2,3) or alt not in DNA:return '.'
+    bases[phase-1]=alt; return ''.join(bases)
 
+def evaluate_candidates(source_rows,human_rows,source_alt,supported_snv=True):
+    result=[]
+    for s in source_rows:
+        strand_alt=complement_base(source_alt) if supported_snv and _get(s,'strand','+')=='-' else source_alt
+        sg=_get(s,'gene',''); sp=str(_get(s,'codon_pos_in_triplet','')); sc=_get(s,'codon_seq','.')
+        ac=mutate_codon(sc,sp,strand_alt) if supported_snv else '.'
+        for h in human_rows:
+            hg=_get(h,'gene',''); hp=str(_get(h,'codon_pos_in_triplet','')); hc=_get(h,'codon_seq','')
+            result.append({'source':s,'human':h,'source_gene':sg,'human_gene':hg,'source_phase':sp,'human_phase':hp,
+            'source_codon':sc,'human_codon':hc,'alternate_codon':ac,'gene_match':sg==hg,'phase_match':sp==hp,
+            'codon_match':supported_snv and hc in {sc,ac}})
+    return result
 
-def _row_tie_break(row):
-    return tuple(str(row.get(name, '')) for name in
-                 ('gene', 'codon_seq', 'codon_pos_in_triplet', 'strand'))
+def _score(c): return (int(c['gene_match']),int(c['gene_match'] and c['phase_match']),int(c['gene_match'] and c['phase_match'] and c['codon_match']))
+def _tie(c): return tuple(str(c[n]) for n in ('source_gene','human_gene','source_codon','human_codon','source_phase','human_phase','alternate_codon'))
 
-
-def evaluate_candidates(source_rows, human_rows, source_alt, supported_snv=True):
-    candidates = []
-    for source_row in source_rows:
-        strand_alt = (complement_base(source_alt)
-                      if supported_snv and source_row.get('strand', '+') == '-' else source_alt)
-        source_gene = source_row.get('gene', '')
-        source_phase = str(source_row.get('codon_pos_in_triplet', ''))
-        source_codon = source_row.get('codon_seq', '.')
-        alternate_codon = mutate_codon(source_codon, source_phase, strand_alt) if supported_snv else '.'
-        for human_row in human_rows:
-            human_gene = human_row.get('gene', '')
-            human_phase = str(human_row.get('codon_pos_in_triplet', ''))
-            human_codon = human_row.get('codon_seq', '')
-            gene_match = source_gene == human_gene
-            phase_match = source_phase == human_phase
-            codon_match = supported_snv and human_codon in {source_codon, alternate_codon}
-            candidates.append({
-                'source': source_row, 'human': human_row, 'source_gene': source_gene,
-                'human_gene': human_gene, 'source_phase': source_phase, 'human_phase': human_phase,
-                'source_codon': source_codon, 'human_codon': human_codon,
-                'alternate_codon': alternate_codon, 'gene_match': gene_match,
-                'phase_match': phase_match, 'codon_match': codon_match,
-            })
-    return candidates
-
-
-def _primary_score(candidate):
-    # Codon equality is relevant only after gene and phase equality.
-    return (int(candidate['gene_match']),
-            int(candidate['gene_match'] and candidate['phase_match']),
-            int(candidate['gene_match'] and candidate['phase_match'] and candidate['codon_match']))
-
-
-def _tie_break(candidate):
-    return tuple(str(candidate[name]) for name in (
-        'source_gene', 'human_gene', 'source_codon', 'human_codon', 'source_phase', 'human_phase',
-        'alternate_codon'))
-
-
-def annotate(source_rows, human_rows, source_alt, strict, source_ref='A'):
-    """Build INFO values for all annotation pairs and a deterministic representative."""
-    supported_snv = is_supported_snv(source_ref, source_alt)
-    candidates = evaluate_candidates(source_rows, human_rows, source_alt, supported_snv)
-    source_genes = sorted({row.get('gene', '') for row in source_rows if row.get('gene')})
-    human_genes = sorted({row.get('gene', '') for row in human_rows if row.get('gene')})
-    overlap = len(source_rows) > 1 or len(human_rows) > 1
-    vals = {
-        'MTCODON_SUPPORTED_SNV': 'yes' if supported_snv else 'no',
-        'MTCODON_STRICT_PHASE': 'yes' if strict else 'no',
-        'MTCODON_N_PRIMATE_ANNOTATIONS': str(len(source_rows)),
-        'MTCODON_N_HUMAN_ANNOTATIONS': str(len(human_rows)),
-        'MTCODON_N_PAIR_CANDIDATES': str(len(candidates)),
-        'MTCODON_OVERLAPPING_CDS': 'yes' if overlap else 'no',
-        'MTCODON_PRIMATE_GENES': ','.join(source_genes) or '.',
-        'MTCODON_HUMAN_GENES': ','.join(human_genes) or '.',
-    }
-    any_gene = any(c['gene_match'] for c in candidates)
-    any_phase = any(c['gene_match'] and c['phase_match'] for c in candidates)
-    valid = [c for c in candidates if c['gene_match'] and c['phase_match'] and c['codon_match']]
-    vals.update(MTCODON_GENE_MATCH='yes' if any_gene else 'no',
-                MTCODON_PHASE_MATCH='yes' if any_phase else 'no',
-                MTCODON_MATCH='yes' if valid else 'no',
-                MTCODON_MATCHING_GENES=','.join(sorted({c['source_gene'] for c in valid})) or '.')
-    best = None
-    ambiguous = False
+def annotate(source_rows,human_rows,source_alt,strict,source_ref='A',source_duplicate=False,human_duplicate=False):
+    supported=is_supported_snv(source_ref,source_alt); refs={str(_get(r,'ref_base_genome','')).upper() for r in source_rows if _get(r,'ref_base_genome','')}
+    source_ref_match='NA' if not source_rows or not refs else ('yes' if len(refs)==1 and str(source_ref or '').strip().upper() in DNA and str(source_ref).strip().upper() in refs else 'no')
+    trusted=supported and source_ref_match!='no'; candidates=evaluate_candidates(source_rows,human_rows,source_alt,trusted)
+    sg,hg=_genes(source_rows),_genes(human_rows); valid=[c for c in candidates if c['gene_match'] and c['phase_match'] and c['codon_match']]
+    any_gene=any(c['gene_match'] for c in candidates); any_phase=any(c['gene_match'] and c['phase_match'] for c in candidates)
+    vals={'MTCODON_SUPPORTED_SNV':'yes' if supported else 'no','MTCODON_STRICT_PHASE':'yes' if strict else 'no',
+    'MTCODON_SOURCE_REF_MATCH':source_ref_match,'MTCODON_DUPLICATE_ANNOTATIONS':'yes' if source_duplicate or human_duplicate else 'no',
+    'MTCODON_N_PRIMATE_ANNOTATIONS':str(len(source_rows)),'MTCODON_N_HUMAN_ANNOTATIONS':str(len(human_rows)),
+    'MTCODON_N_PAIR_CANDIDATES':str(len(candidates)),'MTCODON_OVERLAPPING_CDS':'yes' if len(sg)>1 or len(hg)>1 else 'no',
+    'MTCODON_PRIMATE_GENES':','.join(sg) or '.','MTCODON_HUMAN_GENES':','.join(hg) or '.',
+    'MTCODON_GENE_MATCH':'yes' if any_gene else 'no','MTCODON_PHASE_MATCH':'yes' if any_phase else 'no',
+    'MTCODON_MATCH':'yes' if valid else 'no','MTCODON_MATCHING_GENES':','.join(sorted({c['source_gene'] for c in valid})) or '.'}
+    best=None; ambiguous=False
     if candidates:
-        best_score = max(map(_primary_score, candidates))
-        tied = [c for c in candidates if _primary_score(c) == best_score]
-        ambiguous = len({_tie_break(c) for c in tied}) > 1
-        best = min(tied, key=_tie_break)
-    vals['MTCODON_AMBIGUOUS_BEST_MATCH'] = 'yes' if ambiguous else 'no'
-    # Preserve useful legacy context when only one side is annotated, while making
-    # its representative independent of table order too.
-    selected_source = best['source'] if best else min(source_rows, key=_row_tie_break, default=None)
-    selected_human = best['human'] if best else min(human_rows, key=_row_tie_break, default=None)
-    selected_alt = '.'
-    if selected_source and supported_snv:
-        strand_alt = complement_base(source_alt) if selected_source.get('strand', '+') == '-' else source_alt
-        selected_alt = mutate_codon(selected_source.get('codon_seq'),
-                                    selected_source.get('codon_pos_in_triplet'), strand_alt)
-    vals.update(
-        MTCODON_PRIMATE_GENE=_value(selected_source, 'gene'),
-        MTCODON_PRIMATE_CODON=_value(selected_source, 'codon_seq'),
-        MTCODON_PRIMATE_ALT_CODON=selected_alt,
-        MTCODON_PRIMATE_PHASE=_value(selected_source, 'codon_pos_in_triplet'),
-        MTCODON_HUMAN_GENE=_value(selected_human, 'gene'),
-        MTCODON_HUMAN_CODON=_value(selected_human, 'codon_seq'),
-        MTCODON_HUMAN_PHASE=_value(selected_human, 'codon_pos_in_triplet'),
-    )
-    return vals, candidates
+        score=max(map(_score,candidates)); tied=[c for c in candidates if _score(c)==score]; ambiguous=len({_tie(c) for c in tied})>1; best=min(tied,key=_tie)
+    vals['MTCODON_AMBIGUOUS_BEST_MATCH']='yes' if ambiguous else 'no'
+    ss=best['source'] if best else min(source_rows,key=_row_tie_break,default=None); hh=best['human'] if best else min(human_rows,key=_row_tie_break,default=None)
+    alt='.'
+    if ss and trusted:
+        a=complement_base(source_alt) if _get(ss,'strand','+')=='-' else source_alt; alt=mutate_codon(_get(ss,'codon_seq'),_get(ss,'codon_pos_in_triplet'),a)
+    vals.update(MTCODON_PRIMATE_GENE=_get(ss,'gene'),MTCODON_PRIMATE_CODON=_get(ss,'codon_seq'),MTCODON_PRIMATE_ALT_CODON=alt,
+    MTCODON_PRIMATE_PHASE=_get(ss,'codon_pos_in_triplet'),MTCODON_HUMAN_GENE=_get(hh,'gene'),MTCODON_HUMAN_CODON=_get(hh,'codon_seq'),MTCODON_HUMAN_PHASE=_get(hh,'codon_pos_in_triplet'))
+    return vals,candidates
 
+def _strict_setting(settings):
+    new=settings.get('strict_gene_phase_status'); old=settings.get('strict_phase_match')
+    if new is not None and old is not None and bool(new)!=bool(old): warnings.warn('strict_gene_phase_status conflicts with legacy strict_phase_match; using strict_gene_phase_status',UserWarning)
+    return bool(new if new is not None else old if old is not None else True)
+
+def _write_rows(path,fieldnames,data):
+    def writer(h):
+        w=csv.DictWriter(h,fieldnames=fieldnames,delimiter='\t'); w.writeheader(); w.writerows(data)
+    _atomic_text(path,writer)
+
+def merge_summaries(reports_dir):
+    reports=Path(reports_dir); files=sorted(p for p in reports.glob('*.codon_match_summary.tsv') if p.name!='all_samples.codon_match_summary.tsv')
+    schema=None; by_sample={}
+    for path in files:
+        with path.open() as h:
+            reader=csv.DictReader(h,delimiter='\t')
+            if schema is None:schema=reader.fieldnames
+            elif reader.fieldnames!=schema:raise SystemExit(f'Incompatible summary schema: {path}: {reader.fieldnames}; expected {schema}')
+            for row in reader:
+                sample=row.get('sample','')
+                if sample in by_sample and by_sample[sample]!=row:raise SystemExit(f'Conflicting duplicate summary rows for sample {sample!r}')
+                by_sample[sample]=row
+    if not schema: raise SystemExit(f'No per-sample summaries found in {reports}')
+    _write_rows(reports/'all_samples.codon_match_summary.tsv',schema,[by_sample[x] for x in sorted(by_sample)])
+    print(f'Merged {len(files)} input files and {len(by_sample)} samples')
+
+def _load_inputs(paths,strict):
+    reference=paths.get('reference_codon_table'); mapping=paths.get('sample_reference_map'); refmode=bool(reference and mapping)
+    primate=load_codon_index(reference,'reference_key',strict=strict) if refmode else load_codon_index(paths['all_primate_position_codon_table'],'sample',strict=strict)
+    map_stats={}; maps=load_sample_reference_map(mapping,strict,map_stats) if refmode else {}
+    human=load_codon_index(paths['human_codon_table'],strict=strict)
+    return refmode,primate,maps,human,map_stats
+
+def _diagnostics(paths,primate,human,report_overlaps=None):
+    overlap=[]
+    for table,index in [('source',primate),('human',human)]:
+        for (key,pos),ann in index.items():
+            genes=_genes(ann)
+            if len(genes)>1:
+                overlap.append({'table':table,'reference_key':key,'position':pos,'genes':','.join(genes),'annotation_count':len(ann),'unique_gene_count':len(genes),'duplicate_count':index.duplicates[(key,pos)]})
+    if report_overlaps:_write_rows(report_overlaps,['table','reference_key','position','genes','annotation_count','unique_gene_count','duplicate_count'],overlap)
+    details=[]
+    for table,index in [('source',primate),('human',human)]:
+        for kind,(key,pos),gene,count,sig in index.duplicate_details: details.append({'table':table,'reference_key':key,'position':pos,'gene':gene,'duplicate_count':count,'signature':sig})
+    if details:_write_rows(Path(paths['reports_dir'])/'codon_annotation_duplicate_rows.tsv',['table','reference_key','position','gene','duplicate_count','signature'],details)
+    return overlap
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', required=True); parser.add_argument('--sample')
-    parser.add_argument('--input'); parser.add_argument('--output')
-    args = parser.parse_args(); config = yaml(args.config); section = config['codon_match']
-    paths, settings = section['paths'], section['settings']; strict = bool(settings.get('strict_phase_match', True))
-    reference_table, map_table = paths.get('reference_codon_table'), paths.get('sample_reference_map')
-    reference_level_mode = bool(reference_table and map_table)
-    if reference_level_mode:
-        primate = load_codon_index(reference_table, 'reference_key')
-        sample_references = load_sample_reference_map(map_table)
-    else:  # compatibility with historical sample-level tables
-        primate = load_codon_index(paths['all_primate_position_codon_table'], 'sample')
-        sample_references = {}
-    human = load_codon_index(paths['human_codon_table'])
-    samples = [args.sample] if args.sample else sample_names(config)
-    if args.input:
-        samples = [args.sample or Path(args.input).name.split('.')[0]]
-    if not samples:
-        raise SystemExit('No samples found; supply --sample or --input.')
-    allrows = []
+    p=argparse.ArgumentParser(); p.add_argument('--config',required=True); p.add_argument('--sample'); p.add_argument('--input'); p.add_argument('--output')
+    p.add_argument('--merge-summaries',action='store_true'); p.add_argument('--validate-inputs',action='store_true'); p.add_argument('--report-overlaps')
+    args=p.parse_args(); cfg=yaml(args.config); section=cfg['codon_match']; paths=section['paths']; settings=section.get('settings',{})
+    if args.merge_summaries: merge_summaries(paths['reports_dir']); return
+    strict_validation=bool(settings.get('strict_input_validation',True)); strict_status=_strict_setting(settings)
+    refmode,primate,maps,human,map_stats=_load_inputs(paths,strict_validation); overlaps=_diagnostics(paths,primate,human,args.report_overlaps)
+    if args.validate_inputs:
+        print(f'reference annotations loaded: {primate.loaded}\nhuman annotations loaded: {human.loaded}\nunique source index positions: {len(primate)}\nunique human positions: {len(human)}')
+        print(f"source overlapping-gene positions: {sum(x['table']=='source' for x in overlaps)}\nhuman overlapping-gene positions: {sum(x['table']=='human' for x in overlaps)}")
+        print(f'duplicate rows removed: {sum(primate.duplicates.values())+sum(human.duplicates.values())}\nsamples mapped: {len(maps)}\nconflicting mappings: {map_stats.get("conflicting_mappings",0)}\ninconsistent ref_base_genome positions: 0')
+        return
+    samples=[args.sample] if args.sample else sample_names(cfg)
+    if args.input:samples=[args.sample or Path(args.input).name.split('.')[0]]
+    if not samples:raise SystemExit('No samples found; supply --sample or --input.')
     for sample in samples:
-        if reference_level_mode:
-            if sample not in sample_references:
-                raise SystemExit(
-                    f"Sample {sample!r} is missing from sample_reference_map: {map_table}"
-                )
-            reference_key = sample_references[sample]
-        else:
-            reference_key = sample
-        inp = Path(args.input) if args.input else Path(paths['input_vcf_dir']) / str(settings['input_vcf_pattern']).format(sample=sample)
-        out = Path(args.output) if args.output else Path(paths['output_dir']) / 'vcf_codon' / f"{sample}{settings['output_suffix']}"
-        if not inp.exists():
-            raise SystemExit(f'Missing input VCF for {sample}: {inp}')
-        out.parent.mkdir(parents=True, exist_ok=True); header = []; body = []; counts = Counter(); metrics = Counter()
-        with open_text(inp) as handle:
-            for line in handle:
-                if line.startswith('#'):
-                    header.append(line); continue
-                fields = line.rstrip('\n').split('\t'); info = info_parse(fields[7])
-                _, source_pos, source_ref, source_alt = source(info); lifted_pos = human_pos(fields, info)
-                source_rows = primate.get((reference_key, source_pos), []) if source_pos else []
-                human_rows = human.get(('', lifted_pos), []) if lifted_pos else []
-                vals, candidates = annotate(source_rows, human_rows, source_alt, strict, source_ref)
-                if not source_pos or not lifted_pos: status = 'MISSING_COORD'
-                elif not source_rows: status = 'SKIPPED_NONCODING'
-                elif not human_rows: status = 'NO_HUMAN_CODON'
-                elif vals['MTCODON_SUPPORTED_SNV'] == 'no': status = 'UNSUPPORTED_NON_SNV'
-                elif vals['MTCODON_MATCH'] == 'yes': status = 'PASS'
-                elif strict and vals['MTCODON_GENE_MATCH'] == 'no': status = 'GENE_MISMATCH'
-                elif strict and vals['MTCODON_PHASE_MATCH'] == 'no': status = 'PHASE_MISMATCH'
-                else: status = 'MISMATCH'
-                vals['MTCODON_STATUS'] = status
-                info.update(vals); fields[7] = info_format(info); body.append('\t'.join(fields) + '\n'); counts[status] += 1
-                metrics['records_with_overlapping_source_cds'] += len(source_rows) > 1
-                metrics['records_with_overlapping_human_cds'] += len(human_rows) > 1
-                metrics['records_with_overlapping_cds'] += vals['MTCODON_OVERLAPPING_CDS'] == 'yes'
-                metrics['records_with_ambiguous_best_match'] += vals['MTCODON_AMBIGUOUS_BEST_MATCH'] == 'yes'
-                metrics['records_with_multiple_pair_candidates'] += len(candidates) > 1
-        with out.open('w') as handle:
-            handle.writelines(inject_headers(header, FIELDS, 'MTCODON')); handle.writelines(body)
-        row = {'sample': sample, 'input_vcf': str(inp), 'output_vcf': str(out), 'total_records': len(body),
-               **{f'status_{name}': counts[name] for name in ['PASS', 'SKIPPED_NONCODING', 'NO_HUMAN_CODON', 'UNSUPPORTED_NON_SNV', 'GENE_MISMATCH', 'PHASE_MISMATCH', 'MISMATCH', 'MISSING_COORD']},
-               **{name: metrics[name] for name in ['records_with_overlapping_source_cds', 'records_with_overlapping_human_cds', 'records_with_overlapping_cds', 'records_with_ambiguous_best_match', 'records_with_multiple_pair_candidates']},
-               'strict_phase_match': strict, 'status': 'completed'}
-        write_summary(Path(paths['reports_dir']) / f'{sample}.codon_match_summary.tsv', row); allrows.append(row)
-    if allrows:
-        path = Path(paths['reports_dir']) / 'all_samples.codon_match_summary.tsv'; path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open('w', newline='') as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(allrows[0]), delimiter='\t'); writer.writeheader(); writer.writerows(allrows)
-
-
-if __name__ == '__main__':
-    main()
+        if refmode:
+            if sample not in maps:raise SystemExit(f'Sample {sample!r} is missing from sample_reference_map: {paths.get("sample_reference_map")}')
+            reference_key=maps[sample]
+        else:reference_key=sample
+        inp=Path(args.input) if args.input else Path(paths['input_vcf_dir'])/str(settings['input_vcf_pattern']).format(sample=sample)
+        out=Path(args.output) if args.output else Path(paths['output_dir'])/'vcf_codon'/f"{sample}{settings['output_suffix']}"
+        if not inp.exists():raise SystemExit(f'Missing input VCF for {sample}: {inp}')
+        header=[]; body=[]; counts=Counter(); metrics=Counter()
+        with open_text(inp) as h:
+            for line in h:
+                if line.startswith('#'):header.append(line);continue
+                f=line.rstrip('\n').split('\t'); info=info_parse(f[7]); _,sp,sref,salt=source(info); hp=human_pos(f,info)
+                sr=primate.get((reference_key,sp),[]) if sp else []; hr=human.get(('',hp),[]) if hp else []
+                sd=bool(sp and primate.duplicates[(reference_key,sp)]); hd=bool(hp and human.duplicates[('',hp)])
+                vals,candidates=annotate(sr,hr,salt,strict_status,sref,sd,hd)
+                if not sp or not hp:status='MISSING_COORD'
+                elif not sr:status='SKIPPED_NONCODING'
+                elif not hr:status='NO_HUMAN_CODON'
+                elif vals['MTCODON_SOURCE_REF_MATCH']=='no':status='SOURCE_REF_MISMATCH'
+                elif vals['MTCODON_SUPPORTED_SNV']=='no':status='UNSUPPORTED_NON_SNV'
+                elif vals['MTCODON_MATCH']=='yes':status='PASS'
+                elif strict_status and vals['MTCODON_GENE_MATCH']=='no':status='GENE_MISMATCH'
+                elif strict_status and vals['MTCODON_PHASE_MATCH']=='no':status='PHASE_MISMATCH'
+                else:status='MISMATCH'
+                vals['MTCODON_STATUS']=status; info.update(vals); f[7]=info_format(info); body.append('\t'.join(f)+'\n'); counts[status]+=1
+                sgo=len(_genes(sr))>1; hgo=len(_genes(hr))>1
+                metrics['records_with_overlapping_source_cds']+=sgo; metrics['records_with_overlapping_human_cds']+=hgo; metrics['records_with_overlapping_cds']+=sgo or hgo
+                metrics['records_with_ambiguous_best_match']+=vals['MTCODON_AMBIGUOUS_BEST_MATCH']=='yes'; metrics['records_with_multiple_pair_candidates']+=len(candidates)>1
+                metrics['records_with_duplicate_source_annotations']+=sd; metrics['records_with_duplicate_human_annotations']+=hd; metrics['records_with_duplicate_annotations']+=sd or hd
+        provenance=[f'##MTCODONVersion={CODON_MATCH_VERSION}\n',f'##MTCODONReferenceCodonTable={paths.get("reference_codon_table",paths.get("all_primate_position_codon_table"))}\n',f'##MTCODONHumanCodonTable={paths["human_codon_table"]}\n']
+        existing=''.join(header); provenance=[x for x in provenance if x.split('=',1)[0] not in existing]
+        _atomic_text(out,lambda h:(h.writelines(inject_headers(provenance+header,FIELDS,'MTCODON')),h.writelines(body)))
+        statuses=['PASS','SKIPPED_NONCODING','NO_HUMAN_CODON','SOURCE_REF_MISMATCH','UNSUPPORTED_NON_SNV','GENE_MISMATCH','PHASE_MISMATCH','MISMATCH','MISSING_COORD']
+        metric_names=['records_with_overlapping_source_cds','records_with_overlapping_human_cds','records_with_overlapping_cds','records_with_ambiguous_best_match','records_with_multiple_pair_candidates','records_with_duplicate_source_annotations','records_with_duplicate_human_annotations','records_with_duplicate_annotations']
+        row={'sample':sample,'input_vcf':str(inp),'output_vcf':str(out),'total_records':len(body),**{f'status_{x}':counts[x] for x in statuses},**{x:metrics[x] for x in metric_names},
+        'codon_match_script_version':CODON_MATCH_VERSION,'reference_codon_table':str(paths.get('reference_codon_table',paths.get('all_primate_position_codon_table'))),'human_codon_table':str(paths['human_codon_table']),
+        'sample_reference_map':str(paths.get('sample_reference_map','')),'reference_key':reference_key,'strict_gene_phase_status':strict_status,'strict_input_validation':strict_validation,'strict_phase_match':strict_status,'status':'completed'}
+        write_summary(Path(paths['reports_dir'])/f'{sample}.codon_match_summary.tsv',row)
+if __name__=='__main__':main()

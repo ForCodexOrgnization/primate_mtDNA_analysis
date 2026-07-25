@@ -23,6 +23,8 @@ Steps:
   mitos2_merge                      Merge completed per-reference MITOS2 raw outputs.
   mitos2_annotation                 Run MITOS2 sequentially on target-species chrM FASTAs.
   codon_match                      Annotate lifted VCFs with codon matching.
+  codon_match_validate             Validate and index codon inputs without reading VCFs.
+  codon_match_merge                Atomically merge completed per-sample summaries.
   trna_match                       Annotate VCFs with tRNA matching.
   rrna_match                       Annotate VCFs with rRNA matching.
   intraspecies_contamination       Run original-coordinate intra-species contamination QC only.
@@ -83,7 +85,7 @@ case "$STEP" in
     usage
     exit 0
     ;;
-  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|trna_match|rrna_match|intraspecies_contamination|all)
+  collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|trna_match|rrna_match|intraspecies_contamination|all)
     ;;
   *)
     echo "ERROR: unknown step: $STEP" >&2
@@ -378,6 +380,8 @@ case "$STEP" in
   build_primate_codon_table) run_build_primate_codon_table ;;
   compare_genbank_mitos2) run_compare_genbank_mitos2 ;;
   codon_match) run_annotation codon_match "$CODON_SCRIPT" ;;
+  codon_match_validate) "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --validate-inputs ;;
+  codon_match_merge) "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --merge-summaries ;;
   trna_match) run_annotation trna_match "$TRNA_SCRIPT" ;;
   rrna_match) run_annotation rrna_match "$RRNA_SCRIPT" ;;
   intraspecies_contamination) bash "$INTRASPECIES_SCRIPT" "$CONFIG" ;;
@@ -391,6 +395,7 @@ case "$STEP" in
       run_compare_genbank_mitos2
     fi
     run_annotation codon_match "$CODON_SCRIPT"
+    "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --merge-summaries
     run_annotation trna_match "$TRNA_SCRIPT"
     run_annotation rrna_match "$RRNA_SCRIPT"
     ;;

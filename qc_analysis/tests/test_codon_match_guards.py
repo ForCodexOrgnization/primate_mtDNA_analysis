@@ -16,11 +16,11 @@ def make_case(tmp_path, ref='A', alt='G', *, reference_mode=True, mapped=True):
     source = tmp_path / 'source.tsv'
     key = 'reference_key' if reference_mode else 'sample'
     value = 'ref-A' if reference_mode else 'S1'
-    source.write_text(f'{key}\tpos\tgene\tstrand\tcodon_pos_in_triplet\tcodon_seq\n'
-                      f'{value}\t10\tMT-ND1\t+\t1\tAAA\n')
+    source.write_text(f'{key}\tpos\tgene\tstrand\tcodon_pos_in_triplet\tcodon_seq\tref_base_genome\n'
+                      f'{value}\t10\tMT-ND1\t+\t1\tAAA\tA\n')
     human = tmp_path / 'human.tsv'
-    human.write_text('pos\tgene\tstrand\tcodon_pos_in_triplet\tcodon_seq\n'
-                     '10\tMT-ND1\t+\t1\tGAA\n')
+    human.write_text('pos\tgene\tstrand\tcodon_pos_in_triplet\tcodon_seq\tref_base_genome\n'
+                     '10\tMT-ND1\t+\t1\tGAA\tA\n')
     vcf = tmp_path / 'input.vcf'
     vcf.write_text('##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n'
                    f'chrM\t10\t.\tA\tG\t.\tPASS\tSRC_POS=10;SRC_REF={ref};SRC_ALT={alt}\n')
@@ -58,13 +58,14 @@ def test_non_snv_alleles_are_not_truncated(tmp_path, ref, alt):
     assert result.returncode == 0, result.stderr
     record = next(line for line in output.read_text().splitlines() if not line.startswith('#'))
     info = info_parse(record.split('\t')[7])
-    assert info['MTCODON_STATUS'] == 'UNSUPPORTED_NON_SNV'
+    expected_status = 'SOURCE_REF_MISMATCH' if ref.strip().upper() not in {'A', 'C', 'G', 'T'} else 'UNSUPPORTED_NON_SNV'
+    assert info['MTCODON_STATUS'] == expected_status
     assert info['MTCODON_SUPPORTED_SNV'] == 'no'
     assert info['MTCODON_PRIMATE_ALT_CODON'] == '.'
     assert info['MTCODON_MATCH'] == 'no'
     with (reports / 'S1.codon_match_summary.tsv').open() as handle:
-        summary = next(csv.DictReader(handle))
-    assert summary['status_UNSUPPORTED_NON_SNV'] == '1'
+        summary = next(csv.DictReader(handle, delimiter='\t'))
+    assert summary[f'status_{expected_status}'] == '1'
 
 
 def test_supported_snv_keeps_normal_matching(tmp_path):

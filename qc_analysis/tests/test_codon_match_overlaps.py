@@ -10,7 +10,7 @@ from qc_analysis.scripts.run_codon_match import (
 )
 
 
-HEADER = 'reference_key\tpos\tgene\tstrand\tcodon_pos_in_triplet\tcodon_seq\n'
+HEADER = 'reference_key\tpos\tgene\tstrand\tcodon_pos_in_triplet\tcodon_seq\tref_base_genome\n'
 SCRIPT = Path(__file__).parents[1] / 'scripts' / 'run_codon_match.py'
 
 
@@ -19,7 +19,7 @@ def row(gene, codon='AAA', phase='1', strand='+'):
 
 
 def test_streaming_plain_and_gzip_preserves_duplicate_positions(tmp_path, monkeypatch):
-    content = HEADER + 'ref\t10\tMT-ATP8\t+\t1\tAAA\nref\t10\tMT-ATP6\t+\t1\tAAA\n'
+    content = HEADER + 'ref\t10\tMT-ATP8\t+\t1\tAAA\tA\nref\t10\tMT-ATP6\t+\t1\tAAA\tA\n'
     plain = tmp_path / 'codons.tsv'; plain.write_text(content)
     zipped = tmp_path / 'codons.tsv.gz'
     with gzip.open(zipped, 'wt') as handle:
@@ -68,7 +68,7 @@ def test_nonoverlap_regression_and_minus_strand_alt():
 
 def test_overlap_report_has_required_columns(tmp_path):
     table = tmp_path / 'source.tsv'
-    table.write_text(HEADER + 'ref\t10\tMT-ATP8\t+\t1\tAAA\nref\t10\tMT-ATP6\t+\t1\tAAA\n')
+    table.write_text(HEADER + 'ref\t10\tMT-ATP8\t+\t1\tAAA\tA\nref\t10\tMT-ATP6\t+\t1\tAAA\tA\n')
     assert find_overlapping_annotations(table, 'primate', 'reference_key') == [{
         'table': 'primate', 'reference_key': 'ref', 'position': 10,
         'genes': 'MT-ATP6,MT-ATP8', 'number_of_annotations': 2,
@@ -78,13 +78,13 @@ def test_overlap_report_has_required_columns(tmp_path):
 def test_four_record_smoke_and_summary_metrics(tmp_path):
     source_table = tmp_path / 'source.tsv'; human_table = tmp_path / 'human.tsv'
     source_table.write_text(HEADER + ''.join([
-        'ref\t1\tMT-ND1\t+\t1\tAAA\n',
-        'ref\t2\tMT-ATP8\t+\t1\tAAA\n', 'ref\t2\tMT-ATP6\t+\t1\tAAA\n',
-        'ref\t3\tMT-ND4L\t+\t1\tCCC\n', 'ref\t3\tMT-ND4\t+\t1\tCCC\n']))
+        'ref\t1\tMT-ND1\t+\t1\tAAA\tA\n',
+        'ref\t2\tMT-ATP8\t+\t1\tAAA\tA\n', 'ref\t2\tMT-ATP6\t+\t1\tAAA\tA\n',
+        'ref\t3\tMT-ND4L\t+\t1\tCCC\tA\n', 'ref\t3\tMT-ND4\t+\t1\tCCC\tA\n']))
     human_table.write_text(HEADER.replace('reference_key\t', '') + ''.join([
-        '1\tMT-ND1\t+\t1\tAAA\n',
-        '2\tMT-ATP8\t+\t1\tAAA\n', '2\tMT-ATP6\t+\t1\tAAA\n',
-        '3\tMT-ND4L\t+\t1\tCCC\n', '3\tMT-ND4\t+\t1\tCCC\n']))
+        '1\tMT-ND1\t+\t1\tAAA\tA\n',
+        '2\tMT-ATP8\t+\t1\tAAA\tA\n', '2\tMT-ATP6\t+\t1\tAAA\tA\n',
+        '3\tMT-ND4L\t+\t1\tCCC\tA\n', '3\tMT-ND4\t+\t1\tCCC\tA\n']))
     mapping = tmp_path / 'map.tsv'; mapping.write_text('sample\treference_key\nS1\tref\n')
     vcf = tmp_path / 'input.vcf'
     vcf.write_text('##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n' + ''.join(
@@ -107,7 +107,7 @@ def test_four_record_smoke_and_summary_metrics(tmp_path):
     infos = [info_parse(line.split('\t')[7]) for line in output.read_text().splitlines() if not line.startswith('#')]
     assert [item['MTCODON_STATUS'] for item in infos] == ['PASS', 'PASS', 'PASS', 'SKIPPED_NONCODING']
     with (reports / 'S1.codon_match_summary.tsv').open() as handle:
-        summary = next(csv.DictReader(handle))
+        summary = next(csv.DictReader(handle, delimiter='\t'))
     assert summary['records_with_overlapping_source_cds'] == '2'
     assert summary['records_with_overlapping_human_cds'] == '2'
     assert summary['records_with_overlapping_cds'] == '2'

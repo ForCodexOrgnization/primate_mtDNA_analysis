@@ -233,7 +233,10 @@ codon_match:
     human_codon_table: data/reference_tables/human_codon_table.tsv
   settings:
     enabled: true
-    strict_phase_match: true
+    # Preferred name: controls detailed GENE/PHASE failure statuses, never whether
+    # a phase-mismatched pair may PASS. strict_phase_match remains a legacy alias.
+    strict_gene_phase_status: true
+    strict_input_validation: true
     input_vcf_pattern: "{sample}.lifted.raw.vcf"
     output_suffix: ".lifted.codon.vcf"
     write_summary: true
