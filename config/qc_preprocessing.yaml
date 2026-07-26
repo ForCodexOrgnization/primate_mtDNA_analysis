@@ -248,9 +248,14 @@ trna_match:
     output_dir: results/qc/trna_match
     reports_dir: results/qc/trna_match/reports
     coordinate_map_dir: results/qc/coordinate_liftover/maps
-    human_trna_index: data/reference_tables/human.trna_position_index.tsv.gz
-    species_trna_index_dir: results/qc/trna_match/trna_index
-    species_trna_index_template: "{species_trna_index_dir}/{sample}.trna_position_index.tsv.gz"
+    sample_reference_map: data/reference_tables/sample_reference_map.tsv
+    reference_fasta_manifest: references/manifests/reference_materialization_manifest.resolved.tsv
+    human_fasta: data/reference_tables/human_chrM.fa
+    human_trna_index: data/reference_tables/trna_index/human.trna_position_index.tsv.gz
+    reference_trna_index_dir: data/reference_tables/trna_index/references
+    reference_trna_index_template: "{reference_trna_index_dir}/{reference_key}.trna_position_index.tsv.gz"
+    trnascan_output_dir: results/qc/trna_match/trnascan
+    index_build_reports_dir: results/qc/trna_match/index_build_reports
     human_trnascan_out: data/reference_tables/human.trnascan.out
     human_trnascan_ss: data/reference_tables/human.trnascan.ss
     species_trnascan_out_template: results/qc/trna_match/trnascan/{sample}.trnascan.out
@@ -266,6 +271,7 @@ trna_match:
     trnascan_mode: mito_mammal
     trnascan_threads: 4
     trnascan_extra_args: ""
+    max_sequence_mismatch_rate: 0.0
     species_trna_coord_space: original
     species_trna_chrom_norm: none
     human_trna_chrom_norm: none
@@ -273,7 +279,7 @@ trna_match:
     human_vcf_chrom_norm: none
     species_trna_lookup_ignore_chrom: false
     human_trna_lookup_ignore_chrom: false
-    # Interval-level tRNA gene QC is not implemented; enabling it is rejected.
+    # Optional separate gene-level liftover QC step.
     run_trna_gene_qc: false
     write_summary: true
     pass_only: false

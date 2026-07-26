@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Annotate lifted VCFs with tRNA structural comparisons.
-
-Index bases are genomic-orientation bases.  For a ``-`` strand record both the
-variant allele and ``paired_base`` are reverse-complemented before RNA pairing
-is evaluated.
-"""
+"""Annotate lifted VCFs with reference-level tRNA structural comparisons."""
 import argparse, csv, sys, warnings
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -12,11 +7,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.match_utils import *
+from qc_analysis.lib.simple_yaml import read_simple_yaml
+from qc_analysis.lib.trnascan_utils import build_trna_position_index, run_trnascan
 
 REQUIRED = {'chrom','pos','trna_id','local_pos','struct_class','struct_element','pair_type',
             'pair_state','paired_local_pos','paired_genomic_pos','paired_base','strand'}
 N=['STATUS','S_ID','H_ID','S_LOCAL','H_LOCAL','S_CLASS','H_CLASS','REGION_MATCH','S_ELEMENT','H_ELEMENT','ELEMENT_MATCH','S_PAIR_TYPE','H_PAIR_TYPE','PAIR_TYPE_MATCH','S_PAIR_STATE','H_PAIR_STATE','PAIR_STATE_MATCH','S_PAIR_LOCAL','H_PAIR_LOCAL','PAIR_LOCAL_MATCH','S_PAIR_POS','H_PAIR_POS','S_PAIR_LIFTED_HPOS','PAIR_POS_MATCH','H_ALT_PAIR_TYPE','S_ALT_PAIR_TYPE','H_ALT_EFFECT','S_ALT_EFFECT','ALLELE_EFFECT_MATCH','COMPENSATED','STRICT_MATCH','S_COORD_SPACE','S_LOOKUP_CHROM','S_LOOKUP_POS']
 FIELDS=[('MTTRNA_'+n,'tRNA structural match annotation') for n in N]
+FIELDS.append(('MTTRNA_REFERENCE_KEY','Reference-level tRNA index key'))
 
 def normalize_chrom(chrom, mode):
     """Normalize a chromosome using none, strip_chr, add_chr, or mitochondrial_alias."""
@@ -78,24 +76,61 @@ def oriented(base, record):
     if not b: return base
     return {'A':'U','U':'A','C':'G','G':'C'}[b] if record.get('strand') == '-' else b
 
+def paired_rna(record):
+    """Read a v2 RNA mate directly; require metadata for legacy aliases."""
+    if not record: return '.'
+    if record.get('paired_base_rna') not in (None,'','.'): return normalize_rna_base(record['paired_base_rna'])
+    orientation=record.get('base_orientation','')
+    if orientation in {'genomic','genomic_and_rna'}: return oriented(record.get('paired_base'),record)
+    if orientation in {'rna','transcript_rna'}: return normalize_rna_base(record.get('paired_base'))
+    raise ValueError('Legacy tRNA index has paired_base only but no unambiguous base_orientation metadata')
+
+def read_mapping(path):
+    with open(path,newline='') as h:return list(csv.DictReader(h,delimiter='\t'))
+
+def sample_reference_key(path,sample):
+    for row in read_mapping(path):
+        if row.get('sample',row.get('sample_name'))==sample:return row.get('reference_key')
+    raise ValueError(f'Sample {sample!r} is absent from sample-reference map {path}')
+
+def resolve_reference_fasta(path,key):
+    for row in read_mapping(path):
+        if row.get('reference_key',row.get('reference_id'))==key:
+            for col in ('fasta','fasta_path','chrM_fasta_path','chrM_expected_output_fasta','wg_expected_output_fasta'):
+                if row.get(col):return row[col]
+    raise ValueError(f'No FASTA for reference_key {key!r} in {path}')
+
+def ensure_index(path,key,fasta,p,s,chrom_norm):
+    path=Path(path)
+    if path.exists():return
+    command=f"python qc_analysis/scripts/build_trna_position_index.py --reference-key {key} --fasta {fasta} --run-trnascan --output {path}"
+    if not s.get('run_trnascan_if_missing',False):raise SystemExit(f'Missing tRNA index: {path}. Build it with: {command}')
+    prefix=Path(p['trnascan_output_dir'])/key
+    made=run_trnascan(fasta,prefix,s.get('trnascan_bin','tRNAscan-SE'),s.get('trnascan_mode','mito_mammal'),s.get('trnascan_threads',1),s.get('trnascan_extra_args','') or '')
+    build_trna_position_index(key,fasta,made['out'],made['ss'],path,chrom_norm,s.get('max_sequence_mismatch_rate',0.0))
+
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('--config',required=True); ap.add_argument('--sample'); ap.add_argument('--input'); ap.add_argument('--output'); a=ap.parse_args()
     c=yaml(a.config); sec=c['trna_match']; p,s=sec['paths'],sec['settings']
-    if s.get('run_trnascan_if_missing',False): raise SystemExit('Unsupported feature: run_trnascan_if_missing=true; tRNAscan index generation is unavailable')
-    if s.get('run_trna_gene_qc',False): raise SystemExit('Unsupported feature: run_trna_gene_qc=true; interval-level tRNA gene QC is not implemented')
     hpath=Path(p['human_trna_index'])
-    if not hpath.exists(): raise SystemExit(f'Missing human tRNA index: {hpath}')
+    ensure_index(hpath,'human',p.get('human_fasta',''),p,s,s.get('human_trna_chrom_norm','none'))
     hi=index(hpath,s.get('human_trna_chrom_norm','none'))
     samples=[a.sample] if a.sample else sample_names(c)
     if a.input: samples=[a.sample or Path(a.input).name.split('.')[0]]
     if not samples or any(not x for x in samples): raise SystemExit('No samples selected; provide --sample/--input or a non-empty sample reference file')
     allrows=[]
     for sample in samples:
+        reference_key=sample_reference_key(p['sample_reference_map'],sample) if p.get('sample_reference_map') else sample
         primary=Path(p['input_vcf_dir'])/str(s['input_vcf_pattern']).format(sample=sample); fallback=Path(p['fallback_input_vcf_dir'])/str(s['fallback_input_vcf_pattern']).format(sample=sample)
         inp=Path(a.input) if a.input else (primary if primary.exists() else fallback); codon=inp==primary
         if not inp.exists(): raise SystemExit(f'Missing input VCF for sample {sample}; attempted primary {primary} and fallback {fallback}' + (f'; explicit input {inp}' if a.input else ''))
-        spi=Path(str(p['species_trna_index_template']).format(species_trna_index_dir=p['species_trna_index_dir'],sample=sample))
-        if not spi.exists(): raise SystemExit(f'Missing species tRNA index for {sample}: {spi}')
+        if p.get('reference_trna_index_template'):
+            spi=Path(str(p['reference_trna_index_template']).format(reference_trna_index_dir=p['reference_trna_index_dir'],reference_key=reference_key))
+            fasta=resolve_reference_fasta(p['reference_fasta_manifest'],reference_key)
+        elif p.get('species_trna_index_template'): # explicitly configured legacy mode
+            spi=Path(str(p['species_trna_index_template']).format(species_trna_index_dir=p['species_trna_index_dir'],sample=sample));fasta=''
+        else: raise SystemExit('Configure reference_trna_index_template (preferred) or the legacy species_trna_index_template')
+        ensure_index(spi,reference_key,fasta,p,s,s.get('species_trna_chrom_norm','none'))
         si=index(spi,s.get('species_trna_chrom_norm','none')); cmap=map_for(p.get('coordinate_map_dir',''),sample)
         out=Path(a.output) if a.output else Path(p['output_dir'])/'vcf_trna'/f"{sample}{s['output_suffix'] if codon else '.lifted.trna.vcf'}"; out.parent.mkdir(parents=True,exist_ok=True)
         head=[]; body=[]; counts=Counter()
@@ -118,7 +153,7 @@ def main():
             elif not sr: status='NO_SPECIES_TRNA'
             elif not hr: status='NO_HUMAN_TRNA'
             else: status='OK'
-            v={'MTTRNA_STATUS':status,'MTTRNA_S_COORD_SPACE':s.get('species_trna_coord_space','original'),'MTTRNA_S_LOOKUP_CHROM':sch or '.','MTTRNA_S_LOOKUP_POS':pos or '.'}
+            v={'MTTRNA_STATUS':status,'MTTRNA_REFERENCE_KEY':reference_key,'MTTRNA_S_COORD_SPACE':s.get('species_trna_coord_space','original'),'MTTRNA_S_LOOKUP_CHROM':sch or '.','MTTRNA_S_LOOKUP_POS':pos or '.'}
             for short,col in [('S_ID','trna_id'),('H_ID','trna_id'),('S_LOCAL','local_pos'),('H_LOCAL','local_pos'),('S_CLASS','struct_class'),('H_CLASS','struct_class'),('S_ELEMENT','struct_element'),('H_ELEMENT','struct_element'),('S_PAIR_TYPE','pair_type'),('H_PAIR_TYPE','pair_type'),('S_PAIR_STATE','pair_state'),('H_PAIR_STATE','pair_state'),('S_PAIR_LOCAL','paired_local_pos'),('H_PAIR_LOCAL','paired_local_pos'),('S_PAIR_POS','paired_genomic_pos'),('H_PAIR_POS','paired_genomic_pos')]:
                 record=(sr or {}) if short.startswith('S') else (hr or {}); v['MTTRNA_'+short]=record.get(col,'.')
             for key,col in [('REGION_MATCH','struct_class'),('ELEMENT_MATCH','struct_element'),('PAIR_TYPE_MATCH','pair_type'),('PAIR_STATE_MATCH','pair_state'),('PAIR_LOCAL_MATCH','paired_local_pos')]: v['MTTRNA_'+key]=compare_values(sr.get(col) if sr else '.',hr.get(col) if hr else '.')
@@ -126,7 +161,7 @@ def main():
             if stem and lifted=='.': counts['missing_coordinate_map']+=1
             posmatch=compare_values(lifted,v['MTTRNA_H_PAIR_POS']) if stem else '.'
             salt=alt or x[4]; halt=x[4]
-            spt=pair_type(oriented(salt,sr),oriented(sr.get('paired_base'),sr)) if stem else '.'; hpt=pair_type(oriented(halt,hr),oriented(hr.get('paired_base'),hr)) if stem else '.'
+            spt=pair_type(oriented(salt,sr),paired_rna(sr)) if stem else '.'; hpt=pair_type(oriented(halt,hr),paired_rna(hr)) if stem else '.'
             if (sr and sr.get('strand')=='-') or (hr and hr.get('strand')=='-'): counts['negative_strand_records']+=1
             seffect=pair_effect(v['MTTRNA_S_PAIR_TYPE'],spt) if stem else '.'; heffect=pair_effect(v['MTTRNA_H_PAIR_TYPE'],hpt) if stem else '.'; effectmatch=compare_values(seffect,heffect) if stem else '.'
             compatible={'WC','GU_wobble'}; compensated='yes' if stem and spt in compatible and hpt in compatible else 'no' if stem else '.'; strict='no'
@@ -139,7 +174,7 @@ def main():
             inf.update(v); x[7]=info_format(inf)
             if not s.get('pass_only',False) or x[6]=='PASS': body.append('\t'.join(x)+'\n'); counts[status]+=1
         with out.open('w') as f: f.writelines(inject_headers(head,FIELDS,'MTTRNA')); f.writelines(body)
-        row={'sample':sample,'input_vcf':str(inp),'output_vcf':str(out),'total_records':len(body),**{f'status_{q}':counts[q] for q in ['OK','NO_SPECIES_TRNA','NO_HUMAN_TRNA','NO_SPECIES_OR_HUMAN_TRNA','MISSING_SPECIES_COORD']},**{q:counts[q] for q in ['ambiguous_species_index_lookup','ambiguous_human_index_lookup','chromosome_mismatch','missing_coordinate_map','negative_strand_records']},'status':'completed'}
+        row={'sample':sample,'reference_key':reference_key,'species_trna_index':str(spi),'input_vcf':str(inp),'output_vcf':str(out),'total_records':len(body),**{f'status_{q}':counts[q] for q in ['OK','NO_SPECIES_TRNA','NO_HUMAN_TRNA','NO_SPECIES_OR_HUMAN_TRNA','MISSING_SPECIES_COORD']},**{q:counts[q] for q in ['ambiguous_species_index_lookup','ambiguous_human_index_lookup','chromosome_mismatch','missing_coordinate_map','negative_strand_records']},'status':'completed'}
         if s.get('write_summary',True): write_summary(Path(p['reports_dir'])/f'{sample}.trna_match_summary.tsv',row)
         allrows.append(row)
     if s.get('write_summary',True) and allrows and not a.sample and not a.input:
