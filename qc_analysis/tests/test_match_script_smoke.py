@@ -112,9 +112,9 @@ class MatchScriptSmokeTests(unittest.TestCase):
     def test_trna_region_match_compares_structural_classes_not_ids(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td); human = d / 'human.tsv'; species = d / 'S1.tsv'
-            header = 'chrom\tpos\ttrna_id\tlocal_pos\tstruct_class\tstruct_element\tpair_type\tpair_state\tpaired_local_pos\tpaired_genomic_pos\tpaired_base\tstrand\n'
-            human.write_text(header + 'chrM\t10\tTRNA-H\t1\tstem\tacceptor\tWC\tpaired\t2\t20\tG\t+\n')
-            species.write_text(header + 'species\t10\tTRNA-S\t1\tstem\tacceptor\tWC\tpaired\t2\t20\tG\t+\n')
+            header = 'chrom\tpos\ttrna_id\tlocal_pos\tstruct_class\tstruct_element\tpair_type\tpair_state\tpaired_local_pos\tpaired_genomic_pos\tpaired_base\tstrand\tbase_orientation\n'
+            human.write_text(header + 'chrM\t10\tTRNA-H\t1\tstem\tacceptor\tWC\tpaired\t2\t20\tG\t+\tgenomic\n')
+            species.write_text(header + 'species\t10\tTRNA-S\t1\tstem\tacceptor\tWC\tpaired\t2\t20\tG\t+\tgenomic\n')
             config = d / 'config.yaml'
             config.write_text(f'''trna_match:
   paths:

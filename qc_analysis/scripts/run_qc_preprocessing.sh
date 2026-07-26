@@ -25,7 +25,9 @@ Steps:
   codon_match                      Annotate lifted VCFs with codon matching.
   codon_match_validate             Validate and index codon inputs without reading VCFs.
   codon_match_merge                Atomically merge completed per-sample summaries.
+  build_trna_indexes               Build one tRNAscan index per unique reference.
   trna_match                       Annotate VCFs with tRNA matching.
+  trna_gene_qc                     Compare lifted source and human tRNA genes.
   rrna_match                       Annotate VCFs with rRNA matching.
   intraspecies_contamination       Run original-coordinate intra-species contamination QC only.
   all                              Run all preprocessing and downstream annotation steps.
@@ -116,7 +118,7 @@ done
 [[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
 STEP="$1"; CONFIG="${2:-config/qc_preprocessing.yaml}"
 case "$STEP" in
- collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|trna_match|rrna_match|intraspecies_contamination|all) ;;
+ collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_gene_qc|rrna_match|intraspecies_contamination|all) ;;
  -h|--help|help) usage; exit 0;; *) echo "ERROR: unknown step: $STEP" >&2; exit 2;; esac
 [[ -s "$CONFIG" ]] || { echo "ERROR: missing or empty config file: $CONFIG" >&2; exit 1; }
 export SAMPLE
@@ -204,6 +206,7 @@ CODON_TABLE_SCRIPT="qc_analysis/scripts/build_primate_codon_table.py"
 MITOS2_SCRIPT="qc_analysis/scripts/run_mitos2_annotation.py"
 COMPARISON_SCRIPT="qc_analysis/scripts/compare_genbank_mitos2_reference_annotations.py"
 TRNA_SCRIPT="qc_analysis/scripts/run_trna_match.py"
+TRNA_INDEX_SCRIPT="qc_analysis/scripts/build_all_trna_indexes.py"
 RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
 INTRASPECIES_SCRIPT="qc_analysis/scripts/run_intraspecies_contamination.sh"
 GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
@@ -442,7 +445,9 @@ case "$STEP" in
   codon_match) run_annotation codon_match "$CODON_SCRIPT" ;;
   codon_match_validate) "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --validate-inputs ;;
   codon_match_merge) "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --merge-summaries ;;
+  build_trna_indexes) "$BASE_PYTHON" "$TRNA_INDEX_SCRIPT" --config "$CONFIG" --workers "${SLURM_CPUS_PER_TASK:-4}" ;;
   trna_match) run_annotation trna_match "$TRNA_SCRIPT" ;;
+  trna_gene_qc) echo 'Run run_trna_gene_liftover_qc.py with source index, human index, and coordinate map for each sample.' ;;
   rrna_match) run_annotation rrna_match "$RRNA_SCRIPT" ;;
   intraspecies_contamination) bash "$INTRASPECIES_SCRIPT" "$CONFIG" ;;
   all)
@@ -456,6 +461,7 @@ case "$STEP" in
     fi
     run_annotation codon_match "$CODON_SCRIPT"
     "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --merge-summaries
+    "$BASE_PYTHON" "$TRNA_INDEX_SCRIPT" --config "$CONFIG" --workers "${SLURM_CPUS_PER_TASK:-4}"
     run_annotation trna_match "$TRNA_SCRIPT"
     run_annotation rrna_match "$RRNA_SCRIPT"
     ;;

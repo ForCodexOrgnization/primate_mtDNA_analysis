@@ -9,10 +9,10 @@ from qc_analysis.scripts.run_trna_match import index, normalize_chrom, oriented
 
 ROOT = Path(__file__).resolve().parents[2]
 HEADER = ('chrom\tpos\ttrna_id\tlocal_pos\tstruct_class\tstruct_element\tpair_type\t'
-          'pair_state\tpaired_local_pos\tpaired_genomic_pos\tpaired_base\tstrand\n')
+          'pair_state\tpaired_local_pos\tpaired_genomic_pos\tpaired_base\tstrand\tbase_orientation\n')
 
 def row(chrom='species', pos=10, ident='S', strand='+', paired='G'):
-    return f'{chrom}\t{pos}\t{ident}\t1\tstem\tacceptor\tWC\tpaired\t2\t20\t{paired}\t{strand}\n'
+    return f'{chrom}\t{pos}\t{ident}\t1\tstem\tacceptor\tWC\tpaired\t2\t20\t{paired}\t{strand}\tgenomic\n'
 
 def fixture(tmp_path, species_rows='', human_rows='', settings='', compressed=False):
     human=tmp_path/'human.tsv'; species=tmp_path/'S1.tsv'; human.write_text(HEADER+human_rows); species.write_text(HEADER+species_rows)
@@ -99,7 +99,6 @@ def test_pass_only_and_summary_controls(tmp_path):
     assert result.returncode==0 and not any(not x.startswith('#') for x in out.read_text().splitlines())
     assert not (tmp_path/'reports').exists()
 
-@pytest.mark.parametrize('setting,message',[('run_trnascan_if_missing','tRNAscan index generation'),('run_trna_gene_qc','gene QC is not implemented')])
-def test_unsupported_enabled_modes_fail_before_samples(tmp_path,setting,message):
-    config,inp,out=fixture(tmp_path,row(),row('chrM'),settings=f'    {setting}: true\n')
-    result=run(config,inp,out); assert result.returncode!=0 and message in result.stderr; assert not out.exists()
+def test_v2_paired_rna_is_not_complemented_twice():
+    from qc_analysis.scripts.run_trna_match import paired_rna
+    assert paired_rna({'strand':'-','paired_base_rna':'U','paired_base':'A','index_format_version':'2'}) == 'U'

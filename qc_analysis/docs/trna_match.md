@@ -1,31 +1,90 @@
-# tRNA match
-`run_trna_match.py` prefers codon-annotated VCFs and falls back to lifted raw VCFs. It is annotation-only and adds `MTTRNA_*` INFO fields for IDs, local positions, class/element, pairing, ALT effect, compensation, strict match, and source lookup coordinates. Statuses are `OK`, `NO_SPECIES_TRNA`, `NO_HUMAN_TRNA`, `NO_SPECIES_OR_HUMAN_TRNA`, and `MISSING_SPECIES_COORD`.
+# Reference-level tRNA structural matching
 
-Position indexes are TSV/TSV.GZ files requiring `chrom`, `pos`, `trna_id`,
-`local_pos`, `struct_class`, `struct_element`, `pair_type`, `pair_state`,
-`paired_local_pos`, `paired_genomic_pos`, `paired_base`, and `strand`. Index
-`paired_base` and VCF REF/ALT bases are **genomic orientation**; negative-strand
-records are complemented and converted to RNA before `pair_type()` is called.
-The stored `pair_type` describes the reference pair in transcript/RNA orientation
-(pair class is unchanged when both genomic bases are complemented).
+## Data flow
 
-Chromosome normalization supports `none`, `strip_chr`, `add_chr`, and
-`mitochondrial_alias` (the latter maps chrM/M/MT/mitochondrial names to `MT`).
-Index and VCF normalization are configured independently. With
-`*_lookup_ignore_chrom: false`, only normalized chromosome-plus-position matches
-are accepted. When true, a position-only fallback is allowed, but ambiguous
-positions are reported rather than arbitrarily selecting a record.
+```text
+reference FASTA -> tRNAscan-SE -> .trnascan.out + .trnascan.ss
+                -> reference-level position index
+sample -> sample_reference_map.tsv -> reference_key -> position index
+lifted/codon-annotated VCF + human/source indexes -> tRNA match VCF
+```
 
-Stem variants additionally check source paired-site liftover, pair state, ALT effect, and whether both ALT pairs remain compatible (`WC` or `GU_wobble`). The source-side ALT effect uses original `SRC_ALT`; the human-side effect uses the current lifted VCF ALT. Loop strict matching instead requires matching loop class, element, region, and local position. Stem strict matching requires all structural comparisons, including paired-position and allele-effect agreement; `require_compensated_for_strict_stem` controls whether compatibility is also required (default true).
+Index construction depends only on the reference FASTA and tRNAscan-SE; it does
+not depend on codon matching. Matching prefers a codon-annotated VCF and falls
+back to the lifted raw VCF.
 
-Missing indexes fail clearly. Index generation (`run_trnascan_if_missing`) and
-interval gene QC (`run_trna_gene_qc`) are not implemented and are rejected when
-enabled; their related executable settings therefore do not imply execution.
-`pass_only` filters non-PASS VCF records and `write_summary` controls per-sample
-and combined summaries. A missing coordinate map does not fail annotation, but
-is counted and prevents strict stem matching. No gene-QC completion report is
-written.
+## Coordinate and orientation contract (format version 2)
+
+`pos` and `paired_genomic_pos` are 1-based coordinates in the original input
+reference. `base_genomic` and `paired_base_genomic` are DNA letters read from
+that FASTA. The `.ss` sequence, `base_rna`, and `paired_base_rna` are in mature
+5'-to-3' transcript orientation and use U. Thus plus-strand RNA is genomic DNA
+with T changed to U; minus-strand RNA is the complement of genomic DNA with T
+changed to U. VCF alleles are genomic and are converted exactly once. Pair type
+is calculated only from the two RNA-orientation bases. In particular,
+`paired_base_rna` must never be complemented again.
+
+Every row contains:
+
+`index_format_version, base_orientation, pair_type_orientation,
+coordinate_space, reference_key, chrom, pos, trna_id, trna_begin, trna_end,
+strand, aa, anticodon, score, local_pos, base_genomic, base_rna, struct_char,
+struct_class, struct_element, paired_local_pos, paired_genomic_pos,
+paired_base_genomic, paired_base_rna, pair_bases_rna, pair_type, pair_state,
+base, paired_base`.
+
+The metadata values are `2`, `genomic_and_rna`, `transcript_rna`, and
+`original_reference`. Compatibility aliases `base` and `paired_base` are
+**genomic**. A legacy alias-only index must explicitly declare its orientation;
+the matcher does not guess.
+
+The builder checks the transcript-oriented `.ss` sequence against the
+strand-aware FASTA sequence. Its default mismatch threshold is zero and can be
+changed with `--max-sequence-mismatch-rate`.
+
+## Commands
+
+Build human from saved results:
 
 ```bash
-python qc_analysis/scripts/run_trna_match.py --config config/qc_preprocessing.yaml --sample ERS14600320
+python qc_analysis/scripts/build_trna_position_index.py --reference-key human \
+  --fasta data/reference_tables/human_chrM.fa \
+  --trnascan-out human.trnascan.out --trnascan-ss human.trnascan.ss \
+  --output data/reference_tables/trna_index/human.trna_position_index.tsv.gz
 ```
+
+Run tRNAscan and build one primate reference:
+
+```bash
+python qc_analysis/scripts/build_trna_position_index.py --reference-key REF \
+  --fasta reference.fa --run-trnascan --trnascan-bin tRNAscan-SE \
+  --trnascan-mode mito_mammal --threads 4 \
+  --output data/reference_tables/trna_index/references/REF.trna_position_index.tsv.gz
+```
+
+Build all unique references (shared references run once):
+
+```bash
+python qc_analysis/scripts/build_all_trna_indexes.py \
+  --config config/qc_preprocessing.yaml --workers 4
+```
+
+Run one sample:
+
+```bash
+python qc_analysis/scripts/run_trna_match.py --config config/qc_preprocessing.yaml --sample SAMPLE
+```
+
+Prepare the unique-reference Slurm manifest and submit its array:
+
+```bash
+python qc_analysis/scripts/build_all_trna_indexes.py --config config/qc_preprocessing.yaml \
+  --task-manifest results/qc/trna_match/index_build_reports/trna_index_tasks.tsv
+sbatch --array=1-N qc_analysis/scripts/slurm/build_trna_indexes_array.sbatch \
+  results/qc/trna_match/index_build_reports/trna_index_tasks.tsv config/qc_preprocessing.yaml
+```
+
+The array activates `trnascan_env` and validates `tRNAscan-SE`. Standard
+`.out`/`.ss` emitted by tRNAscan-SE v1/v2 are supported. Cove-only output,
+pseudogene-specific alternate layouts, and structurally malformed or
+sequence-less `.ss` records are rejected rather than inferred.
