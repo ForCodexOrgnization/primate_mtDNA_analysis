@@ -272,6 +272,9 @@ trna_match:
     trnascan_threads: 4
     trnascan_extra_args: ""
     max_sequence_mismatch_rate: 0.0
+    min_mitochondrial_reference_length: 14000
+    max_mitochondrial_reference_length: 19000
+    allow_ss_order_fallback: false
     species_trna_coord_space: original
     species_trna_chrom_norm: none
     human_trna_chrom_norm: none
@@ -284,6 +287,9 @@ trna_match:
     write_summary: true
     pass_only: false
     require_compensated_for_strict_stem: true
+    # Version-2 default preserves the existing strict rule; opt in to also
+    # require equality of the reference pair types.
+    strict_stem_require_reference_pair_type_match: false
 rrna_match:
   paths:
     input_vcf_dir: results/qc/trna_match/vcf_trna

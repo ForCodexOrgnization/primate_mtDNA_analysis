@@ -11,9 +11,10 @@ from qc_analysis.lib.simple_yaml import read_simple_yaml
 from qc_analysis.lib.trnascan_utils import build_trna_position_index, run_trnascan
 
 REQUIRED = {'chrom','pos','trna_id','local_pos','struct_class','struct_element','pair_type',
-            'pair_state','paired_local_pos','paired_genomic_pos','paired_base','strand'}
-N=['STATUS','S_ID','H_ID','S_LOCAL','H_LOCAL','S_CLASS','H_CLASS','REGION_MATCH','S_ELEMENT','H_ELEMENT','ELEMENT_MATCH','S_PAIR_TYPE','H_PAIR_TYPE','PAIR_TYPE_MATCH','S_PAIR_STATE','H_PAIR_STATE','PAIR_STATE_MATCH','S_PAIR_LOCAL','H_PAIR_LOCAL','PAIR_LOCAL_MATCH','S_PAIR_POS','H_PAIR_POS','S_PAIR_LIFTED_HPOS','PAIR_POS_MATCH','H_ALT_PAIR_TYPE','S_ALT_PAIR_TYPE','H_ALT_EFFECT','S_ALT_EFFECT','ALLELE_EFFECT_MATCH','COMPENSATED','STRICT_MATCH','S_COORD_SPACE','S_LOOKUP_CHROM','S_LOOKUP_POS']
-FIELDS=[('MTTRNA_'+n,'tRNA structural match annotation') for n in N]
+            'paired_local_pos','paired_genomic_pos','paired_base','strand'}
+N=['STATUS','S_ID','H_ID','S_LOCAL','H_LOCAL','S_CLASS','H_CLASS','REGION_MATCH','S_ELEMENT','H_ELEMENT','ELEMENT_MATCH','S_PAIR_TYPE','H_PAIR_TYPE','PAIR_TYPE_MATCH','S_PAIR_STATUS','H_PAIR_STATUS','PAIR_STATUS_MATCH','S_PAIR_STATE','H_PAIR_STATE','PAIR_STATE_MATCH','S_PAIR_LOCAL','H_PAIR_LOCAL','PAIR_LOCAL_MATCH','S_PAIR_POS','H_PAIR_POS','S_PAIR_LIFTED_HPOS','PAIR_POS_MATCH','H_ALT_PAIR_TYPE','S_ALT_PAIR_TYPE','H_ALT_EFFECT','S_ALT_EFFECT','ALLELE_EFFECT_MATCH','COMPENSATED','STRICT_MATCH','S_COORD_SPACE','S_LOOKUP_CHROM','S_LOOKUP_POS']
+FIELDS=[('MTTRNA_'+n, 'Both compared ALT base pairs remain WC/GU-compatible; this does not imply a two-site compensatory mutation'
+        if n == 'COMPENSATED' else 'tRNA structural match annotation') for n in N]
 FIELDS.append(('MTTRNA_REFERENCE_KEY','Reference-level tRNA index key'))
 
 def normalize_chrom(chrom, mode):
@@ -33,11 +34,14 @@ class TrnaIndex:
     ambiguous_positions: set
     duplicate_keys: set
     chroms_by_pos: dict
+    n_overlapping_positions: int = 0
+    n_multi_trna_positions: int = 0
 
     def lookup(self, chrom, pos, ignore_chrom=False):
         if pos is None: return None, 'missing_coordinate'
-        record=self.exact.get((chrom,pos))
-        if record is not None: return record, 'exact'
+        records=self.exact.get((chrom,pos), [])
+        if len(records) == 1: return records[0], 'exact'
+        if len(records) > 1: return None, 'ambiguous'
         if not ignore_chrom:
             return None, 'chromosome_mismatch' if pos in self.chroms_by_pos else 'not_found'
         if pos in self.ambiguous_positions: return None, 'ambiguous'
@@ -48,22 +52,21 @@ def index(path, chrom_norm='none'):
     with open_text(path) as handle: fieldnames=next(csv.reader(handle,delimiter='\t'),[])
     missing=REQUIRED-set(fieldnames)
     if missing: raise ValueError(f'tRNA index {path} missing required columns: {", ".join(sorted(missing))}')
-    exact={}; duplicates=set(); conflicts=[]; bypos=defaultdict(list); chroms=defaultdict(set)
+    exact=defaultdict(list); duplicates=set(); bypos=defaultdict(list); chroms=defaultdict(set)
     for number,r in enumerate(data,2):
         try: pos=int(r['pos'])
         except (TypeError,ValueError): raise ValueError(f'Invalid pos in {path} line {number}: {r.get("pos")!r}')
         chrom=normalize_chrom(r['chrom'],chrom_norm)
         if not chrom: raise ValueError(f'Blank chrom in {path} line {number}')
         r=dict(r); r['chrom']=chrom; key=(chrom,pos)
-        if key in exact:
-            if exact[key] == r: duplicates.add(key); continue
-            conflicts.append(key); continue
-        exact[key]=r; bypos[pos].append(r); chroms[pos].add(chrom)
-    if conflicts: raise ValueError(f'Conflicting duplicate chrom/pos keys in {path}: {sorted(set(conflicts))}')
+        if r in exact[key]: duplicates.add(key); continue
+        exact[key].append(r); bypos[pos].append(r); chroms[pos].add(chrom)
     if duplicates: warnings.warn(f'Collapsed {len(duplicates)} exact duplicate chrom/pos key(s) in {path}', RuntimeWarning)
     ambiguous={pos for pos,rs in bypos.items() if len(rs)>1}
     positions={pos:rs[0] for pos,rs in bypos.items() if len(rs)==1}
-    return TrnaIndex(exact,positions,ambiguous,duplicates,dict(chroms))
+    overlap=sum(len(rs)>1 for rs in exact.values())
+    multi=sum(len({r.get('trna_id') for r in rs})>1 for rs in exact.values())
+    return TrnaIndex(dict(exact),positions,ambiguous,duplicates,dict(chroms),overlap,multi)
 
 def map_for(directory,sample):
     for suffix in ('.coordinate_map.tsv','.coordinate_map.tsv.gz'):
@@ -96,7 +99,7 @@ def sample_reference_key(path,sample):
 def resolve_reference_fasta(path,key):
     for row in read_mapping(path):
         if row.get('reference_key',row.get('reference_id'))==key:
-            for col in ('fasta','fasta_path','chrM_fasta_path','chrM_expected_output_fasta','wg_expected_output_fasta'):
+            for col in ('chrM_fasta_path','chrM_expected_output_fasta','fasta','fasta_path'):
                 if row.get(col):return row[col]
     raise ValueError(f'No FASTA for reference_key {key!r} in {path}')
 
@@ -148,15 +151,25 @@ def main():
             sch=normalize_chrom(sch,s.get('species_vcf_chrom_norm','none')); hch=normalize_chrom(x[0],s.get('human_vcf_chrom_norm','none'))
             sr,skind=si.lookup(sch,pos,bool(s.get('species_trna_lookup_ignore_chrom',False))); hr,hkind=hi.lookup(hch,hp,bool(s.get('human_trna_lookup_ignore_chrom',False)))
             counts['ambiguous_species_index_lookup'] += skind=='ambiguous'; counts['ambiguous_human_index_lookup'] += hkind=='ambiguous'; counts['chromosome_mismatch'] += skind=='chromosome_mismatch' or hkind=='chromosome_mismatch'
-            if not pos: status='MISSING_SPECIES_COORD'
+            if skind=='ambiguous': status='AMBIGUOUS_SPECIES_TRNA'
+            elif hkind=='ambiguous': status='AMBIGUOUS_HUMAN_TRNA'
+            elif not pos: status='MISSING_SPECIES_COORD'
             elif not sr and not hr: status='NO_SPECIES_OR_HUMAN_TRNA'
             elif not sr: status='NO_SPECIES_TRNA'
             elif not hr: status='NO_HUMAN_TRNA'
             else: status='OK'
             v={'MTTRNA_STATUS':status,'MTTRNA_REFERENCE_KEY':reference_key,'MTTRNA_S_COORD_SPACE':s.get('species_trna_coord_space','original'),'MTTRNA_S_LOOKUP_CHROM':sch or '.','MTTRNA_S_LOOKUP_POS':pos or '.'}
-            for short,col in [('S_ID','trna_id'),('H_ID','trna_id'),('S_LOCAL','local_pos'),('H_LOCAL','local_pos'),('S_CLASS','struct_class'),('H_CLASS','struct_class'),('S_ELEMENT','struct_element'),('H_ELEMENT','struct_element'),('S_PAIR_TYPE','pair_type'),('H_PAIR_TYPE','pair_type'),('S_PAIR_STATE','pair_state'),('H_PAIR_STATE','pair_state'),('S_PAIR_LOCAL','paired_local_pos'),('H_PAIR_LOCAL','paired_local_pos'),('S_PAIR_POS','paired_genomic_pos'),('H_PAIR_POS','paired_genomic_pos')]:
-                record=(sr or {}) if short.startswith('S') else (hr or {}); v['MTTRNA_'+short]=record.get(col,'.')
-            for key,col in [('REGION_MATCH','struct_class'),('ELEMENT_MATCH','struct_element'),('PAIR_TYPE_MATCH','pair_type'),('PAIR_STATE_MATCH','pair_state'),('PAIR_LOCAL_MATCH','paired_local_pos')]: v['MTTRNA_'+key]=compare_values(sr.get(col) if sr else '.',hr.get(col) if hr else '.')
+            for short,col in [('S_ID','trna_id'),('H_ID','trna_id'),('S_LOCAL','local_pos'),('H_LOCAL','local_pos'),('S_CLASS','struct_class'),('H_CLASS','struct_class'),('S_ELEMENT','struct_element'),('H_ELEMENT','struct_element'),('S_PAIR_TYPE','pair_type'),('H_PAIR_TYPE','pair_type'),('S_PAIR_STATUS','pair_status'),('H_PAIR_STATUS','pair_status'),('S_PAIR_STATE','pair_state'),('H_PAIR_STATE','pair_state'),('S_PAIR_LOCAL','paired_local_pos'),('H_PAIR_LOCAL','paired_local_pos'),('S_PAIR_POS','paired_genomic_pos'),('H_PAIR_POS','paired_genomic_pos')]:
+                record=(sr or {}) if short.startswith('S') else (hr or {})
+                value=record.get(col,'.')
+                if col=='pair_status' and value=='.' and record.get('pair_state') in {'paired','unpaired'}: value=record['pair_state']
+                v['MTTRNA_'+short]=value
+            for key,col in [('REGION_MATCH','struct_class'),('ELEMENT_MATCH','struct_element'),('PAIR_TYPE_MATCH','pair_type'),('PAIR_STATUS_MATCH','pair_status'),('PAIR_STATE_MATCH','pair_state'),('PAIR_LOCAL_MATCH','paired_local_pos')]:
+                def val(record):
+                    if not record:return '.'
+                    if col=='pair_status': return record.get('pair_status',record.get('pair_state','.'))
+                    return record.get(col,'.')
+                v['MTTRNA_'+key]=compare_values(val(sr),val(hr))
             stem=status=='OK' and v['MTTRNA_S_CLASS']=='stem' and v['MTTRNA_H_CLASS']=='stem'; lifted=lift_source_pos_to_human(v['MTTRNA_S_PAIR_POS'],cmap) if stem else '.'
             if stem and lifted=='.': counts['missing_coordinate_map']+=1
             posmatch=compare_values(lifted,v['MTTRNA_H_PAIR_POS']) if stem else '.'
@@ -167,14 +180,18 @@ def main():
             compatible={'WC','GU_wobble'}; compensated='yes' if stem and spt in compatible and hpt in compatible else 'no' if stem else '.'; strict='no'
             if status=='OK' and v['MTTRNA_S_CLASS']=='loop' and v['MTTRNA_H_CLASS']=='loop': strict='yes' if v['MTTRNA_REGION_MATCH']=='yes' and v['MTTRNA_ELEMENT_MATCH']=='yes' and compare_values(v['MTTRNA_S_LOCAL'],v['MTTRNA_H_LOCAL'])=='yes' else 'no'
             elif stem:
-                checks=[v['MTTRNA_REGION_MATCH']=='yes',v['MTTRNA_ELEMENT_MATCH']=='yes',v['MTTRNA_PAIR_STATE_MATCH']=='yes',posmatch=='yes',effectmatch=='yes']
+                checks=[v['MTTRNA_REGION_MATCH']=='yes',v['MTTRNA_ELEMENT_MATCH']=='yes',v['MTTRNA_PAIR_STATUS_MATCH']=='yes',posmatch=='yes',effectmatch=='yes']
+                if s.get('strict_stem_require_reference_pair_type_match',False): checks.append(v['MTTRNA_PAIR_TYPE_MATCH']=='yes')
                 if s.get('require_compensated_for_strict_stem',True): checks.append(compensated=='yes')
                 strict='yes' if all(checks) else 'no'
             v.update({'MTTRNA_S_PAIR_LIFTED_HPOS':lifted,'MTTRNA_PAIR_POS_MATCH':posmatch,'MTTRNA_H_ALT_PAIR_TYPE':hpt,'MTTRNA_S_ALT_PAIR_TYPE':spt,'MTTRNA_H_ALT_EFFECT':heffect,'MTTRNA_S_ALT_EFFECT':seffect,'MTTRNA_ALLELE_EFFECT_MATCH':effectmatch,'MTTRNA_COMPENSATED':compensated,'MTTRNA_STRICT_MATCH':strict})
             inf.update(v); x[7]=info_format(inf)
             if not s.get('pass_only',False) or x[6]=='PASS': body.append('\t'.join(x)+'\n'); counts[status]+=1
         with out.open('w') as f: f.writelines(inject_headers(head,FIELDS,'MTTRNA')); f.writelines(body)
-        row={'sample':sample,'reference_key':reference_key,'species_trna_index':str(spi),'input_vcf':str(inp),'output_vcf':str(out),'total_records':len(body),**{f'status_{q}':counts[q] for q in ['OK','NO_SPECIES_TRNA','NO_HUMAN_TRNA','NO_SPECIES_OR_HUMAN_TRNA','MISSING_SPECIES_COORD']},**{q:counts[q] for q in ['ambiguous_species_index_lookup','ambiguous_human_index_lookup','chromosome_mismatch','missing_coordinate_map','negative_strand_records']},'status':'completed'}
+        row={'sample':sample,'reference_key':reference_key,'species_trna_index':str(spi),'input_vcf':str(inp),'output_vcf':str(out),'total_records':len(body),
+             'n_overlapping_positions':si.n_overlapping_positions+hi.n_overlapping_positions,
+             'n_multi_trna_positions':si.n_multi_trna_positions+hi.n_multi_trna_positions,
+             **{f'status_{q}':counts[q] for q in ['OK','NO_SPECIES_TRNA','NO_HUMAN_TRNA','NO_SPECIES_OR_HUMAN_TRNA','MISSING_SPECIES_COORD','AMBIGUOUS_SPECIES_TRNA','AMBIGUOUS_HUMAN_TRNA']},**{q:counts[q] for q in ['ambiguous_species_index_lookup','ambiguous_human_index_lookup','chromosome_mismatch','missing_coordinate_map','negative_strand_records']},'status':'completed'}
         if s.get('write_summary',True): write_summary(Path(p['reports_dir'])/f'{sample}.trna_match_summary.tsv',row)
         allrows.append(row)
     if s.get('write_summary',True) and allrows and not a.sample and not a.input:
