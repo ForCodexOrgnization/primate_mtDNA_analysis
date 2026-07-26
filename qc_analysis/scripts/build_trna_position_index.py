@@ -4,9 +4,9 @@ import argparse, csv, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from qc_analysis.lib.trnascan_utils import build_trna_position_index, run_trnascan
+from qc_analysis.lib.trnascan_utils import build_trna_position_index, run_trnascan, read_fasta
 
-SUMMARY_COLUMNS = ["reference_key", "fasta", "fasta_length", "trnascan_out", "trnascan_ss",
+SUMMARY_COLUMNS = ["reference_key", "fasta", "selected_record_id", "fasta_length", "fasta_sha256", "trnascan_out", "trnascan_ss",
                    "output_index", "n_trna_records", "n_index_rows", "n_positive_strand_trna",
                    "n_negative_strand_trna", "n_stem_positions", "n_loop_positions",
                    "n_missing_structure", "n_fasta_sequence_mismatch", "status", "notes"]
@@ -21,21 +21,31 @@ def build(args):
     output=Path(args.output)
     if output.exists() and not args.overwrite: raise FileExistsError(f"Output exists (use --overwrite): {output}")
     out, ss = args.trnascan_out, args.trnascan_ss
+    index_fasta=args.fasta
     if args.run_trnascan:
         prefix=args.trnascan_prefix or str(output).removesuffix(".trna_position_index.tsv.gz").removesuffix(".tsv.gz")
-        made=run_trnascan(args.fasta,prefix,args.trnascan_bin,args.trnascan_mode,args.threads,args.trnascan_extra_args)
+        scan_fasta=args.fasta
+        if getattr(args,'target_sequence_id',None):
+            seqs=read_fasta(args.fasta); target=args.target_sequence_id
+            if target not in seqs: raise ValueError(f"FASTA record {target!r} not found")
+            scan_fasta=str(prefix)+'.selected.fa'; Path(scan_fasta).parent.mkdir(parents=True,exist_ok=True)
+            Path(scan_fasta).write_text(f'>{target}\n{seqs[target]}\n'); index_fasta=scan_fasta
+        made=run_trnascan(scan_fasta,prefix,args.trnascan_bin,args.trnascan_mode,args.threads,args.trnascan_extra_args)
         out,ss=str(made["out"]),str(made["ss"])
     if not out or not ss: raise ValueError("Provide --trnascan-out and --trnascan-ss, or --run-trnascan")
-    result=build_trna_position_index(args.reference_key,args.fasta,out,ss,output,args.chrom_normalization,args.max_sequence_mismatch_rate)
+    result=build_trna_position_index(args.reference_key,index_fasta,out,ss,output,args.chrom_normalization,args.max_sequence_mismatch_rate,
+                                     getattr(args,'target_sequence_id',None) if index_fasta==args.fasta else None,getattr(args,'allow_ss_order_fallback',False))
     records,rows=result["records"],result["rows"]
-    return {"reference_key":args.reference_key,"fasta":args.fasta,"fasta_length":result["fasta_length"],
+    return {"reference_key":args.reference_key,"fasta":args.fasta,"selected_record_id":result["selected_record_id"],
+            "fasta_length":result["fasta_length"],"fasta_sha256":result["fasta_sha256"],
             "trnascan_out":out,"trnascan_ss":ss,"output_index":str(output),"n_trna_records":len(records),
             "n_index_rows":len(rows),"n_positive_strand_trna":sum(r.strand=="+" for r in records),
             "n_negative_strand_trna":sum(r.strand=="-" for r in records),
             "n_stem_positions":sum(r["struct_class"]=="stem" for r in rows),
             "n_loop_positions":sum(r["struct_class"]=="loop" for r in rows),
             "n_missing_structure":sum(not r["struct_char"] for r in rows),
-            "n_fasta_sequence_mismatch":result["n_fasta_sequence_mismatch"],"status":"completed","notes":""}
+            "n_fasta_sequence_mismatch":result["n_fasta_sequence_mismatch"],"status":"completed",
+            "notes":"WARNING: unsafe .ss order fallback enabled" if result["used_order_fallback"] else ""}
 
 def parser():
     p=argparse.ArgumentParser(); p.add_argument("--reference-key",required=True); p.add_argument("--fasta",required=True)
@@ -43,6 +53,8 @@ def parser():
     p.add_argument("--trnascan-bin",default="tRNAscan-SE"); p.add_argument("--trnascan-mode",default="mito_mammal")
     p.add_argument("--threads",type=int,default=1); p.add_argument("--trnascan-extra-args",default=""); p.add_argument("--trnascan-prefix")
     p.add_argument("--output",required=True); p.add_argument("--overwrite",action="store_true"); p.add_argument("--summary")
+    p.add_argument("--target-sequence-id", help="Explicit FASTA record to index (required for multi-contig FASTA)")
+    p.add_argument("--allow-ss-order-fallback", action="store_true", help="Unsafe compatibility mode; emits a warning")
     p.add_argument("--chrom-normalization",default="none",choices=["none","strip_chr","add_chr","mitochondrial_alias"])
     p.add_argument("--max-sequence-mismatch-rate",type=float,default=0.0); return p
 

@@ -30,17 +30,51 @@ Every row contains:
 coordinate_space, reference_key, chrom, pos, trna_id, trna_begin, trna_end,
 strand, aa, anticodon, score, local_pos, base_genomic, base_rna, struct_char,
 struct_class, struct_element, paired_local_pos, paired_genomic_pos,
-paired_base_genomic, paired_base_rna, pair_bases_rna, pair_type, pair_state,
-base, paired_base`.
+paired_base_genomic, paired_base_rna, pair_bases_rna, pair_type, pair_status,
+pair_state, base, paired_base, fasta_sha256`.
 
 The metadata values are `2`, `genomic_and_rna`, `transcript_rna`, and
 `original_reference`. Compatibility aliases `base` and `paired_base` are
 **genomic**. A legacy alias-only index must explicitly declare its orientation;
 the matcher does not guess.
 
+Pairing semantics are deliberately separate: `pair_status` is
+`paired|unpaired`; `pair_state` is `WC|non_WC|NA`; and `pair_type` is
+`WC|GU_wobble|non_WC|NA`. The SHA256 is calculated over the selected uppercase
+mitochondrial sequence (not FASTA wrapping or headers).
+
+Structural elements are inferred from topology, not fixed positions. The
+builder groups consecutive antiparallel pairs into stems, identifies the
+outermost terminal stem as the acceptor stem, assigns internal stems in
+transcript order to D, anticodon, and T regions, labels the enclosed loops,
+and labels the anticodon-to-T gap as the variable loop. Canonical mature-tRNA
+position ranges are only a fallback when no pairing topology is present. This
+also applies on the negative strand because local positions always follow the
+mature 5'-to-3' RNA.
+
+Exact duplicate index rows are collapsed. Distinct predictions at the same
+chromosome/position are retained as lists and yield
+`AMBIGUOUS_SPECIES_TRNA` or `AMBIGUOUS_HUMAN_TRNA`; the matcher never chooses
+the last row. Summaries report overlapping and multi-tRNA position counts.
+
+The existing strict stem rule requires region/element/pair-status agreement,
+paired-coordinate agreement, allele-effect agreement, and (by default) ALT
+pair compatibility. It does **not** require reference `PAIR_TYPE_MATCH` unless
+`strict_stem_require_reference_pair_type_match: true` is configured. The
+legacy `MTTRNA_COMPENSATED` name is retained for output compatibility, but it
+means only that both compared ALT pairs are WC/GU-compatible—not that a
+two-site compensatory mutation occurred.
+
 The builder checks the transcript-oriented `.ss` sequence against the
 strand-aware FASTA sequence. Its default mismatch threshold is zero and can be
 changed with `--max-sequence-mismatch-rate`.
+
+Reference manifests prefer explicit `chrM_fasta_path`/`chrM_expected_output_fasta`
+fields and never fall back to `wg_expected_output_fasta`. A multi-record FASTA
+is rejected unless `target_sequence_id` is explicit; in that case only that
+record is passed to tRNAscan-SE. Configurable mitochondrial length bounds are
+validated. Indexes are fully validated at format version 2 and atomically
+renamed into place, so truncated interrupted outputs are never accepted.
 
 ## Commands
 

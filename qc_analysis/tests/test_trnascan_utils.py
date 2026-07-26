@@ -36,3 +36,17 @@ def test_malformed_and_no_trna(tmp_path):
 def test_sequence_validation(tmp_path):
     out,ss=inputs(tmp_path,sequence='AAAA');f=tmp_path/'x.fa';f.write_text('>chrM\nACGT\n')
     with pytest.raises(ValueError,match='mismatch rate'):build_trna_position_index('R',f,out,ss,tmp_path/'x.tsv')
+
+def test_reordered_ss_records_match_by_id(tmp_path):
+    out=tmp_path/'x.out'; out.write_text('chrM 1 1 4 Phe GAA 0 0 20\nchrM 2 5 8 Leu TAA 0 0 20\n')
+    ss=tmp_path/'x.ss'; ss.write_text('chrM.trna2 (5-8)\nType: Leu Anticodon: TAA\nSeq: AAAA\nStr: ....\nchrM.trna1 (1-4)\nType: Phe Anticodon: GAA\nSeq: CCCC\nStr: ....\n')
+    records=merge_trnascan_records(parse_trnascan_out(out),parse_trnascan_ss(ss))
+    assert [r.sequence for r in records]==['CCCC','AAAA']
+
+def test_topology_structural_inference_and_noncanonical_arm():
+    canonical='>>>>...<<<<'  # topology is used even though canonical coordinates are absent
+    labels=infer_structural_elements(canonical)
+    assert labels[1]=='acceptor_stem' and labels[5]=='connector'
+    shortened='>>..<<'
+    assert infer_structural_elements(shortened)[1]=='acceptor_stem'
+    assert all(infer_structural_elements('......').values())  # documented canonical fallback

@@ -67,7 +67,9 @@ def test_ambiguous_position_and_duplicate_validation(tmp_path):
     path.write_text(HEADER+row('a')+row('a'))
     with pytest.warns(RuntimeWarning): assert index(path).duplicate_keys=={('a',10)}
     path.write_text(HEADER+row('a')+row('a',ident='conflict'))
-    with pytest.raises(ValueError,match='Conflicting duplicate'): index(path)
+    idx=index(path)
+    assert idx.lookup('a',10)==(None,'ambiguous')
+    assert idx.n_overlapping_positions==idx.n_multi_trna_positions==1
 
 def test_negative_strand_genomic_gu_wobble_orientation():
     record={'strand':'-'}

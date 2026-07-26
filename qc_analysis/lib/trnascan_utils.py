@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import csv
 import gzip
+import hashlib
+import os
 import shlex
 import subprocess
 import re
@@ -21,7 +23,7 @@ INDEX_COLUMNS = ["index_format_version", "base_orientation", "pair_type_orientat
                  "local_pos", "base_genomic", "base_rna", "struct_char", "struct_class",
                  "struct_element", "paired_local_pos", "paired_genomic_pos",
                  "paired_base_genomic", "paired_base_rna", "pair_bases_rna", "pair_type",
-                 "pair_state", "base", "paired_base"]
+                 "pair_status", "pair_state", "base", "paired_base", "fasta_sha256"]
 
 
 @dataclass
@@ -82,14 +84,14 @@ def parse_trnascan_ss(path: str | Path) -> list[dict]:
                 continue
             if not line.startswith(("Seq:", "Str:", "Type:")) and re.search(r"\.trna?\d+\s+\([^)]*\)", line, re.I):
                 if current: result.append(current)
-                current={"id":line.split()[0],"sequence":"","structure":""}
+                current={"id":line.split()[0],"sequence":"","structure":"", "header": line}
             elif line.startswith("Seq:"):
                 value = line[4:].strip()
                 # A record header contains coordinates; sequence lines contain bases.
                 if "(" in value and ")" in value:
                     if current:
                         result.append(current)
-                    current = {"id": value.split()[0], "sequence": "", "structure": ""}
+                    current = {"id": value.split()[0], "sequence": "", "structure": "", "header": value}
                 elif current:
                     current["sequence"] += "".join(value.split()).upper()
             elif line.startswith("Str:") and current:
@@ -129,11 +131,60 @@ def build_pairs(structure: str) -> dict[int, int]:
 
 
 def infer_structural_elements(structure: str, pairs: dict[int, int] | None = None) -> dict[int, str]:
-    """Assign conventional tRNA elements by local position and stem topology."""
+    """Infer tRNA regions from paired-stem topology.
+
+    Contiguous antiparallel runs are stems.  The outer run joining the 5' and
+    3' ends is the acceptor stem; internal runs, in transcript order, are the
+    D, anticodon, and T stems.  Intervening unpaired positions are labelled as
+    the corresponding loops/connectors.  Canonical coordinate ranges are used
+    only when the structure has too little topology to identify any stem.
+    """
     pairs = pairs or build_pairs(structure)
     n = len(structure)
-    out = {}
-    # Canonical mature-tRNA ranges; proportional fallback keeps truncated calls useful.
+    out: dict[int, str] = {}
+    left_pairs = sorted((a, b) for a, b in pairs.items() if a < b)
+    groups: list[list[tuple[int, int]]] = []
+    for pair in left_pairs:
+        if groups and pair[0] == groups[-1][-1][0] + 1 and pair[1] == groups[-1][-1][1] - 1:
+            groups[-1].append(pair)
+        else:
+            groups.append([pair])
+    if groups:
+        acceptor = min(groups, key=lambda g: (g[0][0] - 1) + (n - g[0][1]))
+        internal = sorted((g for g in groups if g is not acceptor), key=lambda g: g[0][0])
+        if len(internal) == 1:
+            names = ["anticodon"]
+        elif len(internal) == 2:
+            # The anticodon arm is indispensable.  Use its relative placement
+            # to decide whether the missing/noncanonical arm is D or T.
+            names = ["d", "anticodon"] if internal[0][0][0] <= n * .2 else ["anticodon", "t"]
+        else:
+            names = ["d", "anticodon", "t"] + ["variable"] * max(0, len(internal) - 3)
+        stem_names = {id(acceptor): "acceptor_stem"}
+        stem_names.update({id(g): f"{name}_stem" for g, name in zip(internal, names)})
+        for group in groups:
+            for a, b in group:
+                out[a] = out[b] = stem_names[id(group)]
+        # Label the interval enclosed by each internal stem as its loop.
+        for group, name in zip(internal, names):
+            lo = max(a for a, _ in group) + 1
+            hi = min(b for _, b in group) - 1
+            for pos in range(lo, hi + 1):
+                out.setdefault(pos, f"{name}_loop")
+        # Remaining transcript-order gaps are connectors or the variable region.
+        anti = next((g for g, name in zip(internal, names) if name == "anticodon"), None)
+        tstem = next((g for g, name in zip(internal, names) if name == "t"), None)
+        for pos in range(1, n + 1):
+            if pos in out:
+                continue
+            if anti and tstem and max(b for _, b in anti) < pos < min(a for a, _ in tstem):
+                out[pos] = "variable_loop"
+            elif pos > max(pairs) if pairs else False:
+                out[pos] = "discriminator_or_CCA"
+            else:
+                out[pos] = "connector"
+        return out
+    # Documented last-resort canonical local-coordinate fallback.
     ranges = [(1, 7, "acceptor_stem"), (8, 9, "d_arm_connector"), (10, 25, "d_arm"),
               (26, 27, "anticodon_connector"), (28, 42, "anticodon_arm"),
               (43, 48, "variable_loop"), (49, 65, "t_arm"), (66, 72, "acceptor_stem"),
@@ -143,16 +194,34 @@ def infer_structural_elements(structure: str, pairs: dict[int, int] | None = Non
     return out
 
 
-def merge_trnascan_records(out_records: list[TRNARecord], ss_records: list[dict]) -> list[TRNARecord]:
+def _norm_id(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower().replace("trna", "trna"))
+
+
+def merge_trnascan_records(out_records: list[TRNARecord], ss_records: list[dict],
+                           allow_order_fallback: bool = False) -> list[TRNARecord]:
     """Merge output and structure records without relying on record ordering alone."""
     unused = list(ss_records)
     for record in out_records:
-        aliases = {record.trna_id, f"{record.chrom}.trna{record.number}", f"{record.chrom}.tRNA{record.number}"}
-        match = next((x for x in unused if x["id"] in aliases), None)
-        if match is None and len(unused) == len(out_records):
+        aliases = {_norm_id(record.trna_id), _norm_id(f"{record.chrom}.tRNA{record.number}")}
+        candidates = [x for x in unused if _norm_id(x["id"]) in aliases]
+        header_patterns = [
+            lambda x: re.search(rf"\b{re.escape(record.chrom)}(?:\.trna)?{re.escape(str(record.number))}\b", x.get("header", ""), re.I),
+            lambda x: re.search(rf"\({record.begin}\s*[-,]\s*{record.end}\)", x.get("header", "")),
+            lambda x: x.get("aa", "").lower() == record.aa.lower() and x.get("anticodon", "").lower() == record.anticodon.lower()
+                      and len(x.get("sequence", "")) == abs(record.end-record.begin)+1,
+        ]
+        for predicate in header_patterns:
+            if len(candidates) == 1: break
+            found = [x for x in unused if predicate(x)]
+            if found: candidates = found
+        match = candidates[0] if len(candidates) == 1 else None
+        if match is None and allow_order_fallback and unused:
+            import warnings
+            warnings.warn(f"Unsafe order-based .out/.ss match used for {record.trna_id}", RuntimeWarning)
             match = unused[0]
         if match is None:
-            raise ValueError(f"No .ss record found for {record.trna_id}")
+            raise ValueError(f"No unique .ss match for {record.trna_id}; candidates={len(candidates)}")
         unused.remove(match)
         record.sequence, record.structure = match["sequence"], match["structure"]
         record.pairs = build_pairs(record.structure)
@@ -215,10 +284,16 @@ def _pair_type(a: str, b: str) -> str:
 
 def build_trna_position_index(reference_key: str, fasta: str | Path, trnascan_out: str | Path,
                               trnascan_ss: str | Path, output: str | Path,
-                              chrom_normalization="none", mismatch_rate_threshold=0.0) -> dict:
+                              chrom_normalization="none", mismatch_rate_threshold=0.0,
+                              selected_record_id: str | None = None,
+                              allow_ss_order_fallback: bool = False) -> dict:
     """Build the v2 reference-coordinate position index and return build metrics."""
     seqs = read_fasta(fasta)
-    records = merge_trnascan_records(parse_trnascan_out(trnascan_out), parse_trnascan_ss(trnascan_ss))
+    if selected_record_id:
+        if selected_record_id not in seqs: raise ValueError(f"FASTA record {selected_record_id!r} not found")
+        seqs = {selected_record_id: seqs[selected_record_id]}
+    records = merge_trnascan_records(parse_trnascan_out(trnascan_out), parse_trnascan_ss(trnascan_ss), allow_ss_order_fallback)
+    fasta_sha256 = hashlib.sha256(next(iter(seqs.values())).encode("ascii")).hexdigest()
     rows, mismatches, compared = [], 0, 0
     for rec in records:
         chrom = rec.chrom
@@ -239,7 +314,7 @@ def build_trna_position_index(reference_key: str, fasta: str | Path, trnascan_ou
             mate = rec.pairs.get(local); mate_pos = rec.genomic_pos(mate) if mate else None
             mate_genomic = seqs[chrom][mate_pos - 1] if mate_pos else ""
             mate_rna = _rna(mate_genomic, rec.strand) if mate else ""
-            ptype = _pair_type(rna, mate_rna) if mate else "."
+            ptype = _pair_type(rna, mate_rna) if mate else "NA"
             struct_class = "stem" if mate else "loop"
             rows.append({"index_format_version": INDEX_FORMAT_VERSION, "base_orientation": "genomic_and_rna",
                          "pair_type_orientation": "transcript_rna", "coordinate_space": "original_reference",
@@ -251,14 +326,47 @@ def build_trna_position_index(reference_key: str, fasta: str | Path, trnascan_ou
                          "paired_local_pos": mate or ".", "paired_genomic_pos": mate_pos or ".",
                          "paired_base_genomic": mate_genomic or ".", "paired_base_rna": mate_rna or ".",
                          "pair_bases_rna": f"{rna}-{mate_rna}" if mate else ".", "pair_type": ptype,
-                         "pair_state": "paired" if mate else "unpaired", "base": genomic,
-                         "paired_base": mate_genomic or "."})
+                         "pair_status": "paired" if mate else "unpaired",
+                         "pair_state": "WC" if ptype == "WC" else "non_WC" if mate else "NA",
+                         "base": genomic, "paired_base": mate_genomic or ".", "fasta_sha256": fasta_sha256})
     rate = mismatches / compared if compared else 0
     if rate > mismatch_rate_threshold:
         raise ValueError(f"FASTA/tRNAscan sequence mismatch rate {rate:.6g} exceeds threshold {mismatch_rate_threshold:.6g} ({mismatches}/{compared})")
-    Path(output).parent.mkdir(parents=True, exist_ok=True)
-    with _open(output, "wt") as handle:
+    output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output.with_name(output.name + f".tmp.{os.getpid()}")
+    if output.suffix == ".gz" and not str(tmp).endswith(".gz"): tmp = Path(str(tmp) + ".gz")
+    with _open(tmp, "wt") as handle:
         writer = csv.DictWriter(handle, INDEX_COLUMNS, delimiter="\t", lineterminator="\n")
         writer.writeheader(); writer.writerows(rows)
+    validate_trna_index(tmp, reference_key)
+    os.replace(tmp, output)
     return {"records": records, "rows": rows, "fasta_length": sum(map(len, seqs.values())),
-            "n_fasta_sequence_mismatch": mismatches}
+            "selected_record_id": next(iter(seqs)), "fasta_sha256": fasta_sha256,
+            "n_fasta_sequence_mismatch": mismatches,
+            "used_order_fallback": allow_ss_order_fallback}
+
+
+def validate_trna_index(path: str | Path, reference_key: str) -> dict:
+    """Completely read and validate a v2 index; partial files are invalid."""
+    with _open(path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        missing = set(INDEX_COLUMNS) - set(reader.fieldnames or [])
+        if missing: raise ValueError(f"missing index columns: {', '.join(sorted(missing))}")
+        count = 0
+        for line, row in enumerate(reader, 2):
+            count += 1
+            required = {"index_format_version":"2", "reference_key":reference_key,
+                        "coordinate_space":"original_reference", "base_orientation":"genomic_and_rna",
+                        "pair_type_orientation":"transcript_rna"}
+            for key, expected in required.items():
+                if row[key] != expected: raise ValueError(f"{key} must be {expected!r} at line {line}")
+            for key in ("pos", "local_pos"):
+                if not row[key].isdigit() or int(row[key]) <= 0: raise ValueError(f"invalid {key} at line {line}")
+            if row["strand"] not in {"+", "-"}: raise ValueError(f"invalid strand at line {line}")
+            for key in ("base_genomic", "base_rna"):
+                if row[key].upper() not in {"A","C","G","T","U","N"}: raise ValueError(f"invalid {key} at line {line}")
+            if row["pair_status"] not in {"paired", "unpaired"}: raise ValueError(f"invalid pair_status at line {line}")
+            if row["pair_state"] not in {"WC", "non_WC", "NA"}: raise ValueError(f"invalid pair_state at line {line}")
+            if row["pair_type"] not in {"WC", "GU_wobble", "non_WC", ".", "NA"}: raise ValueError(f"invalid pair_type at line {line}")
+        if not count: raise ValueError("index has no data rows")
+    return {"n_rows": count}
