@@ -34,8 +34,13 @@ intraspecies_contamination:
   target_negative_control_tier: tier2_location_and_batch_different
 
 collect_variant_calling:
-  # Root directory with one subdirectory per sample.
-  input_root: /home/lt692/scratch_pi_njl27/lt692/primate_results_test/new
+  # Aggregated run-manager result root. receipts/ and all unrelated directories
+  # are ignored; only the four configured biological result directories are read.
+  input_root: /nfs/roberts/pi/pi_njl27/lt692/primate_final_analysis
+  vcf_subdir: vcf
+  mtcn_subdir: mtcn
+  round2_coverage_subdir: round2_coverage
+  numt_decoy_coverage_subdir: numt_decoy_coverage
 
   # Destination for standardized collected inputs and reports.
   outdir: results/qc/collected_variant_calling_results

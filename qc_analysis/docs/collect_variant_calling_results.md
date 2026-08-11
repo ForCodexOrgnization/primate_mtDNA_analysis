@@ -7,18 +7,30 @@ copy and creates a merged max-depth per-base coverage file.
 
 ## Expected input layout
 
-`--input-root` must contain one directory per sample. The script searches
-recursively inside each sample directory, so files can be under subdirectories such
-as `alignment/`, `round_1/`, `round_1_variant_calling_decoy/`, `round_2/`, or
-`round_2_variant_calling_original_coords/`.
+`--input-root` is the aggregated run-manager result root. It has this contract:
+
+```text
+input_root/
+  vcf/
+  mtcn/
+  round2_coverage/
+  numt_decoy_coverage/
+  receipts/                    # ignored
+```
+
+All four biological directories must exist. Their names are configurable with
+`--vcf-subdir`, `--mtcn-subdir`, `--round2-coverage-subdir`, and
+`--numt-decoy-coverage-subdir`. The collector never recursively crawls the root.
+Samples come from `--metadata` in normal production use; if metadata is unavailable,
+canonical VCF basenames provide a fallback.
 
 Required file patterns for sample `SAMPLE` are:
 
-* `SAMPLE.round2.mtcn.tsv`
-* `SAMPLE.round2.original_coords.clean.final.split.vcf.gz`
+* `mtcn/SAMPLE.round2.mtcn.tsv`
+* `vcf/SAMPLE.round2.original_coords.clean.final.split.vcf.gz`
   * If the gzipped VCF is absent, `SAMPLE.round2.original_coords.clean.final.split.vcf` is accepted.
-* `SAMPLE.numt_decoy.clean.realigned.per_base_coverage.tsv`
-* `SAMPLE.round2.original_coords.per_base_coverage.tsv`
+* `numt_decoy_coverage/SAMPLE.numt_decoy.clean.realigned.per_base_coverage.tsv`
+* `round2_coverage/SAMPLE.round2.original_coords.per_base_coverage.tsv`
 
 ## Outputs
 
@@ -45,8 +57,8 @@ note.
 
 ## Summary report
 
-The summary table contains one row for every sample directory found under
-`--input-root`, including samples with missing inputs. Columns are:
+The summary table contains one row for every metadata sample (or discovered VCF
+sample when metadata is unavailable), including samples with missing inputs. Columns are:
 
 ```text
 sample species mt_median_coverage nuclear_median_coverage mtcn_median Percent_100 MAD n_hetero n_homo vcf_file cov_file mtcn_file status missing_files notes
