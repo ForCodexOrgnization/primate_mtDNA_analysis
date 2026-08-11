@@ -52,6 +52,11 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 的主要生物学步骤，但任务准备、输入校验和部分合并操作会由相应步骤内部处理，而不是作为
 独立 Slurm 节点显示。
 
+`collect_variant_calling_results` 的输入是 run-manager 聚合根目录，其中包含
+`vcf/`、`mtcn/`、`round2_coverage/` 和 `numt_decoy_coverage/`（`receipts/` 会被忽略）。
+样本由 metadata 表提供；两个 coverage 文件以 `(chrom, pos, target)` 为键逐位取最大深度，
+并写入稳定的 `collected_cov/{sample}.merged.max_depth.per_base_coverage.tsv` 下游接口。
+
 `intraspecies_contamination` 是使用原始物种坐标的独立 QC，不属于 `all`，需要按需单独运行；
 详见 [`docs/intraspecies_contamination.md`](docs/intraspecies_contamination.md)。
 

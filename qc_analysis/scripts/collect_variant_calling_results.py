@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Collect variant calling outputs for preprocessing QC before coordinate liftover.
 
-This script searches one directory per sample under an input root, collects mtCN and
-VCF outputs, merges two per-base coverage files by taking the maximum depth per
+This script reads the aggregate result directories under an input root, collects mtCN
+and VCF outputs, merges two per-base coverage files by taking the maximum depth per
 (chrom, pos, target), and writes a summary table for downstream liftover inputs.
 """
 
@@ -172,6 +172,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     ap.add_argument("--config", type=Path, help="YAML or INI configuration file")
     ap.add_argument("--input-root", type=Path, default=defaults.get("input_root"))
     ap.add_argument("--outdir", type=Path, default=defaults.get("outdir"))
+    ap.add_argument("--vcf-subdir", default=defaults.get("vcf_subdir", "vcf"))
+    ap.add_argument("--mtcn-subdir", default=defaults.get("mtcn_subdir", "mtcn"))
+    ap.add_argument("--round2-coverage-subdir", default=defaults.get("round2_coverage_subdir", "round2_coverage"))
+    ap.add_argument("--numt-decoy-coverage-subdir", default=defaults.get("numt_decoy_coverage_subdir", "numt_decoy_coverage"))
     ap.add_argument("--metadata", type=Path, default=defaults.get("metadata"), help="Optional sample/species metadata TSV/CSV")
     ap.add_argument("--metadata-sample-column", default=defaults.get("metadata_sample_column", "sample"))
     ap.add_argument("--metadata-species-column", default=defaults.get("metadata_species_column", "species"))
@@ -219,8 +223,16 @@ def setup_outputs(outdir: Path) -> Dict[str, Path]:
     return dirs
 
 
-def find_one(sample_dir: Path, filename: str) -> Optional[Path]:
-    matches = sorted(p for p in sample_dir.rglob(filename) if p.is_file())
+def find_one(source_dir: Path, filename: str) -> Optional[Path]:
+    """Find a canonical aggregate output, allowing only a basename prefix/suffix.
+
+    Exact names always win.  The non-recursive fallback accommodates run-manager
+    decorations while requiring the complete canonical sample basename.
+    """
+    exact = source_dir / filename
+    if exact.is_file():
+        return exact
+    matches = sorted(p for p in source_dir.glob(f"*{filename}*") if p.is_file())
     if len(matches) > 1:
         logging.warning("%s: multiple matches found; using %s", filename, matches[0])
     return matches[0] if matches else None
@@ -240,7 +252,9 @@ def sniff_delimiter(path: Path) -> str:
 
 
 def load_metadata(path: Optional[Path], sample_col: str, species_col: str) -> Dict[str, str]:
-    if not path:
+    if not path or not path.is_file():
+        if path:
+            logging.warning("Metadata file unavailable: %s", path)
         return {}
     species: Dict[str, str] = {}
     delimiter = sniff_delimiter(path)
@@ -431,28 +445,47 @@ def count_vcf(path: Optional[Path], low_hetero: float, low_homo: float, min_dp: 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     dirs = setup_outputs(args.outdir)
+    source_dirs = {
+        "vcf": args.input_root / args.vcf_subdir,
+        "mtcn": args.input_root / args.mtcn_subdir,
+        "round2_coverage": args.input_root / args.round2_coverage_subdir,
+        "numt_decoy_coverage": args.input_root / args.numt_decoy_coverage_subdir,
+    }
+    missing_dirs = [f"{name}={path}" for name, path in source_dirs.items() if not path.is_dir()]
+    if missing_dirs:
+        raise SystemExit("Missing aggregate input directories: " + ", ".join(missing_dirs))
     species_map = load_metadata(args.metadata, args.metadata_sample_column, args.metadata_species_column)
-    sample_dirs = sorted(p for p in args.input_root.iterdir() if p.is_dir())
+    samples = sorted(species_map)
+    if not samples:
+        suffixes = (".round2.original_coords.clean.final.split.vcf.gz", ".round2.original_coords.clean.final.split.vcf")
+        samples = sorted({p.name[:-len(suffix)] for p in source_dirs["vcf"].iterdir()
+                          for suffix in suffixes if p.is_file() and p.name.endswith(suffix)})
+    print(f"[collect] input_root={args.input_root}")
+    for name, path in source_dirs.items():
+        print(f"[collect] {name}_dir={path}")
+    print(f"[collect] samples={len(samples)}")
     summary_path = dirs["reports"] / "variant_calling_collection_summary.tsv"
+    counts = {"ok": 0, "missing": 0, "vcf": 0, "mtcn": 0, "round2": 0, "numt": 0, "merged": 0}
 
     with summary_path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=SUMMARY_COLUMNS, delimiter="\t", lineterminator="\n")
         writer.writeheader()
-        for sample_dir in sample_dirs:
-            sample = sample_dir.name
+        for sample in samples:
             notes: List[str] = []
             missing: List[str] = []
-            mtcn = find_one(sample_dir, f"{sample}.round2.mtcn.tsv")
-            vcf = find_one(sample_dir, f"{sample}.round2.original_coords.clean.final.split.vcf.gz") or find_one(sample_dir, f"{sample}.round2.original_coords.clean.final.split.vcf")
-            decoy_cov = find_one(sample_dir, f"{sample}.numt_decoy.clean.realigned.per_base_coverage.tsv")
-            round2_cov = find_one(sample_dir, f"{sample}.round2.original_coords.per_base_coverage.tsv")
+            mtcn = find_one(source_dirs["mtcn"], f"{sample}.round2.mtcn.tsv")
+            vcf = find_one(source_dirs["vcf"], f"{sample}.round2.original_coords.clean.final.split.vcf.gz") or find_one(source_dirs["vcf"], f"{sample}.round2.original_coords.clean.final.split.vcf")
+            decoy_cov = find_one(source_dirs["numt_decoy_coverage"], f"{sample}.numt_decoy.clean.realigned.per_base_coverage.tsv")
+            round2_cov = find_one(source_dirs["round2_coverage"], f"{sample}.round2.original_coords.per_base_coverage.tsv")
+            counts["mtcn"] += bool(mtcn); counts["vcf"] += bool(vcf)
+            counts["round2"] += bool(round2_cov); counts["numt"] += bool(decoy_cov)
 
             if not mtcn: missing.append("mtcn")
             if not vcf: missing.append("vcf")
             cov_paths = [p for p in [decoy_cov, round2_cov] if p]
             if len(cov_paths) < 2 and not args.allow_single_cov:
-                if not decoy_cov: missing.append("decoy_coverage")
-                if not round2_cov: missing.append("round2_original_coords_coverage")
+                if not decoy_cov: missing.append("numt_decoy_coverage")
+                if not round2_cov: missing.append("round2_coverage")
             elif len(cov_paths) == 1:
                 notes.append("single coverage file used because --allow-single-cov is set")
 
@@ -466,7 +499,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             notes.extend(vcf_notes)
             pct100 = mad = "NA"
 
-            status = "PASS_COLLECTION" if not missing else "FAIL_MISSING_INPUT"
+            status = "OK" if not missing else "MISSING_INPUT"
             try:
                 if mtcn and not missing:
                     link_or_copy(mtcn, mtcn_dest, args.copy_files)
@@ -478,6 +511,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     link_or_copy(vcf, vcf_dest, args.copy_files)
                 if cov_paths and (len(cov_paths) == 2 or args.allow_single_cov):
                     coverages = merge_coverage(cov_paths, cov_dest)
+                    counts["merged"] += 1
                     pct100, mad = coverage_metrics(coverages, args.coverage_threshold)
             except Exception as exc:  # sample-level failure should not stop all samples
                 status = "FAIL_PROCESSING"
@@ -504,6 +538,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "missing_files": ",".join(missing) if missing else "NA",
                 "notes": "; ".join(notes) if notes else "NA",
             })
+            counts["ok" if status == "OK" else "missing"] += 1
+    print(f"samples_total={len(samples)}")
+    print(f"samples_ok={counts['ok']}")
+    print(f"samples_missing={counts['missing']}")
+    print(f"vcf_found={counts['vcf']}")
+    print(f"mtcn_found={counts['mtcn']}")
+    print(f"round2_cov_found={counts['round2']}")
+    print(f"numt_decoy_cov_found={counts['numt']}")
+    print(f"merged_coverage_written={counts['merged']}")
     return 0
 
 
