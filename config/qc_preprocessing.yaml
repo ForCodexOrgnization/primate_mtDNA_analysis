@@ -22,9 +22,9 @@ intraspecies_contamination:
   min_n_lowA: 5
   min_overlap: 3
   min_frac_lowA_in_highB_candidate: 0.50
-  min_frac_lowA_in_highB_highconf: 0.6213636363636358
-  contam_threshold_candidate: 0.036420574377757434
-  contam_threshold_highconf: 0.07103935483870959
+  min_frac_lowA_in_highB_highconf: 0.5
+  contam_threshold_candidate: 0.03
+  contam_threshold_highconf: 0.0.03
   mirror_low_vaf_min: 0.01
   mirror_low_vaf_max: 0.20
   mirror_high_vaf_min: 0.80
