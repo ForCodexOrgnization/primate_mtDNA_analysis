@@ -77,15 +77,10 @@ def test_paths_with_spaces_are_shell_safe(tmp_path):
   variant_table: "{table}"
   outdir: "{outdir}"
 """)
-    rscript = tmp_path / "fake Rscript"
-    rscript.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\n", encoding="utf-8")
-    rscript.chmod(0o755)
-    capture = tmp_path / "arguments.txt"
-    result = run_wrapper(config, env={"RSCRIPT": str(rscript), "CAPTURE": str(capture)})
+    table.write_text("Sample\tSpecies\tCHROM\tPOS\tREF\tALT\tType\tFILTER\tDP\tVAF\nA\tsp\tchrM\t1\tA\tG\tSNV\tPASS\t200\t0.1\n")
+    result = run_wrapper(config)
     assert result.returncode == 0, result.stderr
-    arguments = capture.read_text(encoding="utf-8").splitlines()
-    assert str(table) in arguments
-    assert str(outdir) in arguments
+    assert (outdir / "reports/intraspecies_contamination_report.tsv").is_file()
 
 
 def test_default_config_works_outside_repository_root(tmp_path):
@@ -93,6 +88,7 @@ def test_default_config_works_outside_repository_root(tmp_path):
         ["bash", str(SCRIPT)], cwd=tmp_path, text=True, capture_output=True,
         env={**os.environ, "PYTHON": YAML_PYTHON},
     )
-    assert result.returncode == 0, result.stderr
-    assert f"config={ROOT / 'config/qc_preprocessing.yaml'}" in result.stdout
-    assert "[intraspecies] disabled; skipping." in result.stdout
+    # The production default is enabled and therefore correctly diagnoses that
+    # collection must run first in a clean checkout.
+    assert result.returncode != 0
+    assert "variant_calling_collection_summary.tsv" in result.stderr

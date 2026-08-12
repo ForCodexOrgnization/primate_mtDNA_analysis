@@ -2,9 +2,9 @@
 # coordinate liftover. Edit paths before running on a real dataset.
 
 intraspecies_contamination:
-  enabled: false
-  vcf_dir: null
-  metadata: config/sample_ref_file.tsv
+  enabled: true
+  vcf_dir: results/qc/collected_variant_calling_results/collected_vcf
+  sample_summary: results/qc/collected_variant_calling_results/reports/variant_calling_collection_summary.tsv
   variant_table: null
   negative_control_pairs: null
   outdir: results/qc/intraspecies_contamination
@@ -12,6 +12,7 @@ intraspecies_contamination:
   overwrite: false
   dp_min: 100
   use_snv_only: true
+  pass_only: true
   low_vaf_min: 0.01
   low_vaf_max: 0.20
   high_vaf_min: 0.99
@@ -32,6 +33,29 @@ intraspecies_contamination:
   min_mirror_pairs_for_raw_flag: 3
   min_low_variants_with_mirror_for_flag: 3
   target_negative_control_tier: tier2_location_and_batch_different
+
+# Terminal decision step. Missing optional reports are represented as
+# NOT_AVAILABLE and do not fail a sample; paths can be enabled as they are added.
+final_filter:
+  enabled: true
+  collected_dir: results/qc/collected_variant_calling_results
+  output_dir: results/qc/final_filter
+  sample_fail_status:
+    intraspecies: high_confidence_contaminated,FAIL
+    human: fail,FAIL
+    interspecies: fail,FAIL
+    sample_qc: fail,FAIL,MISSING_INPUT,FAIL_PROCESSING
+  sample_reports:
+    intraspecies:
+      path: results/qc/intraspecies_contamination/reports/intraspecies_contamination_report.tsv
+      status_columns: contamination_status,qc_status
+    human:
+      path: results/qc/human_contamination/reports/human_contamination_report.tsv
+    interspecies:
+      path: results/qc/interspecies_contamination/reports/interspecies_contamination_report.tsv
+    sample_qc:
+      path: results/qc/sample_variant_filtering/reports/sample_qc.tsv
+  variant_reports: {}
 
 collect_variant_calling:
   # Aggregated run-manager result root. receipts/ and all unrelated directories

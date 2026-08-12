@@ -16,6 +16,7 @@ Usage:
 
 Steps:
   collect_variant_calling_results  Collect and standardize variant-calling outputs only.
+  intraspecies_contamination       Write original-coordinate sample contamination QC report.
   discover_global_anchor           Discover reference-level global MSA anchors only.
   coordinate_liftover              Run coordinate liftover only.
   build_primate_codon_table        Build GenBank-first / MITOS2-fallback sample-level codon annotations.
@@ -29,7 +30,7 @@ Steps:
   trna_match                       Annotate VCFs with tRNA matching.
   trna_gene_qc                     Compare lifted source and human tRNA genes.
   rrna_match                       Annotate VCFs with rRNA matching.
-  intraspecies_contamination       Run original-coordinate intra-species contamination QC only.
+  final_filter                     Combine QC reports and materialize final filtered files.
   all                              Run all preprocessing and downstream annotation steps.
 
 Run modes:
@@ -118,7 +119,7 @@ done
 [[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
 STEP="$1"; CONFIG="${2:-config/qc_preprocessing.yaml}"
 case "$STEP" in
- collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_gene_qc|rrna_match|intraspecies_contamination|all) ;;
+ collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_gene_qc|rrna_match|intraspecies_contamination|final_filter|all) ;;
  -h|--help|help) usage; exit 0;; *) echo "ERROR: unknown step: $STEP" >&2; exit 2;; esac
 [[ -s "$CONFIG" ]] || { echo "ERROR: missing or empty config file: $CONFIG" >&2; exit 1; }
 export SAMPLE
@@ -177,7 +178,7 @@ submit_array() {
  printf 'step\tjob_id\ttask_file\tmanifest\tlog_dir\tarray\tsubmitted_at\n%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$step" "$LAST_JOB_ID" "$TASK_FILE" "${MANIFEST:-}" "$logs" "$array" "$submitted_at" >"$submission"
 }
 submit_workflow() {
- local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results discover_global_anchor coordinate_liftover mitos2_prepare_tasks mitos2_annotation mitos2_merge build_primate_codon_table compare_genbank_mitos2 codon_match_validate codon_match codon_match_merge trna_match rrna_match)
+ local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination discover_global_anchor coordinate_liftover mitos2_prepare_tasks mitos2_annotation mitos2_merge build_primate_codon_table compare_genbank_mitos2 codon_match_validate codon_match codon_match_merge trna_match rrna_match final_filter)
  for s in "${steps[@]}"; do
    # Automatic merges are explicit graph nodes here, never also submitted by producers.
    TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
@@ -208,7 +209,8 @@ COMPARISON_SCRIPT="qc_analysis/scripts/compare_genbank_mitos2_reference_annotati
 TRNA_SCRIPT="qc_analysis/scripts/run_trna_match.py"
 TRNA_INDEX_SCRIPT="qc_analysis/scripts/build_all_trna_indexes.py"
 RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
-INTRASPECIES_SCRIPT="qc_analysis/scripts/run_intraspecies_contamination.sh"
+INTRASPECIES_SCRIPT="qc_analysis/scripts/run_intraspecies_contamination.py"
+FINAL_FILTER_SCRIPT="qc_analysis/scripts/run_final_filter.py"
 GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
 
 # Read the small, optional environment.biopython section without depending on
@@ -449,9 +451,11 @@ case "$STEP" in
   trna_match) run_annotation trna_match "$TRNA_SCRIPT" ;;
   trna_gene_qc) echo 'Run run_trna_gene_liftover_qc.py with source index, human index, and coordinate map for each sample.' ;;
   rrna_match) run_annotation rrna_match "$RRNA_SCRIPT" ;;
-  intraspecies_contamination) bash "$INTRASPECIES_SCRIPT" "$CONFIG" ;;
+  intraspecies_contamination) "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG" ;;
+  final_filter) "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG" ;;
   all)
     run_collect_variant_calling_results
+    "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG"
     run_discover_global_anchor
     run_coordinate_liftover
     run_mitos2_annotation
@@ -464,5 +468,6 @@ case "$STEP" in
     "$BASE_PYTHON" "$TRNA_INDEX_SCRIPT" --config "$CONFIG" --workers "${SLURM_CPUS_PER_TASK:-4}"
     run_annotation trna_match "$TRNA_SCRIPT"
     run_annotation rrna_match "$RRNA_SCRIPT"
+    "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG"
     ;;
 esac

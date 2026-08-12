@@ -61,10 +61,13 @@ Run on Slurm:
 sbatch qc_analysis/scripts/submit_intraspecies_contamination.slurm config/qc_preprocessing.yaml
 ```
 
-The main results are under `tables/`, six diagnostic plot placeholders/plots are
-under `plots/`, and reproducibility logs and `run_parameters.tsv` record paths,
-thresholds, timestamp, and R version. Runtime scales approximately with the
-number of within-species sample pairs and variants. The Python driver reads configuration with the repository's standard-library-only
-restricted YAML parser, consistent with coordinate liftover and codon match. PyYAML
-is not required. The R analysis uses base R; all configured thresholds are passed
-explicitly by the Python driver.
+The production implementation is entirely Python and has no R runtime dependency.
+Its sole biological result is
+`reports/intraspecies_contamination_report.tsv`, with one row per collected sample;
+`logs/` and `run_parameters.tsv` provide diagnostics and reproducibility metadata.
+The stable report includes the low/high overlap, leave-one-out anchor and mirror
+counts, categorical `contamination_status`, boolean candidate/high-confidence
+flags, and machine-readable `qc_status` (`PASS`, `WARN`, or `FAIL`). Runtime scales
+approximately with the number of within-species sample pairs and variants. The
+driver uses the repository's standard-library-only restricted YAML parser, so
+neither PyYAML nor R is required.

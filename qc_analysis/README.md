@@ -35,18 +35,20 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 | 顺序 | wrapper step | 作用 | 主要下游依赖 |
 |---:|---|---|---|
 | 1 | `collect_variant_calling_results` | 收集并标准化 variant-calling 的 VCF、coverage 和 mtCN 结果 | 坐标转换输入 |
-| 2 | `discover_global_anchor` | 对参考线粒体序列做全局比对并生成经过验证的 anchor 表 | 坐标转换 anchor |
-| 3 | `coordinate_liftover` | 将每个样本的原始物种坐标转换到人 chrM 坐标 | 后续 VCF 注释 |
-| 4 | `mitos2_prepare_tasks` | 生成每个目标参考序列一条记录的 MITOS2 任务表 | 仅 `--submit all` 中的显式节点 |
-| 5 | `mitos2_annotation` | 按参考序列运行 MITOS2 | MITOS2 合并结果 |
-| 6 | `mitos2_merge` | 合并所有已完成参考序列的 MITOS2 原始结果 | 密码子表的 fallback 输入 |
-| 7 | `build_primate_codon_table` | 优先使用 GenBank、必要时使用 MITOS2，构建参考级密码子表和样本映射 | `codon_match` |
-| 8 | `compare_genbank_mitos2` | 在配置启用时比较 GenBank 与 MITOS2 CDS 注释 | 注释一致性报告 |
-| 9 | `codon_match_validate` | 在读取 VCF 前校验并建立密码子输入索引 | 仅 `--submit all` 中的显式校验节点 |
-| 10 | `codon_match` | 给 lifted VCF 添加密码子匹配注释 | tRNA 注释输入 |
-| 11 | `codon_match_merge` | 原子合并每个样本的密码子汇总 | cohort 汇总 |
-| 12 | `trna_match` | 给 VCF 添加 tRNA 匹配和结构相关注释 | rRNA 注释输入 |
-| 13 | `rrna_match` | 给 VCF 添加 rRNA 区域/可选结构注释 | 最终注释 VCF |
+| 2 | `intraspecies_contamination` | 在原始物种坐标上生成样本级种内污染报告（不修改 VCF） | 最终样本判定 |
+| 3 | `discover_global_anchor` | 对参考线粒体序列做全局比对并生成经过验证的 anchor 表 | 坐标转换 anchor |
+| 4 | `coordinate_liftover` | 将每个样本的原始物种坐标转换到人 chrM 坐标 | 后续 VCF 注释 |
+| 5 | `mitos2_prepare_tasks` | 生成每个目标参考序列一条记录的 MITOS2 任务表 | 仅 `--submit all` 中的显式节点 |
+| 6 | `mitos2_annotation` | 按参考序列运行 MITOS2 | MITOS2 合并结果 |
+| 7 | `mitos2_merge` | 合并所有已完成参考序列的 MITOS2 原始结果 | 密码子表的 fallback 输入 |
+| 8 | `build_primate_codon_table` | 优先使用 GenBank、必要时使用 MITOS2，构建参考级密码子表和样本映射 | `codon_match` |
+| 9 | `compare_genbank_mitos2` | 在配置启用时比较 GenBank 与 MITOS2 CDS 注释 | 注释一致性报告 |
+| 10 | `codon_match_validate` | 在读取 VCF 前校验并建立密码子输入索引 | 仅 `--submit all` 中的显式校验节点 |
+| 11 | `codon_match` | 给 lifted VCF 添加密码子匹配注释 | tRNA 注释输入 |
+| 12 | `codon_match_merge` | 原子合并每个样本的密码子汇总 | cohort 汇总 |
+| 13 | `trna_match` | 给 VCF 添加 tRNA 匹配和结构相关注释 | rRNA 注释输入 |
+| 14 | `rrna_match` | 给 VCF 添加 rRNA 区域/可选结构注释 | 最终注释报告 |
+| 15 | `final_filter` | 汇总所有样本级和变异级报告并一次性生成最终文件 | `final_vcf/final_cov/final_mtcn` |
 
 上表是 `--submit all` 创建的完整依赖图。直接运行 `all` 时，wrapper 会在单一进程中完成相同
 的主要生物学步骤，但任务准备、输入校验和部分合并操作会由相应步骤内部处理，而不是作为
@@ -57,8 +59,9 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 样本由 metadata 表提供；两个 coverage 文件以 `(chrom, pos, target)` 为键逐位取最大深度，
 并写入稳定的 `collected_cov/{sample}.merged.max_depth.per_base_coverage.tsv` 下游接口。
 
-`intraspecies_contamination` 是使用原始物种坐标的独立 QC，不属于 `all`，需要按需单独运行；
-详见 [`docs/intraspecies_contamination.md`](docs/intraspecies_contamination.md)。
+`intraspecies_contamination` 现在紧跟收集步骤并属于 `all`；它只写样本级报告。
+`final_filter` 是唯一执行最终排除的终端步骤。详见
+[`docs/intraspecies_contamination.md`](docs/intraspecies_contamination.md)。
 
 ## 分步骤运行
 
@@ -68,6 +71,7 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 CONFIG=config/qc_preprocessing.yaml
 
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit collect_variant_calling_results "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit intraspecies_contamination "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit discover_global_anchor "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit mitos2_annotation "$CONFIG"
@@ -76,6 +80,7 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match_validate "
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit trna_match "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit rrna_match "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit final_filter "$CONFIG"
 ```
 
 注意：单独以 `--submit` 运行 `mitos2_annotation` 或 `codon_match` 时，wrapper 默认分别自动提交
@@ -87,6 +92,11 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh --submit rrna_match "$CONFIG"
 ```bash
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit intraspecies_contamination config/qc_preprocessing.yaml
 ```
+
+最终目录为 `results/qc/final_filter/`，其中 `reports/final_sample_qc.tsv`
+汇总四类样本状态和最终原因，`reports/final_variant_qc.tsv` 按原始等位基因记录各报告判定，
+`reports/final_filter_summary.tsv` 提供计数；仅样本 PASS 且变异 PASS 的记录进入
+`final_vcf/`，其 coverage 与 mtCN 文件分别复制到 `final_cov/` 和 `final_mtcn/`。
 
 ## 单样本运行与 array 并发
 
