@@ -60,7 +60,7 @@ final_filter:
 collect_variant_calling:
   # Aggregated run-manager result root. receipts/ and all unrelated directories
   # are ignored; only the four configured biological result directories are read.
-  input_root: /nfs/roberts/pi/pi_njl27/lt692/primate_final_analysis
+  input_root: /nfs/roberts/pi/pi_njl27/lt692/primate_final_analysis_combine
   vcf_subdir: vcf
   mtcn_subdir: mtcn
   round2_coverage_subdir: round2_coverage
