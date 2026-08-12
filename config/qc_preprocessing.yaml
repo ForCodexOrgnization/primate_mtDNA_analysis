@@ -33,6 +33,18 @@ intraspecies_contamination:
   min_mirror_pairs_for_raw_flag: 3
   min_low_variants_with_mirror_for_flag: 3
   target_negative_control_tier: tier2_location_and_batch_different
+  min_negative_control_values: 3
+
+sample_variant_filtering:
+  enabled: true
+  input_summary: results/qc/collected_variant_calling_results/reports/variant_calling_collection_summary.tsv
+  output_dir: results/qc/sample_variant_filtering
+  thresholds:
+    mt_median_coverage_min: 100
+    percent_100_min: 90
+    nuclear_median_coverage_min: 20
+    mtcn_min: 40
+    mad_max: 0.5
 
 # Terminal decision step. Missing optional reports are represented as
 # NOT_AVAILABLE and do not fail a sample; paths can be enabled as they are added.
@@ -40,6 +52,10 @@ final_filter:
   enabled: true
   collected_dir: results/qc/collected_variant_calling_results
   output_dir: results/qc/final_filter
+  required_sample_reports: intraspecies,sample_qc
+  optional_sample_reports: human,interspecies
+  strict_missing_samples: true
+  vcf_sources: results/qc/rrna_match/vcf_rrna,results/qc/trna_match/vcf_trna,results/qc/codon_match/vcf_codon,results/qc/coordinate_liftover/vcf_lifted_raw
   sample_fail_status:
     intraspecies: high_confidence_contaminated,FAIL
     human: fail,FAIL

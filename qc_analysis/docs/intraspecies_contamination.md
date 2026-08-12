@@ -71,3 +71,21 @@ flags, and machine-readable `qc_status` (`PASS`, `WARN`, or `FAIL`). Runtime sca
 approximately with the number of within-species sample pairs and variants. The
 driver uses the repository's standard-library-only restricted YAML parser, so
 neither PyYAML nor R is required.
+
+## Validated production semantics
+
+The R program in `qc_analysis/validation/contamination_reference.R` is the
+algorithmic validation truth and Python is the production implementation. Both
+operate before liftover, in original species coordinates. In particular,
+mirror pairs are a cross product of all low- and high-VAF variants in one sample;
+alleles and positions need not match, and the tolerance boundary is inclusive.
+`n_mirror_pairs` counts qualifying cross-product rows, while
+`n_low_variants_with_mirror` counts distinct low rows with at least one match.
+Tier-2 negative-control pairs establish type-7 p95/p99 thresholds for normalized
+mirror evidence; unavailable/insufficient calibration is explicitly reported,
+never replaced by raw-count thresholds.
+
+The contamination and five-criterion sample-QC jobs only emit evidence reports.
+The terminal `final_filter` requires both reports, treats candidate and
+insufficient contamination calls as warnings, removes high-confidence calls or
+five-criterion QC failures, and selects rRNA → tRNA → codon → raw-lifted VCFs.

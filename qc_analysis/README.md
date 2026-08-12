@@ -172,3 +172,24 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh --help
 
 各步骤的输入、输出和算法说明位于 [`docs/`](docs/)；遇到失败时，先查看相应步骤的
 `logs/job_arrays/*.err`、任务 manifest 以及 YAML 中的路径和 `enabled` 设置。
+
+## Terminal sample QC and filtering
+
+`intraspecies_contamination` runs in each species' **original coordinates**. The
+validation truth is `validation/contamination_reference.R`; the production job
+is the dependency-light Python implementation. Mirror evidence is the complete
+within-sample low-AF × high-AF cross product and Tier-2 negative controls
+calibrate its normalized p95/p99 evidence.
+
+`sample_variant_filtering` is report-only. A sample passes when mt median depth
+is at least 100, at least 90% of mtDNA bases have 100× depth, nuclear median
+depth is at least 20, median mtCN is at least 40, and MAD is strictly below
+0.5. Neither this step nor contamination analysis removes data.
+
+`final_filter` is the only irreversible step. Intraspecies and sample-QC reports
+are required by default; human and interspecies reports are optional. Passing
+samples require sample QC PASS and must not be `high_confidence_contaminated`.
+Candidate/insufficient contamination results remain warnings. VCFs are selected
+in deterministic priority order: rRNA, tRNA, codon, then raw coordinate
+liftover. There is intentionally no original-coordinate collection fallback.
+Final VCFs are BGZF compressed and tabix indexed (pysam or bgzip+tabix required).

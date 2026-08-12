@@ -1,6 +1,8 @@
 #!/usr/bin/env Rscript
-# Intra-species mixture evidence analysis.  It intentionally retains species-reference
-# coordinates and never compares, lifts, or filters between species.
+# contamination_final(1): validated intra-species mixture evidence reference.
+# It intentionally retains species-reference coordinates and never compares,
+# lifts, or filters between species. Keep this independent R implementation as
+# the validation truth for the production Python implementation.
 args <- commandArgs(trailingOnly=TRUE)
 getarg <- function(n, required=FALSE) { i <- match(n,args); if (is.na(i)) { if(required) stop("missing ",n); return(NULL) }; if(i==length(args)) stop("missing value for ",n); args[i+1] }
 vt <- getarg("--variant-table",TRUE); out <- getarg("--outdir",TRUE); nc <- getarg("--negative-control-pairs"); overwrite <- "--overwrite" %in% args
@@ -28,7 +30,7 @@ if(!is.null(nc)) {
  nct <- read.delim(nc,check.names=FALSE,stringsAsFactors=FALSE)
  if(!all(c("Sample_A","Sample_B","negative_control_tier") %in% names(nct))) stop("negative-control pairs require Sample_A, Sample_B, negative_control_tier")
  tier2 <- nct[nct$negative_control_tier==P$target_negative_control_tier,,drop=FALSE]
- calibration_status <- if(nrow(tier2)) "not_calibrated_no_matching_samples" else "not_calibrated_insufficient_values"
+ calibration_status <- if(nrow(tier2)) "not_calibrated_insufficient_values" else "not_calibrated_no_tier2_pairs"
  # Pair-specific normalized mirror values are calculated only when a compatible
  # implementation supplies values; retain NA safely rather than calling quantile
  # on an empty vector.
@@ -43,19 +45,38 @@ key <- do.call(paste,c(d[c("Species","Sample","CHROM","POS","REF","ALT")],sep="\
 if(any(dup)) { for(k in unique(key[dup])) { z <- d[key==k,,drop=FALSE]; if(length(unique(apply(z,1,paste,collapse="\r")))>1) stop("conflicting duplicate rows: ",k) }; warning("collapsing exact duplicate rows"); d<-d[!duplicated(key),] }
 write_tsv(unique(d[c("Species","Sample")]),"all_samples_from_raw_table.tsv"); counts <- aggregate(Sample~Species,unique(d[c("Species","Sample")]),function(x) length(unique(x))); names(counts)[2]<-"n_samples"; write_tsv(counts,"species_sample_counts.tsv")
 usable <- d[d$DP>=P$dp_min & (!P$use_snv_only | d$Type=="SNV"),]; allsamples<-unique(d[c("Species","Sample")]); uk<-paste(usable$Species,usable$Sample); allsamples$n_usable_variants<-as.integer(table(factor(paste(allsamples$Species,allsamples$Sample),levels=paste(allsamples$Species,allsamples$Sample)))); write_tsv(allsamples,"all_samples_with_usable_variant_counts.tsv")
+# Tier-2 background values use exactly the same normalized complementary-AF
+# cross product as sample mirror evidence (R type-7 quantiles).
+if(!is.null(nc) && exists("tier2") && nrow(tier2)) {
+ vals<-c()
+ for(ii in seq_len(nrow(tier2))) {
+  z<-usable[usable$Sample %in% c(tier2$Sample_A[ii],tier2$Sample_B[ii]),,drop=FALSE]
+  lo<-z$VAF>=P$mirror_low_vaf_min & z$VAF<=P$mirror_low_vaf_max; hi<-z$VAF>=P$mirror_high_vaf_min & z$VAF<=P$mirror_high_vaf_max
+  if(any(lo)&&any(hi)) vals<-c(vals,sum(outer(z$VAF[lo],z$VAF[hi],function(a,b)abs(a+b-1)<=P$mirror_tolerance+1e-12))/(sum(lo)*sum(hi)))
+ }
+ if(length(vals)>=3) { p95<-as.numeric(quantile(vals,.95,type=7));p99<-as.numeric(quantile(vals,.99,type=7));calibration_status<-"calibrated" } else { p95<-p99<-NA_real_;calibration_status<-"not_calibrated_insufficient_values" }
+ calibration<-data.frame(target_negative_control_tier=P$target_negative_control_tier,n_pairs=nrow(tier2),p95_normalized_mirror=p95,p99_normalized_mirror=p99,mirror_calibration_status=calibration_status);write_tsv(calibration,"tier2_normalized_mirror_threshold_summary.tsv")
+}
 low <- usable[usable$VAF>=P$low_vaf_min & usable$VAF<=P$low_vaf_max,]; high <- usable[usable$VAF>=P$high_vaf_min,]; write_tsv(low,"low_heteroplasmic_variant_summary.tsv"); write_tsv(high,"high_homoplasmic_variant_summary.tsv")
 pairrows<-list(); stats<-list(); best<-list(); anchors<-list(); mirror<-list(); mi<-1
 for(i in seq_len(nrow(allsamples))) { A<-allsamples[i,]; same<-allsamples[allsamples$Species==A$Species & allsamples$Sample!=A$Sample,,drop=FALSE]; la<-low[low$Species==A$Species & low$Sample==A$Sample,]; nlow<-nrow(la); candidates<-list()
  for(b in unique(same$Sample)) { hb<-high[high$Species==A$Species & high$Sample==b,]; m<-merge(la,hb,by=c("Species","CHROM","POS","REF","ALT"),suffixes=c("_A","_B")); if(nrow(m)) { m$Sample_A<-A$Sample;m$Sample_B<-b;pairrows[[length(pairrows)+1]]<-m }; candidates[[b]]<-nrow(m); stats[[length(stats)+1]]<-data.frame(Species=A$Species,Sample_A=A$Sample,Sample_B=b,n_lowA=nlow,overlap=nrow(m),frac_lowA_in_highB=if(nlow)nrow(m)/nlow else NA_real_) }
  if(length(candidates)) { bb<-names(candidates)[which.max(unlist(candidates))]; ov<-max(unlist(candidates)); best[[length(best)+1]]<-data.frame(Species=A$Species,Sample=A$Sample,best_source_sample=bb,n_lowA=nlow,best_overlap=ov,best_frac_lowA_in_highB=if(nlow)ov/nlow else NA_real_) } else best[[length(best)+1]]<-data.frame(Species=A$Species,Sample=A$Sample,best_source_sample=NA,n_lowA=nlow,best_overlap=0,best_frac_lowA_in_highB=NA)
  ha<-high[high$Species==A$Species & high$Sample %in% same$Sample,]; ak<-unique(ha[c("CHROM","POS","REF","ALT")]); aa<-usable[usable$Species==A$Species & usable$Sample==A$Sample,]; z<-merge(ak,aa,by=c("CHROM","POS","REF","ALT")); dep<-z$VAF>=P$mt_lower & z$VAF<=P$mt_depressed_upper; fall<-z$VAF>=P$mt_lower & z$VAF<=P$mt_anchor_upper; mode<-if(sum(dep)>=3) "depressed_anchors" else if(sum(fall)>=1) "fallback_anchors" else "no_anchor_observed"; est<-if(sum(dep)>=3) 1-mean(z$VAF[dep]) else if(sum(fall)>=1) 1-mean(z$VAF[fall]) else NA_real_; anchors[[length(anchors)+1]]<-data.frame(Species=A$Species,Sample=A$Sample,n_source_samples=nrow(same),n_anchor_variants=nrow(ak),n_depressed_anchors=sum(dep),n_fallback_anchors=sum(fall),mt_high_hets_contamination=est,mt_high_hets_mode=mode)
- # Mirror evidence: complementary low/high calls within a sample; diagnostic only.
- hi<-usable[usable$Species==A$Species & usable$Sample==A$Sample & usable$VAF>=P$mirror_high_vaf_min & usable$VAF<=P$mirror_high_vaf_max,]; lm<-usable[usable$Species==A$Species & usable$Sample==A$Sample & usable$VAF>=P$mirror_low_vaf_min & usable$VAF<=P$mirror_low_vaf_max,]; mm<-merge(lm,hi,by=c("CHROM","POS","REF","ALT")); mirror[[mi]]<-data.frame(Species=A$Species,Sample=A$Sample,n_mirror_pairs=nrow(mm),n_low_variants_with_mirror=if(nrow(mm))length(unique(mm$POS)) else 0);mi<-mi+1
+ # Validated mirror evidence is the complete low-AF x high-AF cross product.
+ # Genomic identity is deliberately irrelevant; a low row counts once when it
+ # has one or more complementary high rows.
+ hi<-usable[usable$Species==A$Species & usable$Sample==A$Sample & usable$VAF>=P$mirror_high_vaf_min & usable$VAF<=P$mirror_high_vaf_max,]; lm<-usable[usable$Species==A$Species & usable$Sample==A$Sample & usable$VAF>=P$mirror_low_vaf_min & usable$VAF<=P$mirror_low_vaf_max,]
+ if(nrow(lm) && nrow(hi)) { mm<-merge(transform(lm,low_row=seq_len(nrow(lm))),transform(hi,high_row=seq_len(nrow(hi))),by=NULL,suffixes=c("_low","_high"));mm<-mm[abs(mm$VAF_low+mm$VAF_high-1)<=P$mirror_tolerance+1e-12,,drop=FALSE] } else mm<-data.frame()
+ nmir<-if(nrow(mm))length(unique(mm$low_row)) else 0
+ mirror[[mi]]<-data.frame(Species=A$Species,Sample=A$Sample,n_mirror_pairs=nrow(mm),n_low_variants_with_mirror=nmir,mirror_low_fraction=if(nrow(lm))nmir/nrow(lm) else 0,normalized_mirror_support=if(nrow(lm)&&nrow(hi))nrow(mm)/(nrow(lm)*nrow(hi)) else 0);mi<-mi+1
 }
 bind <- function(x) if(length(x)) do.call(rbind,x) else data.frame(); pr<-bind(pairrows); ps<-bind(stats); bs<-bind(best); an<-bind(anchors); ms<-bind(mirror); write_tsv(pr,"pairwise_lowA_highB_overlap_variant_level.tsv");write_tsv(ps,"pairwise_lowA_highB_overlap_stats.tsv");write_tsv(bs,"best_source_sample_per_tested_sample.tsv");write_tsv(an,"mt_high_hets_all_excluding_A_0.80_0.998_summary.tsv");write_tsv(ms,"mirror_pattern_summary_per_sample.tsv");write_tsv(data.frame(),"mirror_pattern_variant_pairs.tsv")
 f<-Reduce(function(x,y)merge(x,y,by=c("Species","Sample"),all=TRUE),list(allsamples,bs,an,ms)); f$n_usable_variants<-allsamples$n_usable_variants[match(paste(f$Species,f$Sample),paste(allsamples$Species,allsamples$Sample))]; f$contamination_flag_candidate<-with(f,n_lowA>=P$min_n_lowA & best_overlap>=P$min_overlap & best_frac_lowA_in_highB>=P$min_frac_lowA_in_highB_candidate & mt_high_hets_contamination>=P$contam_threshold_candidate); f$contamination_flag_highconf<-with(f,n_lowA>=P$min_n_lowA & best_overlap>=P$min_overlap & best_frac_lowA_in_highB>=P$min_frac_lowA_in_highB_highconf & mt_high_hets_contamination>=P$contam_threshold_highconf); f$contamination_flag_candidate[is.na(f$contamination_flag_candidate)]<-FALSE;f$contamination_flag_highconf[is.na(f$contamination_flag_highconf)]<-FALSE
-f$mirror_calibration_status<-calibration_status; f$normalized_mirror_support<-NA
-f$contamination_status<-ifelse(f$n_source_samples==0,"insufficient_singleton_species",ifelse(f$n_usable_variants==0,"insufficient_variant_data",ifelse(f$contamination_flag_highconf,"high_confidence_contaminated",ifelse(f$contamination_flag_candidate,"candidate_contaminated",ifelse(is.na(f$mt_high_hets_contamination),"insufficient_anchor_data",ifelse(f$best_overlap>=P$min_overlap,"lowA_highB_overlap_only",ifelse(f$mt_high_hets_contamination>=P$contam_threshold_candidate,"mt_high_hets_only","no_strong_evidence")))))))
+f$mirror_calibration_status<-calibration_status
+overlap_candidate<-with(f,n_lowA>=P$min_n_lowA & best_overlap>=P$min_overlap & best_frac_lowA_in_highB>=P$min_frac_lowA_in_highB_candidate);overlap_candidate[is.na(overlap_candidate)]<-FALSE
+mt_candidate<-f$mt_high_hets_contamination>=P$contam_threshold_candidate;mt_candidate[is.na(mt_candidate)]<-FALSE
+f$contamination_status<-ifelse(f$n_source_samples==0,"insufficient_singleton_species",ifelse(f$n_usable_variants==0,"insufficient_variant_data",ifelse(f$contamination_flag_highconf,"high_confidence_contaminated",ifelse(f$contamination_flag_candidate,"candidate_contaminated",ifelse(overlap_candidate & !mt_candidate,"lowA_highB_overlap_only",ifelse(mt_candidate & !overlap_candidate,"mt_high_hets_only",ifelse(is.na(f$mt_high_hets_contamination),"insufficient_anchor_data","no_strong_evidence")))))))
 write_tsv(f,"final_contamination_summary.tsv");write_tsv(f[f$contamination_flag_candidate,,drop=FALSE],"flagged_candidate_contaminated_samples.tsv");write_tsv(f[f$contamination_flag_highconf,,drop=FALSE],"flagged_high_confidence_contaminated_samples.tsv");write_tsv(f[f$contamination_status!="no_strong_evidence",,drop=FALSE],"possible_or_flagged_contamination_samples.tsv");write_tsv(f[grep("insufficient",f$contamination_status),,drop=FALSE],"insufficient_variant_data_samples.tsv");write_tsv(as.data.frame(table(f$contamination_status)),"contamination_status_summary.tsv");write_tsv(as.data.frame(table(f$Species,f$contamination_status)),"species_contamination_status_summary.tsv");write_tsv(data.frame(parameter=names(P),value=unlist(P)),"threshold_summary.tsv");write_tsv(ms,"mirror_evidence_summary.tsv");write_tsv(f[c("Species","Sample","normalized_mirror_support","mirror_calibration_status")],"normalized_mirror_flag_summary.tsv")
 write_tsv(data.frame(parameter=c(names(P),"variant_table","outdir","timestamp","R_version"),value=c(unlist(P),vt,out,as.character(Sys.time()),R.version.string)),"run_parameters.tsv"); capture.output(sessionInfo(),file=file.path(out,"logs/sessionInfo.txt"))
 for(n in 1:6) { png(file.path(out,"plots",sprintf("diagnostic_%d.png",n))); plot.new(); title(sprintf("Intra-species contamination diagnostic %d",n)); dev.off() }
