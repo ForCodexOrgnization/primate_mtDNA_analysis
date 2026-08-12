@@ -94,7 +94,11 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh --submit intraspecies_contamina
 ```
 
 最终目录为 `results/qc/final_filter/`，其中 `reports/final_sample_qc.tsv`
-汇总四类样本状态和最终原因，`reports/final_variant_qc.tsv` 按原始等位基因记录各报告判定，
+汇总四类样本状态和最终原因。`reports/final_variant_qc.tsv` 使用
+`sample,human_chrom,human_pos,human_ref,human_alt` 作为 post-liftover canonical join key。
+下游 VCF 坐标只写入 `human_*`；无法可靠恢复时 `source_*` 以及兼容保留但已弃用的
+`original_*` 写为 `NOT_AVAILABLE`，不会冒充物种原始坐标。变异报告中的 generic
+`CHROM/POS/REF/ALT` 必须显式配置 `coordinate_system: human`，
 `reports/final_filter_summary.tsv` 提供计数；仅样本 PASS 且变异 PASS 的记录进入
 `final_vcf/`，其 coverage 与 mtCN 文件分别复制到 `final_cov/` 和 `final_mtcn/`。
 

@@ -4,6 +4,8 @@ from pathlib import Path
 ROOT=Path(__file__).parents[2]
 INTRA=ROOT/"qc_analysis/scripts/run_intraspecies_contamination.py"
 FINAL=ROOT/"qc_analysis/scripts/run_final_filter.py"
+sys.path.insert(0,str(ROOT))
+from qc_analysis.scripts.run_final_filter import find_vcf
 
 def write_vcf(path, sample, records):
     text="##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t"+sample+"\n"
@@ -58,6 +60,7 @@ def test_final_filter_excludes_failed_sample_and_failed_variant(tmp_path):
   variant_reports:
     variant_qc:
       path: {flags}
+      coordinate_system: human
 """)
     run=subprocess.run([sys.executable,str(FINAL),"--config",str(cfg)],text=True,capture_output=True)
     assert run.returncode==0,run.stderr
@@ -65,6 +68,44 @@ def test_final_filter_excludes_failed_sample_and_failed_variant(tmp_path):
     with gzip.open(out/"final_vcf/A.final.vcf.gz","rt") as h: assert "\t2\t" not in h.read()
     assert (out/"final_cov/A.cov.tsv").is_file() and (out/"final_mtcn/A.mtcn.tsv").is_file()
     for name in ("final_sample_qc.tsv","final_variant_qc.tsv","final_filter_summary.tsv"):assert (out/"reports"/name).is_file()
+    with (out/"reports/final_variant_qc.tsv").open() as h: variants=list(csv.DictReader(h,delimiter="\t"))
+    assert variants[0]["human_chrom"]=="chrM"
+    assert variants[0]["source_chrom"]==variants[0]["original_chrom"]=="NOT_AVAILABLE"
+
+def test_exact_vcf_resolution_does_not_confuse_sample_prefixes(tmp_path):
+    write_vcf(tmp_path/"ABC10.lifted.rrna.vcf","ABC10",[(1,.1)])
+    assert find_vcf(tmp_path,"ABC1","{sample}.lifted.rrna.vcf") is None
+    write_vcf(tmp_path/"ABC1.lifted.rrna.vcf","ABC1",[(1,.1)])
+    assert find_vcf(tmp_path,"ABC1","{sample}.lifted.rrna.vcf").name=="ABC1.lifted.rrna.vcf"
+
+def test_exact_vcf_resolution_rejects_compressed_and_plain_ambiguity(tmp_path):
+    path=tmp_path/"ABC1.lifted.rrna.vcf";write_vcf(path,"ABC1",[(1,.1)])
+    with gzip.open(str(path)+".gz","wt") as h:h.write(path.read_text())
+    with pytest.raises(ValueError,match="ambiguous VCF source"):find_vcf(tmp_path,"ABC1","{sample}.lifted.rrna.vcf")
+
+def test_original_coordinate_variant_report_is_rejected(tmp_path):
+    # A present report with generic coordinates must explicitly declare that
+    # those coordinates are post-liftover human coordinates.
+    collected=tmp_path/'collected';(collected/'reports').mkdir(parents=True)
+    (collected/'reports/variant_calling_collection_summary.tsv').write_text('sample\tspecies\nA\tsp\n')
+    intra=tmp_path/'intra.tsv';intra.write_text('sample\tcontamination_status\nA\tPASS\n')
+    sq=tmp_path/'sq.tsv';sq.write_text('sample\tqc_status\nA\tPASS\n')
+    flags=tmp_path/'flags.tsv';flags.write_text('sample\tCHROM\tPOS\tREF\tALT\tstatus\nA\tMT\t1\tA\tG\tFAIL\n')
+    cfg=tmp_path/'c.yaml';cfg.write_text(f'''final_filter:
+  collected_dir: {collected}
+  output_dir: {tmp_path}/out
+  sample_reports:
+    intraspecies:
+      path: {intra}
+    sample_qc:
+      path: {sq}
+  variant_reports:
+    original_qc:
+      path: {flags}
+      coordinate_system: source
+''')
+    run=subprocess.run([sys.executable,str(FINAL),'--config',str(cfg)],text=True,capture_output=True)
+    assert run.returncode==2 and 'coordinate_system is unknown or incompatible' in run.stderr
 
 def test_final_filter_fails_when_required_report_missing(tmp_path):
     collected=tmp_path/'collected';(collected/'reports').mkdir(parents=True)

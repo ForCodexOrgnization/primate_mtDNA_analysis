@@ -19,6 +19,7 @@ WRAPPER=ROOT/'qc_analysis/scripts/run_qc_preprocessing.sh'
     ('codon_match_validate','results/qc/codon_match'), ('codon_match','results/qc/codon_match'),
     ('codon_match_merge','results/qc/codon_match'), ('trna_match','results/qc/trna_match'),
     ('rrna_match','results/qc/rrna_match'), ('intraspecies_contamination','results/qc/intraspecies_contamination'),
+    ('sample_variant_filtering','results/qc/sample_variant_filtering'),
 ])
 def test_documented_step_metadata_defaults(step, expected):
     resolved=resolve_runtime_paths(step,{})
@@ -40,6 +41,31 @@ def test_singleton_and_concurrency_validation(tmp_path):
     for value in ('0','-1','abc'):
         x=run('--dry-run-submit','compare_genbank_mitos2',str(c),env={'SLURM_ARRAY_CONCURRENCY':value})
         assert x.returncode==2 and 'positive integer' in x.stderr
+
+def test_sample_variant_filtering_singleton_manifest_and_dry_run(tmp_path):
+    c=config(tmp_path)
+    result=run('--dry-run-submit','sample_variant_filtering',str(c))
+    assert result.returncode==0, result.stderr
+    assert '--array=1-1' in result.stdout
+    manifests=list((ROOT/'results/qc/sample_variant_filtering/job_arrays').glob('sample_variant_filtering.*.manifest.tsv'))
+    assert manifests
+    assert '\tsingleton\tsample_variant_filtering\t' in manifests[-1].read_text()
+
+def test_submit_all_preserves_initial_dependency_chain(tmp_path):
+    result=run('--dry-run-submit','all',str(config(tmp_path)))
+    # This deliberately minimal config may stop at a later sample-array node,
+    # but the requested global chain must be constructed without an unsupported
+    # sample_variant_filtering error.
+    assert 'Unsupported array step' not in result.stderr
+    lines=[line for line in result.stdout.splitlines() if line.startswith('DRY RUN:')]
+    wanted=['collect_variant_calling_results','intraspecies_contamination','sample_variant_filtering','discover_global_anchor']
+    positions=[]
+    for step in wanted:
+        positions.append(next(i for i,line in enumerate(lines) if f'qc_preprocessing_{step}' in line))
+    assert positions==sorted(positions)
+    for previous,current in zip(wanted,wanted[1:]):
+        line=next(line for line in lines if f'qc_preprocessing_{current}' in line)
+        assert f'afterok:dry_{previous}' in line
 
 def test_single_sample_is_singleton_and_paths_are_quoted(tmp_path):
     c=config(tmp_path);c.write_text(f'coordinate_liftover:\n  paths:\n    output_dir: {tmp_path}/out\n')

@@ -8,7 +8,7 @@ from typing import Any
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 SAMPLE_COLUMNS="sample species intraspecies_status human_contamination_status interspecies_status sample_level_qc_status final_sample_status final_sample_fail_reasons final_sample_warnings vcf_source".split()
-VARIANT_COLUMNS="sample original_chrom original_pos original_ref original_alt human_chrom human_pos human_ref human_alt liftover_status human_contamination_status interspecies_status sample_variant_qc_status match_status final_variant_status final_variant_fail_reasons".split()
+VARIANT_COLUMNS="sample source_chrom source_pos source_ref source_alt original_chrom original_pos original_ref original_alt human_chrom human_pos human_ref human_alt liftover_status human_contamination_status interspecies_status sample_variant_qc_status match_status final_variant_status final_variant_fail_reasons".split()
 def resolve(v):
  p=Path(str(v)).expanduser();return p if p.is_absolute() else ROOT/p
 def read_tsv(p):
@@ -21,9 +21,32 @@ def names(v):return [x.strip() for x in v.split(",")] if isinstance(v,str) else 
 def is_fail(v,configured):return v.strip().lower() in {str(x).strip().lower() for x in names(configured)}
 def sample_name(p):return p.name.split(".lifted",1)[0].split(".vcf",1)[0]
 def open_vcf(p):return gzip.open(p,"rt") if p.suffix==".gz" else p.open(encoding="utf-8")
-def find_vcf(directory,sample):
- candidates=sorted(set(directory.glob(f"{sample}*.vcf"))|set(directory.glob(f"{sample}*.vcf.gz")))
+LEGACY_SUFFIXES=(".lifted.codon.trna.rrna.vcf",".lifted.codon.trna.vcf",".lifted.trna.vcf",".lifted.codon.vcf",".lifted.raw.vcf",".vcf")
+def source_specs(value):
+ """Normalize named exact-pattern sources and the legacy directory list."""
+ if isinstance(value,dict):
+  return [(name,resolve(spec.get("dir",spec.get("directory"))),spec.get("pattern")) for name,spec in value.items() if isinstance(spec,dict)]
+ return [(str(d),resolve(d),None) for d in names(value)]
+def find_vcf(directory,sample,pattern=None):
+ """Resolve only exact sample filenames; never use a sample-prefix glob."""
+ base=[directory/(pattern.format(sample=sample))] if pattern else [directory/f"{sample}{suffix}" for suffix in LEGACY_SUFFIXES]
+ candidates=[]
+ for path in base:
+  candidates.extend(p for p in (path,Path(str(path)+".gz")) if p.is_file())
+ candidates=sorted(set(candidates))
+ if len(candidates)>1:raise ValueError(f"ambiguous VCF source for sample {sample} in {directory}: {', '.join(map(str,candidates))}")
  return candidates[0] if candidates else None
+def report_variant_key(row,spec,source):
+ """Return the canonical sample + post-liftover human allele identity."""
+ sample=pick(row,["sample","Sample"],"")
+ human=[pick(row,[f"human_{x}"],"") for x in ("chrom","pos","ref","alt")]
+ if all(human):return (sample,*human)
+ system=str(spec.get("coordinate_system","")).strip().lower()
+ if system not in {"human","post-liftover","post_liftover"}:
+  raise ValueError(f"variant report {source} uses generic coordinates but coordinate_system is unknown or incompatible: {system or 'not declared'}")
+ generic=[pick(row,[x.upper(),x],"") for x in ("chrom","pos","ref","alt")]
+ if not all(generic):raise ValueError(f"variant report {source} lacks a complete human-coordinate variant key")
+ return (sample,*generic)
 def bgzip_and_index(plain,dest):
  """Use htslib-compatible tooling only; ordinary gzip is never accepted."""
  try:
@@ -55,7 +78,7 @@ def main():
   if absent and strict:raise ValueError(f"required report {report} is missing samples: {', '.join(absent)}")
  if out.exists() and a.overwrite:shutil.rmtree(out)
  for d in (out/"reports",out/"logs",out/"final_vcf",out/"final_cov",out/"final_mtcn"):d.mkdir(parents=True,exist_ok=True)
- fail_cfg=sec.get("sample_fail_status") or {};fail_defaults={"intraspecies":["high_confidence_contaminated"],"human":["FAIL"],"interspecies":["FAIL"],"sample_qc":["FAIL"]};vcf_dirs=[resolve(x) for x in names(sec.get("vcf_sources",["results/qc/rrna_match/vcf_rrna","results/qc/trna_match/vcf_trna","results/qc/codon_match/vcf_codon","results/qc/coordinate_liftover/vcf_lifted_raw"]))]
+ fail_cfg=sec.get("sample_fail_status") or {};fail_defaults={"intraspecies":["high_confidence_contaminated"],"human":["FAIL"],"interspecies":["FAIL"],"sample_qc":["FAIL"]};vcf_sources=source_specs(sec.get("vcf_sources",["results/qc/rrna_match/vcf_rrna","results/qc/trna_match/vcf_trna","results/qc/codon_match/vcf_codon","results/qc/coordinate_liftover/vcf_lifted_raw"]))
  sample_rows=[];passing={};sample_qc_rows=indexed["sample_qc"]
  for sample,row in sorted(collection.items()):
   statuses={n:pick(indexed[n].get(sample,{}),fields[n]) for n in defaults};reasons=[];warnings=[]
@@ -67,7 +90,7 @@ def main():
     else:reasons.append(n+":"+v)
    elif n=="intraspecies" and (v.startswith("insufficient_") or v=="candidate_contaminated"):warnings.append(n+":"+v)
    elif v=="NOT_AVAILABLE" and n in required:reasons.append(n+":missing")
-  src=next((x for d in vcf_dirs if (x:=find_vcf(d,sample))),None)
+  src=next((x for _,d,p in vcf_sources if (x:=find_vcf(d,sample,p))),None)
   if not reasons and src is None:reasons.append("vcf:missing_downstream_source")
   status="FAIL" if reasons else "PASS"
   if status=="PASS":passing[sample]=src
@@ -77,7 +100,8 @@ def main():
   p=resolve(spec["path"] if isinstance(spec,dict) else spec)
   if not p.is_file():continue
   for r in read_tsv(p):
-   k=(pick(r,["sample","Sample"],""),pick(r,["original_chrom","human_chrom","CHROM","chrom"],""),pick(r,["original_pos","human_pos","POS","pos"],""),pick(r,["original_ref","human_ref","REF","ref"],""),pick(r,["original_alt","human_alt","ALT","alt"],""));st=pick(r,(spec.get("status_columns",[]) if isinstance(spec,dict) else [])+["qc_status","status","match_status"],"PASS")
+   if not isinstance(spec,dict):raise ValueError(f"variant report {source} must declare path and coordinate_system")
+   k=report_variant_key(r,spec,source);st=pick(r,names(spec.get("status_columns",[]))+["qc_status","status","match_status"],"PASS")
    if is_fail(st,spec.get("fail_status",["FAIL"]) if isinstance(spec,dict) else ["FAIL"]):variant_flags[k].append(source+":"+st)
  variant_rows=[];kept={}
  for sample,src in sorted(passing.items()):
@@ -86,7 +110,7 @@ def main():
    with open_vcf(src) as inp:
     for line in inp:
      if line.startswith("#"):target.write(line);continue
-     f=line.rstrip("\n").split("\t");k=(sample,f[0],f[1],f[3],f[4]);why=variant_flags.get(k,[]);st="FAIL" if why else "PASS";variant_rows.append(dict(sample=sample,original_chrom=f[0],original_pos=f[1],original_ref=f[3],original_alt=f[4],human_chrom=f[0],human_pos=f[1],human_ref=f[3],human_alt=f[4],liftover_status="PASS",human_contamination_status="NOT_AVAILABLE",interspecies_status="NOT_AVAILABLE",sample_variant_qc_status="PASS" if not why else "FAIL",match_status="NOT_AVAILABLE",final_variant_status=st,final_variant_fail_reasons=";".join(why)))
+     f=line.rstrip("\n").split("\t");k=(sample,f[0],f[1],f[3],f[4]);why=variant_flags.get(k,[]);st="FAIL" if why else "PASS";na="NOT_AVAILABLE";variant_rows.append(dict(sample=sample,source_chrom=na,source_pos=na,source_ref=na,source_alt=na,original_chrom=na,original_pos=na,original_ref=na,original_alt=na,human_chrom=f[0],human_pos=f[1],human_ref=f[3],human_alt=f[4],liftover_status="PASS",human_contamination_status="NOT_AVAILABLE",interspecies_status="NOT_AVAILABLE",sample_variant_qc_status="PASS" if not why else "FAIL",match_status="NOT_AVAILABLE",final_variant_status=st,final_variant_fail_reasons=";".join(why)))
      if st=="PASS":target.write(line);n+=1
   dest=out/"final_vcf"/f"{sample}.final.vcf.gz"
   try:bgzip_and_index(plain,dest)
