@@ -24,7 +24,7 @@ intraspecies_contamination:
   min_frac_lowA_in_highB_candidate: 0.50
   min_frac_lowA_in_highB_highconf: 0.5
   contam_threshold_candidate: 0.03
-  contam_threshold_highconf: 0.0.03
+  contam_threshold_highconf: 0.03
   mirror_low_vaf_min: 0.01
   mirror_low_vaf_max: 0.20
   mirror_high_vaf_min: 0.80
