@@ -1,4 +1,4 @@
-import csv, gzip, subprocess, sys
+import csv, gzip, subprocess, sys, shutil, pytest
 from pathlib import Path
 
 ROOT=Path(__file__).parents[2]
@@ -34,27 +34,41 @@ def test_python_intraspecies_report_contract(tmp_path):
     assert (out/"logs/intraspecies_contamination.log").is_file()
 
 def test_final_filter_excludes_failed_sample_and_failed_variant(tmp_path):
+    if not ((shutil.which("bgzip") and shutil.which("tabix")) or __import__("importlib").util.find_spec("pysam")):
+        pytest.skip("pysam or bgzip/tabix is required for production VCF output")
     collected=tmp_path/"collected";(collected/"collected_vcf").mkdir(parents=True)
     (collected/"collected_cov").mkdir();(collected/"collected_mtcn").mkdir();(collected/"reports").mkdir()
     write_vcf(collected/"collected_vcf/A.vcf","A",[(1,.1),(2,.2)]);write_vcf(collected/"collected_vcf/B.vcf","B",[(1,.1)])
     (collected/"collected_cov/A.cov.tsv").write_text("x\n");(collected/"collected_mtcn/A.mtcn.tsv").write_text("x\n")
     (collected/"reports/variant_calling_collection_summary.tsv").write_text("sample\tspecies\nA\tsp\nB\tsp\n")
     intra=tmp_path/"intra.tsv";intra.write_text("sample\tcontamination_status\nA\tno_strong_evidence\nB\thigh_confidence_contaminated\n")
+    sample_qc=tmp_path/"sample_qc.tsv";sample_qc.write_text("sample\tqc_status\tfailed_criteria\nA\tPASS\t\nB\tPASS\t\n")
+    downstream=tmp_path/"rrna";downstream.mkdir();write_vcf(downstream/"A.lifted.rrna.vcf","A",[(1,.1),(2,.2)]);write_vcf(downstream/"B.lifted.rrna.vcf","B",[(1,.1)])
     flags=tmp_path/"flags.tsv";flags.write_text("sample\tCHROM\tPOS\tREF\tALT\tqc_status\nA\tchrM\t2\tA\tG\tFAIL\n")
     out=tmp_path/"final";cfg=tmp_path/"qc.yaml";cfg.write_text(f"""final_filter:
   enabled: true
   collected_dir: {collected}
   output_dir: {out}
-  sample_reports:
+    sample_reports:
     intraspecies:
       path: {intra}
+    sample_qc:
+      path: {sample_qc}
+  vcf_sources: {downstream}
   variant_reports:
     variant_qc:
       path: {flags}
 """)
     run=subprocess.run([sys.executable,str(FINAL),"--config",str(cfg)],text=True,capture_output=True)
     assert run.returncode==0,run.stderr
-    assert (out/"final_vcf/A.vcf").is_file() and not (out/"final_vcf/B.vcf").exists()
-    assert "\t2\t" not in (out/"final_vcf/A.vcf").read_text()
+    assert (out/"final_vcf/A.final.vcf.gz").is_file() and (out/"final_vcf/A.final.vcf.gz.tbi").is_file()
+    with gzip.open(out/"final_vcf/A.final.vcf.gz","rt") as h: assert "\t2\t" not in h.read()
     assert (out/"final_cov/A.cov.tsv").is_file() and (out/"final_mtcn/A.mtcn.tsv").is_file()
     for name in ("final_sample_qc.tsv","final_variant_qc.tsv","final_filter_summary.tsv"):assert (out/"reports"/name).is_file()
+
+def test_final_filter_fails_when_required_report_missing(tmp_path):
+    collected=tmp_path/'collected';(collected/'reports').mkdir(parents=True)
+    (collected/'reports/variant_calling_collection_summary.tsv').write_text('sample\tspecies\nA\tsp\n')
+    cfg=tmp_path/'c.yaml';cfg.write_text(f'final_filter:\n  collected_dir: {collected}\n  output_dir: {tmp_path}/out\n')
+    run=subprocess.run([sys.executable,str(FINAL),'--config',str(cfg)],text=True,capture_output=True)
+    assert run.returncode!=0 and 'missing required sample report' in run.stderr

@@ -92,3 +92,17 @@ def test_default_config_works_outside_repository_root(tmp_path):
     # collection must run first in a clean checkout.
     assert result.returncode != 0
     assert "variant_calling_collection_summary.tsv" in result.stderr
+
+def test_cross_position_mirror_and_tolerance_boundary():
+    import importlib.util
+    p=ROOT/'qc_analysis/scripts/run_intraspecies_contamination.py';spec=importlib.util.spec_from_file_location('intra',p);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+    params={**m.DEFAULTS,'use_snv_only':True,'pass_only':True,'mirror_tolerance':.01}
+    def r(pos,v):return {'Sample':'A','Species':'sp','CHROM':'chrM','POS':str(pos),'REF':'A','ALT':'G','Type':'SNV','FILTER':'PASS','DP':'200','VAF':str(v)}
+    n,unique,fraction,normalized=m.mirror_stats([r(1,.10),r(999,.89)],params)
+    assert (n,unique,fraction,normalized)==(1,1,1.0,1.0)
+
+def test_negative_control_quantiles():
+    import importlib.util
+    p=ROOT/'qc_analysis/scripts/run_intraspecies_contamination.py';spec=importlib.util.spec_from_file_location('intra2',p);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+    assert m.quantile7([0,.25,.5,.75,1],.95)==.95
+    assert m.quantile7([0,.25,.5,.75,1],.99)==.99
