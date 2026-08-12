@@ -55,7 +55,21 @@ final_filter:
   required_sample_reports: intraspecies,sample_qc
   optional_sample_reports: human,interspecies
   strict_missing_samples: true
-  vcf_sources: results/qc/rrna_match/vcf_rrna,results/qc/trna_match/vcf_trna,results/qc/codon_match/vcf_codon,results/qc/coordinate_liftover/vcf_lifted_raw
+  # Priority-ordered exact filenames. Directory-only comma-separated values
+  # remain accepted, but are resolved against known exact suffixes (never globs).
+  vcf_sources:
+    rrna:
+      dir: results/qc/rrna_match/vcf_rrna
+      pattern: "{sample}.lifted.codon.trna.rrna.vcf"
+    trna:
+      dir: results/qc/trna_match/vcf_trna
+      pattern: "{sample}.lifted.codon.trna.vcf"
+    codon:
+      dir: results/qc/codon_match/vcf_codon
+      pattern: "{sample}.lifted.codon.vcf"
+    liftover:
+      dir: results/qc/coordinate_liftover/vcf_lifted_raw
+      pattern: "{sample}.lifted.raw.vcf"
   sample_fail_status:
     intraspecies: high_confidence_contaminated,FAIL
     human: fail,FAIL

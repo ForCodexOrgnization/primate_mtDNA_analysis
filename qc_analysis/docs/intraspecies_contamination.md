@@ -22,7 +22,9 @@ the species. The mt-high-hets estimate is `1 - mean(VAF)`: use 0.80–0.998 when
 at least three anchors are depressed, otherwise 0.80–1.00 when at least one is
 available.
 
-Defaults are DP >=100 and SNVs only. Candidate calls require >=5 low-A variants,
+Defaults are **DP >= 100** and SNVs only. This inclusive production boundary
+matches the validated contamination R implementation; it intentionally differs
+from descriptive plotting and other analyses that may use `DP > 100`. Candidate calls require >=5 low-A variants,
 overlap >=3, fraction >=0.50, and estimate >=0.036420574377757434.
 High-confidence calls use fraction >=0.6213636363636358 and estimate
 >=0.07103935483870959. Singleton species are retained as
