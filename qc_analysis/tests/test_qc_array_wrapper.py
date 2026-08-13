@@ -124,6 +124,99 @@ def test_array_worker_parses_internal_options_in_either_order(tmp_path, internal
     )
 
 
+@pytest.mark.parametrize(
+    "step,item,expected_sample",
+    [
+        ("build_primate_codon_table", "build_primate_codon_table", None),
+        ("codon_match", "SAMPLE1", "SAMPLE1"),
+        ("coordinate_liftover", "SAMPLE1", "SAMPLE1"),
+        ("human_contamination", "human_contamination", None),
+        ("codon_match_validate", "codon_match_validate", None),
+        ("build_primate_homo_background", "build_primate_homo_background", None),
+    ],
+)
+def test_array_item_is_a_sample_only_for_sample_classified_steps(
+    tmp_path, step, item, expected_sample
+):
+    tasks = tmp_path / "tasks.txt"
+    tasks.write_text(f"{item}\n")
+    c = config(tmp_path)
+    python = tmp_path / "python"
+    call_log = tmp_path / "calls.log"
+    python.write_text(
+        "#!/usr/bin/env bash\n"
+        "[[ $# -eq 1 && $1 == - ]] && cat >/dev/null\n"
+        "printf '%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
+    )
+    python.chmod(0o755)
+
+    result = run(
+        "--array-task", "--task-file", str(tasks), step, str(c),
+        env={
+            "SLURM_ARRAY_TASK_ID": "1",
+            "PYTHON": str(python),
+            "CALL_LOG": str(call_log),
+            "BIOPYTHON_USE_MODULE": "0",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = call_log.read_text().splitlines()
+    if expected_sample:
+        assert any(f"--sample {expected_sample}" in call for call in calls)
+    else:
+        assert all("--sample" not in call for call in calls)
+
+
+def test_mitos2_reference_array_item_is_not_forwarded_as_a_sample(tmp_path):
+    tasks = tmp_path / "tasks.txt"
+    tasks.write_text("reference:NC_012920.1\n")
+    conda_base = tmp_path / "conda"
+    (conda_base / "etc/profile.d").mkdir(parents=True)
+    prefix = tmp_path / "mitos2"
+    (prefix / "bin").mkdir(parents=True)
+    call_log = tmp_path / "calls.log"
+    python = prefix / "bin/python"
+    python.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ $1 == --version ]]; then echo 'Python 3'; exit; fi\n"
+        "if [[ $1 == -c ]]; then echo '1.83'; exit; fi\n"
+        "printf '%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
+    )
+    python.chmod(0o755)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    module = bindir / "module"
+    module.write_text("#!/usr/bin/env bash\nexit 0\n")
+    module.chmod(0o755)
+    conda = bindir / "conda"
+    conda.write_text(
+        f"#!/usr/bin/env bash\n[[ $1 == info ]] && printf '%s\\n' '{conda_base}'\n"
+    )
+    conda.chmod(0o755)
+    (conda_base / "etc/profile.d/conda.sh").write_text(
+        f"conda() {{ [[ $1 == activate ]] && export CONDA_PREFIX='{prefix}' CONDA_DEFAULT_ENV=mitos2; }}\n"
+    )
+    c = tmp_path / "mitos.yaml"
+    c.write_text(
+        "mitos2_annotation:\n  settings:\n    conda_module: test\n    conda_env: mitos2\n"
+    )
+
+    result = run(
+        "--array-task", "--task-file", str(tasks), "mitos2_annotation", str(c),
+        env={
+            "SLURM_ARRAY_TASK_ID": "1",
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "CALL_LOG": str(call_log),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    call = call_log.read_text().strip()
+    assert "--reference NC_012920.1" in call
+    assert "--sample" not in call
+
+
 @pytest.mark.parametrize("option", ["--sample", "--task-file", "--array-concurrency"])
 def test_options_requiring_values_report_clear_error(option):
     x = run(option)

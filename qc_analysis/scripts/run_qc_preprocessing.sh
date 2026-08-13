@@ -143,8 +143,12 @@ resolve_array_item() {
  (( SLURM_ARRAY_TASK_ID <= count )) || { echo "ERROR: task index $SLURM_ARRAY_TASK_ID exceeds $count" >&2; exit 2; }
  ITEM=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$TASK_FILE"); [[ -n "$ITEM" ]] || { echo 'ERROR: selected array item is empty' >&2; exit 2; }
  printf '[qc_preprocessing] step=%s array_job_id=%s array_task_id=%s selected_item=%s config=%s hostname=%s start_time=%s\n' "$STEP" "${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-unknown}}" "$SLURM_ARRAY_TASK_ID" "$ITEM" "$CONFIG" "$(hostname)" "$(date -u +%FT%TZ)" >&2
-  SAMPLE="$ITEM"
-  if [[ "$STEP" == mitos2_annotation ]]; then
+  # Task-file entries only represent samples for sample-classified steps.
+  # Singleton entries are step names and reference entries are MITOS2 worker
+  # keys, neither of which may leak into a downstream --sample argument.
+  if [[ "$(classify_step "$STEP")" == sample ]]; then
+    SAMPLE="$ITEM"
+  else
     SAMPLE=""
   fi
 }

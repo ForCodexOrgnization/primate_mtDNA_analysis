@@ -8,8 +8,8 @@ from qc_analysis.lib.simple_yaml import read_simple_yaml
 SAMPLE_STEPS = {"coordinate_liftover", "codon_match", "trna_match", "rrna_match"}
 GLOBAL_STEPS = {"collect_variant_calling_results", "discover_global_anchor", "build_primate_codon_table",
  "compare_genbank_mitos2", "mitos2_prepare_tasks", "mitos2_merge", "codon_match_validate",
- "codon_match_merge", "intraspecies_contamination", "sample_variant_filtering", "final_filter"}
-GLOBAL_STEPS.add("human_contamination")
+ "codon_match_merge", "build_trna_indexes", "trna_gene_qc", "build_primate_homo_background",
+ "intraspecies_contamination", "sample_variant_filtering", "human_contamination", "final_filter"}
 
 STEP_SECTIONS = {
     "collect_variant_calling_results": "collect_variant_calling",
@@ -92,7 +92,9 @@ def main():
     runtime=resolve_runtime_paths(step,cfg)
     if a.resolve_paths:
         print(f'OUTPUT_DIR={runtime["output_dir"]}');print(f'JOB_ARRAY_DIR={runtime["job_array_dir"]}');print(f'LOG_DIR={runtime["log_dir"]}');return
-    if a.sample: candidates=[a.sample]
+    # --sample narrows only genuinely sample-level steps. In particular, do
+    # not turn a singleton/reference manifest entry into a sample identifier.
+    if a.sample and step in SAMPLE_STEPS: candidates=[a.sample]
     elif step in GLOBAL_STEPS: candidates=[step]
     elif step=='mitos2_annotation':
         task=Path(cfg[step]['paths'].get('mitos2_reference_tasks',''))
