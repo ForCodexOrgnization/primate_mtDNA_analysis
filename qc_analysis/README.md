@@ -40,26 +40,23 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 | 4 | `coordinate_liftover` | 将每个样本的原始物种坐标转换到人 chrM 坐标 | 后续 VCF 注释 |
 | 5 | `mitos2_prepare_tasks` | 生成每个目标参考序列一条记录的 MITOS2 任务表 | 仅 `--submit all` 中的显式节点 |
 | 6 | `mitos2_annotation` | 按参考序列运行 MITOS2 | MITOS2 合并结果 |
-| 7 | `mitos2_merge` | 合并所有已完成参考序列的 MITOS2 原始结果 | 密码子表的 fallback 输入 |
-| 8 | `build_primate_codon_table` | 优先使用 GenBank、必要时使用 MITOS2，构建参考级密码子表和样本映射 | `codon_match` |
-| 9 | `compare_genbank_mitos2` | 在配置启用时比较 GenBank 与 MITOS2 CDS 注释 | 注释一致性报告 |
-| 10 | `codon_match_validate` | 在读取 VCF 前校验并建立密码子输入索引 | 仅 `--submit all` 中的显式校验节点 |
-| 11 | `codon_match` | 给 lifted VCF 添加密码子匹配注释 | tRNA 注释输入 |
-| 12 | `codon_match_merge` | 原子合并每个样本的密码子汇总 | cohort 汇总 |
+| 7 | `mitos2_merge` | 合并并严格质控 MITOS2 结果，生成生产密码子表和样本映射 | `codon_match_validate` |
+| 8 | `compare_genbank_mitos2` | 可选：按相同序列 SHA256 比较独立 GenBank 与 MITOS2 注释 | 验证证据（不阻塞生产流程） |
+| 9 | `codon_match_validate` | 在读取 VCF 前校验并建立密码子输入索引 | 仅 `--submit all` 中的显式校验节点 |
+| 10 | `codon_match` | 给 lifted VCF 添加密码子匹配注释 | tRNA 注释输入 |
+| 11 | `codon_match_merge` | 原子合并每个样本的密码子汇总 | cohort 汇总 |
 
-GenBank CDS annotations are used directly only when the GenBank mitochondrial
-sequence is identical to the exact coordinate-reference FASTA in the same origin
-and orientation. Circularly rotated, reverse-complement-equivalent, or genuinely
-different sequences are not allowed to contribute untransformed GenBank coordinates;
-these references fall back to annotation of the actual coordinate FASTA. MITOS2
-input and coordinate FASTA sequence identity must be established; accession or
+MITOS2 annotations of the exact variant-calling FASTAs are the only production
+CDS/codon source. GenBank remains an independent sequence-hash-matched benchmark;
+it never overrides or substitutes for MITOS2 in production.
+MITOS2 input and coordinate FASTA sequence identity must be established; accession or
 biological similarity alone is insufficient.
 
 Codon matching retains overlapping CDS genes and evaluates all compatible source ×
 human gene/phase candidate pairs instead of collapsing a position to one gene.
-| 13 | `trna_match` | 给 VCF 添加 tRNA 匹配和结构相关注释 | rRNA 注释输入 |
-| 14 | `rrna_match` | 给 VCF 添加 rRNA 区域/可选结构注释 | 最终注释报告 |
-| 15 | `final_filter` | 汇总所有样本级和变异级报告并一次性生成最终文件 | `final_vcf/final_cov/final_mtcn` |
+| 12 | `trna_match` | 给 VCF 添加 tRNA 匹配和结构相关注释 | rRNA 注释输入 |
+| 13 | `rrna_match` | 给 VCF 添加 rRNA 区域/可选结构注释 | 最终注释报告 |
+| 14 | `final_filter` | 汇总所有样本级和变异级报告并一次性生成最终文件 | `final_vcf/final_cov/final_mtcn` |
 
 上表是 `--submit all` 创建的完整依赖图。直接运行 `all` 时，wrapper 会在单一进程中完成相同
 的主要生物学步骤，但任务准备、输入校验和部分合并操作会由相应步骤内部处理，而不是作为

@@ -22,13 +22,12 @@ runmitos --help >/dev/null
 
 `run_mitos2_annotation.py` activates that environment in a login shell, validates `runmitos`, and records that executable in `results/qc/mitos2_annotation/mitos2_annotation_summary.tsv`. The conda environment name is `mitos2`, the installed package name is `mitos`, and the CLI executable name is `runmitos`.
 
-The workflow runs one MITOS2 task per target species. Its primary input is the exact variant-calling FASTA, `references/variant_calling/Ref_chrM/{target_species}.fa`, whose standardized record header is `>chrM`. This is the coordinate truth for all emitted positions, even when `final_chrM_species` and the manifest accession identify a cross-species nearest reference. The manifest's `chrM_expected_output_fasta` is used only as a fallback when the target-species FASTA is absent, and its header is sanitized to `>chrM`. Manifest coordinate/reference metadata and the actual MITOS2 input path are both recorded in the task and summary tables. MITOS2 supplies CDS, tRNA, and rRNA *intervals*; its tRNA/rRNA output does not provide secondary-structure stem/loop information and does not replace tRNAscan paired-site annotations or human-guided rRNA stem/loop annotation. The interval table may support future fallback region tables.
+The workflow runs one MITOS2 task per unique normalized sequence SHA256. Its primary input is the exact variant-calling FASTA, `references/variant_calling/Ref_chrM/{target_species}.fa`. Identical sequences shared by multiple species use one task and one biological `reference_key`; different sequences never collapse because of a shared species or accession. Accession remains optional provenance. MITOS2 supplies CDS, tRNA, and rRNA *intervals*; its tRNA/rRNA output does not provide secondary-structure stem/loop information and does not replace tRNAscan paired-site annotations or human-guided rRNA stem/loop annotation.
 
-The first integration target is CDS/codon fallback. `build_primate_codon_table.py` selects a single annotation source for each sample: valid nonzero GenBank CDS rows first, otherwise MITOS2 rows for that final reference. It never combines sources within a sample. Raw/parsed MITOS2 tables remain separate, and the source comparison is written to `results/qc/codon_table_build/genbank_vs_mitos2_cds_comparison.tsv`. The chosen table used downstream is `data/reference_tables/all_primate_position_codon_table.tsv`.
+The merge writes the production reference table and sample map directly under `results/qc/mitos2_annotation/`. Only references passing strict production QC enter the codon table. Failed references remain explicit in the summary and sample map and cause downstream validation to stop; there is no GenBank fallback. `build_primate_codon_table.py` is retained only to build an independent GenBank benchmark for the optional hash-matched comparison.
 
 ```bash
 bash qc_analysis/scripts/run_qc_preprocessing.sh mitos2_annotation config/qc_preprocessing.yaml
-bash qc_analysis/scripts/run_qc_preprocessing.sh build_primate_codon_table config/qc_preprocessing.yaml
 bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yaml
 ```
 
@@ -62,12 +61,13 @@ sbatch --array=1-${N}%20 qc_analysis/scripts/run_mitos2_annotation_array.slurm
 bash qc_analysis/scripts/run_qc_preprocessing.sh mitos2_merge config/qc_preprocessing.yaml
 ```
 
-The task list has one row per target-species variant-calling FASTA and records its task ID,
+The task list has one row per unique normalized variant-calling sequence and records its task ID,
 manifest reference metadata, actual MITOS2 input FASTA, number of linked samples, and completion status. Each array
-worker writes only `results/qc/mitos2_annotation/raw/{reference_key}/`; successful
+worker writes only `results/qc/mitos2_annotation/raw/{task_key}/`; successful
 workers create `mitos2.completed.ok`, which causes later runs to skip that
 reference unless `--force` is supplied. The merge command parses every completed
-raw directory and regenerates the three combined tables.
+raw directory and regenerates the feature table, production reference codon table,
+sample reference map, legacy diagnostic sample table, and QC summary.
 
 `%20` limits concurrent workers to 20. Adjust this array concurrency to roughly
 10–30 according to current cluster load and local scheduler policy.

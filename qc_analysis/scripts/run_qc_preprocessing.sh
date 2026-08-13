@@ -22,7 +22,7 @@ Steps:
   coordinate_liftover              Run coordinate liftover only.
   build_primate_homo_background   Consolidate orthology QC and build temporary homoplasmic background.
   human_contamination              Screen annotated human-coordinate alleles with primate background correction.
-  build_primate_codon_table        Build GenBank-first / MITOS2-fallback sample-level codon annotations.
+  build_primate_codon_table        Build the optional independent GenBank benchmark (not production).
   mitos2_prepare_tasks              Write one Slurm-array task per target-species chrM FASTA.
   mitos2_merge                      Merge completed per-reference MITOS2 raw outputs.
   mitos2_annotation                 Run MITOS2 sequentially on target-species chrM FASTAs.
@@ -185,7 +185,7 @@ submit_array() {
  printf 'step\tjob_id\ttask_file\tmanifest\tlog_dir\tarray\tsubmitted_at\n%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$step" "$LAST_JOB_ID" "$TASK_FILE" "${MANIFEST:-}" "$logs" "$array" "$submitted_at" >"$submission"
 }
 submit_workflow() {
- local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination sample_variant_filtering discover_global_anchor coordinate_liftover mitos2_prepare_tasks mitos2_annotation mitos2_merge build_primate_codon_table compare_genbank_mitos2 codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match rrna_match build_primate_homo_background human_contamination final_filter)
+ local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination sample_variant_filtering discover_global_anchor coordinate_liftover mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match rrna_match build_primate_homo_background human_contamination final_filter)
  for s in "${steps[@]}"; do
    # Automatic merges are explicit graph nodes here, never also submitted by producers.
    TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
@@ -473,10 +473,6 @@ case "$STEP" in
     run_discover_global_anchor
     run_coordinate_liftover
     run_mitos2_annotation
-    run_build_primate_codon_table
-    if comparison_enabled; then
-      run_compare_genbank_mitos2
-    fi
     "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --validate-inputs
     run_annotation codon_match "$CODON_SCRIPT"
     "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --merge-summaries
