@@ -243,11 +243,17 @@ human_contamination:
     input_vcf_dir: results/qc/coordinate_liftover/vcf_lifted_raw
     input_vcf_pattern: "{sample}.lifted.raw.vcf"
     sample_ref_file: config/sample_ref_file.tsv
+    phylotree_raw_marker_file: data/reference_tables/haplogrep-rcrs-v17.1_uniq_SNP.txt
     phylotree_marker_file: data/reference_tables/human_phylotree_rcrs_v17.1_snv.tsv
     output_dir: results/qc/human_contamination
+  marker_reference_qc:
+    min_expected_simple_snv_markers: 100
+    allow_small_marker_reference: false
+    marker_version: rcrs-v17.1
   variant_filters:
     dp_min: 100
     pass_only: true
+    allow_dot_filter: false
     snv_only: true
     low_vaf_min: 0.01
     low_vaf_max: 0.50
@@ -277,6 +283,7 @@ human_contamination:
     java: java
     java_xmx: 4g
     tree: phylotree-rcrs@17.1
+    extend_report: true
     run_mode: candidate_only
     min_input_markers: 6
     sparse_input_marker_threshold: 10

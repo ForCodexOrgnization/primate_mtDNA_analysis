@@ -234,6 +234,30 @@ quality is not a probability and is not required for `FAIL`: low quality can
 reflect a sparse contaminant profile with too few downstream markers for a
 fine-scale assignment.
 
+Production screening requires the complete PhyloTree/HaploGrep rCRS v17.1
+marker export, not the small illustrative table formerly shipped here. Prepare
+the normalized SNV table reproducibly (complex mutations are counted and
+excluded, POS+ALT duplicates are merged) with:
+
+```bash
+python3 qc_analysis/scripts/prepare_human_phylotree_markers.py \
+  --input data/reference_tables/haplogrep-rcrs-v17.1_uniq_SNP.txt \
+  --output data/reference_tables/human_phylotree_rcrs_v17.1_snv.tsv \
+  --summary data/reference_tables/human_phylotree_rcrs_v17.1_snv.qc.json
+```
+
+The minimum marker count guard prevents an accidental placeholder from being
+used; `allow_small_marker_reference` is intended only for synthetic tests.
+HaploGrep receives one headerless HSD row whose selected mutations are separate
+tab fields. Such a contaminant-only profile may be sparse. Its quality is
+supplementary and is not a probability. The recommended default
+`quality_required_for_fail: false` leaves marker enrichment, VAF coherence, and
+non-control-region support solely responsible for `FAIL`. When enabled, absent,
+failed, low-quality, or insufficient phylogenetic evidence changes an otherwise
+strict `FAIL` to `CANDIDATE`, rather than silently passing it. HaploGrep remains
+optional unless `require_tool_when_enabled: true`. Keep `marker_version` and the
+configured HaploGrep tree synchronized (currently rCRS v17.1).
+
 Validate configuration and inputs without analysis:
 
 ```bash
