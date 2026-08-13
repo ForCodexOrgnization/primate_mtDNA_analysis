@@ -271,6 +271,45 @@ def _load_inputs(paths,strict):
     human=load_codon_index(paths['human_codon_table'],strict=strict)
     return refmode,primate,maps,human,map_stats
 
+def validate_reference_provenance(cfg, paths, maps):
+    """Reject reference annotations whose coordinate-sequence provenance is unsafe."""
+    reference_path=paths.get('reference_codon_table'); mapping_path=paths.get('sample_reference_map')
+    if not reference_path or not mapping_path:return
+    with open_text(reference_path) as h:
+        reference_rows=list(csv.DictReader(h,delimiter='\t'))
+    reference_keys={(row.get('reference_key') or '').strip() for row in reference_rows}
+    missing=sorted(set(maps.values())-reference_keys)
+    if missing:raise SystemExit(f'sample_reference_map references absent from reference_codon_table: {missing[:5]}')
+    with open_text(mapping_path) as h:
+        map_rows=list(csv.DictReader(h,delimiter='\t'))
+    for line,row in enumerate(map_rows,2):
+        if (row.get('status') or '').strip() in {'completed','completed_mitos2_fallback'} and not (row.get('coordinate_reference_sequence_sha256') or '').strip():
+            raise SystemExit(f'Successful reference has empty coordinate FASTA sequence hash in {mapping_path}, row {line}')
+    build=cfg.get('build_primate_codon_table',{}).get('paths',{})
+    summary_path=build.get('summary_table')
+    summaries=[]
+    if summary_path and Path(summary_path).exists():
+        with open_text(summary_path) as h:summaries=list(csv.DictReader(h,delimiter='\t'))
+    for line,row in enumerate(summaries,2):
+        if (row.get('annotation_source') or '').strip() == 'GenBank':
+            if (row.get('sequence_compatibility') or '').strip() != 'exact':
+                raise SystemExit(f'GenBank-direct annotation is not exact in {summary_path}, row {line}')
+            coordinate=(row.get('coordinate_reference_sequence_sha256') or '').strip()
+            genbank=(row.get('genbank_record_sequence_sha256') or '').strip()
+            if not coordinate or coordinate != genbank:
+                raise SystemExit(f'GenBank-direct sequence hashes differ in {summary_path}, row {line}')
+    for line,row in enumerate(reference_rows,2):
+        source=(row.get('annotation_source') or '').strip().upper()
+        coordinate=(row.get('coordinate_reference_sequence_sha256') or '').strip()
+        if source == 'GENBANK':
+            genbank=(row.get('genbank_record_sequence_sha256') or '').strip()
+            if coordinate and genbank and coordinate != genbank:
+                raise SystemExit(f'GenBank-direct sequence hashes differ in {reference_path}, row {line}')
+        elif source == 'MITOS2':
+            mitos=(row.get('mitos2_input_sequence_sha256') or '').strip()
+            if not coordinate or not mitos or coordinate != mitos:
+                raise SystemExit(f'MITOS2 annotation does not match coordinate FASTA sequence hash in {reference_path}, row {line}')
+
 def _diagnostics(paths,primate,human,report_overlaps=None):
     overlap=[]
     for table,index in [('source',primate),('human',human)]:
@@ -299,6 +338,7 @@ def main():
     strict_validation=bool(settings.get('strict_input_validation',True)); strict_status=_strict_setting(settings)
     refmode,primate,maps,human,map_stats=_load_inputs(paths,strict_validation); overlaps=_diagnostics(paths,primate,human,args.report_overlaps)
     if args.validate_inputs:
+        if refmode:validate_reference_provenance(cfg,paths,maps)
         print(f'reference annotations loaded: {primate.loaded}\nhuman annotations loaded: {human.loaded}\nunique source index positions: {len(primate)}\nunique human positions: {len(human)}')
         print(f"source overlapping-gene positions: {sum(x['table']=='source' for x in overlaps)}\nhuman overlapping-gene positions: {sum(x['table']=='human' for x in overlaps)}")
         print(f'duplicate rows removed: {sum(primate.duplicates.values())+sum(human.duplicates.values())}\nsamples mapped: {len(maps)}\nconflicting mappings: {map_stats.get("conflicting_mappings",0)}\ninconsistent ref_base_genome positions: 0')

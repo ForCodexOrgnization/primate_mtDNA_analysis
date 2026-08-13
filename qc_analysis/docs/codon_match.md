@@ -23,6 +23,11 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh codon_match_validate config/qc_
 
 ## Matching and overlaps
 
+Codon matching supports overlapping CDS genes: it evaluates every source × human
+annotation pair and requires matching gene, phase, and codon for a PASS. One valid
+pair is sufficient; deterministic legacy scalar fields do not constrain the
+all-candidate decision.
+
 Every CDS annotation at a position is retained, including ATP8/ATP6 and ND4L/ND4. Exact biological duplicate rows are removed before matching and reported through `MTCODON_DUPLICATE_ANNOTATIONS` and an optional duplicate diagnostics report. Overlap means **more than one unique nonempty gene**, not more than one raw row. Annotation counts and pair counts use deduplicated rows. Every source-human pair is evaluated and deterministic scoring/tie-breaking selects the representative.
 
 Alternate codons are constructed only for single-base A/C/G/T `SRC_REF` and `SRC_ALT`, a fully resolved A/C/G/T source codon, and a resolved matching `ref_base_genome` for that particular annotation. Minus-strand ALT is complemented. Genomic-orientation `SRC_REF` is compared directly (never complemented) with each annotation's `ref_base_genome`. A disagreement between two resolved bases is a confirmed `SOURCE_REF_MISMATCH`; an ambiguous genomic base makes the comparison unknown (`MTCODON_SOURCE_REF_MATCH=NA`) and the alternate codon `.` rather than inventing a base or reporting a mismatch. A candidate can pass only when its source reference base and both codons are resolved, its source reference agrees with `SRC_REF`, and gene, phase, and codon comparisons all match. Thus a resolved overlapping candidate can still pass when another annotation is ambiguous.
