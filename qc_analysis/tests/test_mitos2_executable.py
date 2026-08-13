@@ -218,7 +218,7 @@ def test_missing_chrm_reference_is_skipped_not_fallback_task_and_is_summarized(t
     assert summary['reference_pairing_status'] == 'no_chrM_pair'
 
 
-def test_collect_reference_separates_reference_and_sample_codon_counts(tmp_path, monkeypatch):
+def test_collect_reference_keeps_codon_rows_at_reference_level(tmp_path, monkeypatch):
     module = load_module()
     fasta = tmp_path / 'NC_002764.1.fa'
     fasta.write_text('>NC_002764.1\n' + 'ATG' * 10 + '\n')
@@ -241,12 +241,13 @@ def test_collect_reference_separates_reference_and_sample_codon_counts(tmp_path,
     assert result['status'] == 'completed'
     assert len(result['features']) == 1
     assert len(result['reference_codon_rows']) == 30
-    assert len(result['sample_codon_rows']) == 30
+    assert 'sample_codon_rows' not in result
     summary = result['summary_row']
     assert summary['n_cds_features'] == 1
     assert summary['n_linked_samples'] == 1
     assert summary['n_reference_coding_position_rows'] == 30
-    assert summary['n_sample_level_coding_position_rows'] == 30
+    assert summary['n_sample_level_coding_position_rows'] == 0
+    assert summary['n_coding_position_rows'] == 30
     assert summary['result_gff_exists'] is True
 
 
@@ -444,7 +445,7 @@ def test_different_sequences_always_have_different_biological_reference_keys():
     assert module.biological_reference_key('a' * 64) == first
 
 
-def test_merge_writes_reference_key_once_and_codon_sample_map(tmp_path, monkeypatch):
+def test_merge_writes_one_reference_copy_and_all_100_sample_mappings(tmp_path, monkeypatch):
     module = load_module()
     sha = 'a' * 64
     ref = {'task_key': module.task_key(sha), 'reference_key': module.biological_reference_key(sha),
@@ -452,10 +453,9 @@ def test_merge_writes_reference_key_once_and_codon_sample_map(tmp_path, monkeypa
            'coordinate_reference_accession': '', 'coordinate_reference_sequence_sha256': sha,
            'mitos2_input_sequence_sha256': sha}
     linked = [
-        {'sample': 'S1', 'species': 'One', 'coordinate_reference_fasta': '/refs/one.fa',
-         'coordinate_reference_accession': '', 'coordinate_reference_sequence_sha256': sha},
-        {'sample': 'S2', 'species': 'Two', 'coordinate_reference_fasta': '/refs/two.fa',
-         'coordinate_reference_accession': 'ACC.1', 'coordinate_reference_sequence_sha256': sha},
+        {'sample': f'S{i}', 'species': f'Species {i}', 'coordinate_reference_fasta': '/refs/a.fa',
+         'coordinate_reference_accession': 'ACC.1', 'coordinate_reference_sequence_sha256': sha}
+        for i in range(100)
     ]
     codon = {field: '' for field in module.REFERENCE_CODON_FIELDS}
     codon.update(reference_key=ref['reference_key'], reference_species='Reference', pos='1',
@@ -465,7 +465,7 @@ def test_merge_writes_reference_key_once_and_codon_sample_map(tmp_path, monkeypa
                  annotation_source='MITOS2', coordinate_reference_sequence_sha256=sha,
                  mitos2_input_sequence_sha256=sha)
     monkeypatch.setattr(module, 'collect_reference', lambda *args: {
-        'features': [], 'reference_codon_rows': [codon], 'sample_codon_rows': [],
+        'features': [], 'reference_codon_rows': [codon],
         'summary_row': {**ref, 'production_qc_status': 'PASS_PRODUCTION'},
     })
     paths = {name: str(tmp_path / name) for name in
@@ -478,9 +478,36 @@ def test_merge_writes_reference_key_once_and_codon_sample_map(tmp_path, monkeypa
     reference_rows = list(csv.DictReader(open(paths['mitos2_reference_cds_table']), delimiter='\t'))
     map_rows = list(csv.DictReader(open(paths['codon_sample_reference_map']), delimiter='\t'))
     assert len(reference_rows) == 1
+    assert len(map_rows) == 100
     assert reference_rows[0]['reference_key'] == ref['reference_key']
     assert {row['reference_key'] for row in map_rows} == {ref['reference_key']}
     assert set(map_rows[0]) == set(module.SAMPLE_REFERENCE_FIELDS)
+    assert not (tmp_path / 'all_mitos2_position_codon_table.tsv').exists()
+
+
+def test_merge_releases_each_reference_result_before_collecting_next(tmp_path, monkeypatch):
+    """The merge's live codon data is bounded to one collected reference."""
+    module = load_module()
+    live = {'count': 0, 'peak': 0}
+
+    class TrackedResult(dict):
+        def __init__(self, reference_key):
+            super().__init__(features=[], reference_codon_rows=[{'reference_key': reference_key}],
+                             summary_row={'reference_key': reference_key,
+                                          'production_qc_status': 'PASS_PRODUCTION'})
+            live['count'] += 1
+            live['peak'] = max(live['peak'], live['count'])
+
+        def __del__(self):
+            live['count'] -= 1
+
+    monkeypatch.setattr(module, 'collect_reference', lambda ref, *args: TrackedResult(ref['reference_key']))
+    refs = [({'reference_key': f'R{i}'}, []) for i in range(20)]
+    paths = {'output_dir': str(tmp_path), 'mitos2_reference_cds_table': str(tmp_path / 'reference.tsv'),
+             'codon_sample_reference_map': str(tmp_path / 'map.tsv'),
+             'mitos2_summary_table': str(tmp_path / 'summary.tsv')}
+    module.merge(paths, {}, refs)
+    assert live == {'count': 0, 'peak': 1}
 
 
 def test_failed_mitos2_reference_stays_in_generic_map_but_not_codon_map(tmp_path, monkeypatch):
@@ -502,7 +529,7 @@ def test_failed_mitos2_reference_stays_in_generic_map_but_not_codon_map(tmp_path
         'coordinate_reference_accession': '', 'coordinate_reference_sequence_sha256': sha,
     }]
     monkeypatch.setattr(module, 'collect_reference', lambda *args: {
-        'features': [], 'reference_codon_rows': [], 'sample_codon_rows': [],
+        'features': [], 'reference_codon_rows': [],
         'summary_row': {**ref, 'production_qc_status': 'FAIL_PRODUCTION'},
     })
     paths = {name: str(tmp_path / name) for name in

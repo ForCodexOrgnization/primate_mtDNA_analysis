@@ -42,9 +42,11 @@ python qc_analysis/scripts/run_mitos2_annotation.py \
   --force
 ```
 
-This writes `results/qc/mitos2_annotation/all_mitos2_features.tsv`,
-`results/qc/mitos2_annotation/all_mitos2_position_codon_table.tsv`, and
-`results/qc/mitos2_annotation/mitos2_annotation_summary.tsv`. A completed
+This writes `results/qc/mitos2_annotation/all_mitos2_reference_position_codon_table.tsv`,
+`results/qc/mitos2_annotation/codon_sample_reference_map.tsv`, and
+`results/qc/mitos2_annotation/mitos2_annotation_summary.tsv` (plus the compact
+feature diagnostic table). The merge streams one reference at a time and does
+not generate the legacy sample-expanded codon table. A completed
 Tarsius run contains approximately 13 CDS intervals and 11,000 coding-position
 rows.
 
