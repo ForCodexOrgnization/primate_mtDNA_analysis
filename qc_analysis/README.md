@@ -216,6 +216,12 @@ coordinates and source alleles are never used for PhyloTree matching. This is
 important when liftover has performed an `ALT_REF_FLIP` and transformed the
 allele-specific FORMAT values.
 
+The Human-contamination cohort is the set of successfully emitted lifted VCFs
+in `input_vcf_dir`. `sample_ref_file.tsv` supplies species labels only: rows
+without a lifted VCF are reported by input validation as out-of-scope, not as
+missing inputs, and a lifted sample absent from metadata is retained with an
+empty species label.
+
 The transparent baseline screen asks whether sufficiently deep, low-VAF
 primate variants are enriched for Human PhyloTree SNVs. The default low-VAF
 range is 0.01--0.50, with at least six denominator variants, six distinct

@@ -114,6 +114,31 @@ def find_vcf(directory: Path, pattern: str, sample: str) -> Path | None:
     return found[0] if found else None
 
 
+def discover_lifted_vcfs(directory: Path, pattern: str) -> dict[str, Path]:
+    """Discover the post-liftover cohort from outputs, not from metadata rows."""
+    if "{sample}" not in pattern:
+        raise ValueError("input_vcf_pattern must contain {sample}")
+    prefix, suffix = pattern.split("{sample}", 1)
+    discovered: dict[str, Path] = {}
+    if not directory.is_dir():
+        return discovered
+    # Accept the configured compression form and its conventional alternative.
+    suffixes = [suffix]
+    suffixes.append(suffix[:-3] if suffix.endswith(".gz") else suffix + ".gz")
+    for candidate_suffix in dict.fromkeys(suffixes):
+        for path in directory.glob(f"{prefix}*{candidate_suffix}"):
+            name = path.name
+            if not path.is_file() or not name.startswith(prefix) or not name.endswith(candidate_suffix):
+                continue
+            sample = name[len(prefix):len(name) - len(candidate_suffix) if candidate_suffix else None]
+            if not sample:
+                continue
+            if sample in discovered:
+                raise ValueError(f"ambiguous lifted VCF for {sample}: {discovered[sample]}, {path}")
+            discovered[sample] = path
+    return discovered
+
+
 def parse_number(value: str) -> float | None:
     try:
         number = float(value)
@@ -322,22 +347,25 @@ def main() -> int:
     paths=sec["paths"]; sample_file=resolve(paths["sample_ref_file"]); marker_file=resolve(paths["phylotree_marker_file"]); vcf_dir=resolve(paths["input_vcf_dir"]); out=resolve(paths["output_dir"])
     if not sample_file.is_file(): raise ValueError(f"sample metadata missing: {sample_file}")
     if not marker_file.is_file(): raise ValueError(f"PhyloTree marker file missing: {marker_file}")
-    samples=load_samples(sample_file); markers,marker_qc=load_markers(marker_file)
+    metadata=load_samples(sample_file); species_by_sample=dict(metadata); markers,marker_qc=load_markers(marker_file)
     marker_ref_qc=sec.get("marker_reference_qc", {})
     minimum=int(marker_ref_qc.get("min_expected_simple_snv_markers",100))
     marker_size_ok=len(markers)>=minimum
     if not marker_size_ok and not marker_ref_qc.get("allow_small_marker_reference",False):
         raise ValueError(f"PhyloTree marker reference has only {len(markers)} unique simple SNVs; expected at least {minimum} (set allow_small_marker_reference only for synthetic tests)")
-    vcfs={s:find_vcf(vcf_dir,paths["input_vcf_pattern"],s) if vcf_dir.is_dir() else None for s,_ in samples}
+    vcfs=discover_lifted_vcfs(vcf_dir,paths["input_vcf_pattern"])
+    samples=[(sample,species_by_sample.get(sample,"")) for sample in sorted(vcfs)]
+    metadata_out_of_scope=set(species_by_sample)-set(vcfs)
+    cohort_without_metadata=set(vcfs)-set(species_by_sample)
     hg=sec["haplogrep"]; tool,mode=haplogrep_tool(hg); available=tool is not None
     raw_marker=resolve(paths.get("phylotree_raw_marker_file","")) if paths.get("phylotree_raw_marker_file") else None
     configured_tool=str(hg.get("executable") or hg.get("jar") or "")
-    validation={"samples expected":len(samples),"lifted VCFs found":sum(v is not None for v in vcfs.values()),"lifted VCFs missing":sum(v is None for v in vcfs.values()),"raw PhyloTree marker file":str(raw_marker or "not configured"),"PhyloTree markers raw":marker_qc["raw"],"PhyloTree simple SNVs":len(markers),"PhyloTree back-mutation SNVs":sum(m["is_back_mutation"] for m in markers.values()),"PhyloTree duplicate POS/ALT removed":marker_qc["duplicates"],"PhyloTree excluded complex markers":marker_qc["excluded"],"marker reference passes minimum-size QC":boolean(marker_size_ok),"HaploGrep enabled":boolean(hg["enabled"]),"HaploGrep execution mode":mode,"HaploGrep executable/JAR path":configured_tool or "not configured","Java availability when required":boolean(mode != "jar" or available),"HaploGrep tool available":boolean(available),"tree configured":hg.get("tree", ""),"extend_report enabled":boolean(hg.get("extend_report",False))}
+    validation={"samples in Human contamination cohort":len(samples),"lifted VCFs found":len(vcfs),"metadata samples out-of-scope (no lifted VCF)":len(metadata_out_of_scope),"cohort samples without species metadata":len(cohort_without_metadata),"raw PhyloTree marker file":str(raw_marker or "not configured"),"PhyloTree markers raw":marker_qc["raw"],"PhyloTree simple SNVs":len(markers),"PhyloTree back-mutation SNVs":sum(m["is_back_mutation"] for m in markers.values()),"PhyloTree duplicate POS/ALT removed":marker_qc["duplicates"],"PhyloTree excluded complex markers":marker_qc["excluded"],"marker reference passes minimum-size QC":boolean(marker_size_ok),"HaploGrep enabled":boolean(hg["enabled"]),"HaploGrep execution mode":mode,"HaploGrep executable/JAR path":configured_tool or "not configured","Java availability when required":boolean(mode != "jar" or available),"HaploGrep tool available":boolean(available),"tree configured":hg.get("tree", ""),"extend_report enabled":boolean(hg.get("extend_report",False))}
     if args.validate_inputs:
         for k,v in validation.items(): print(f"{k}: {v}")
         if not vcf_dir.is_dir(): raise ValueError(f"input VCF directory missing: {vcf_dir}")
         if hg["enabled"] and hg["require_tool_when_enabled"] and not available: raise ValueError("HaploGrep enabled but configured tool is unavailable")
-        out.mkdir(parents=True,exist_ok=True); test=out/".write_test";test.write_text("");test.unlink(); return 0 if all(vcfs.values()) else 1
+        out.mkdir(parents=True,exist_ok=True); test=out/".write_test";test.write_text("");test.unlink(); return 0
     reports=out/"reports"
     if reports.exists() and any(reports.iterdir()) and not args.overwrite: raise ValueError(f"outputs already exist; use --overwrite: {reports}")
     if args.overwrite and out.exists(): shutil.rmtree(out)
