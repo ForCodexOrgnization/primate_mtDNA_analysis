@@ -30,6 +30,23 @@ def resolve_fastas(manifest, min_length=14000, max_length=19000):
         result[key]={"path":path,"target_sequence_id":target}
     return result
 
+def add_coordinate_fastas(result, samples, min_length=14000, max_length=19000):
+    """Add exact variant-calling FASTAs from the annotation-independent map."""
+    for row in samples:
+        key, path = row.get("reference_key"), row.get("coordinate_reference_fasta")
+        if not key or not path: continue
+        seqs=read_fasta(path)
+        if len(seqs) != 1:
+            raise ValueError(f"Reference {key}: coordinate FASTA must contain exactly one record: {path}")
+        length=len(next(iter(seqs.values())))
+        if not min_length <= length <= max_length:
+            raise ValueError(f"Reference {key}: mitochondrial length {length} outside [{min_length}, {max_length}]")
+        prior=result.get(key)
+        if prior and Path(prior["path"]).resolve() != Path(path).resolve():
+            raise ValueError(f"Reference {key}: conflicting coordinate FASTAs")
+        result[key]={"path":path,"target_sequence_id":None}
+    return result
+
 def valid(path, reference_key):
     p=Path(path)
     if not p.is_file() or p.stat().st_size==0:return False
@@ -49,7 +66,8 @@ def main():
     ap=argparse.ArgumentParser();ap.add_argument("--config",default="config/qc_preprocessing.yaml");ap.add_argument("--workers",type=int,default=1)
     ap.add_argument("--overwrite",action="store_true");ap.add_argument("--reference-key");ap.add_argument("--task-manifest");a=ap.parse_args()
     cfg=read_simple_yaml(Path(a.config));sec=cfg["trna_match"];p,s=sec["paths"],sec["settings"]
-    samples=table(p["sample_reference_map"]); fastas=resolve_fastas(p["reference_fasta_manifest"],int(s.get("min_mitochondrial_reference_length",14000)),int(s.get("max_mitochondrial_reference_length",19000)))
+    samples=table(p["sample_reference_map"]); minimum=int(s.get("min_mitochondrial_reference_length",14000)); maximum=int(s.get("max_mitochondrial_reference_length",19000))
+    fastas=add_coordinate_fastas(resolve_fastas(p["reference_fasta_manifest"],minimum,maximum),samples,minimum,maximum)
     keys=sorted({r["reference_key"] for r in samples if r.get("reference_key")})
     if a.reference_key: keys=[a.reference_key]
     outdir=Path(p["reference_trna_index_dir"]); reportdir=Path(p["index_build_reports_dir"]); scan=Path(p["trnascan_output_dir"])

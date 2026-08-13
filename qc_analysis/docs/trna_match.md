@@ -5,7 +5,7 @@
 ```text
 reference FASTA -> tRNAscan-SE -> .trnascan.out + .trnascan.ss
                 -> reference-level position index
-sample -> sample_reference_map.tsv -> reference_key -> position index
+sample -> sample_coordinate_reference_map.tsv -> reference_key -> tRNAscan-SE position index
 lifted/codon-annotated VCF + human/source indexes -> tRNA match VCF
 ```
 
