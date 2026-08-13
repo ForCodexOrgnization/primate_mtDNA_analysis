@@ -183,20 +183,35 @@ def haplogrep_tool(cfg: dict[str, Any]) -> tuple[list[str] | None, str]:
     return None, "unconfigured"
 
 
-def parse_haplogrep_output(path: Path) -> dict[str, Any]:
+def parse_haplogrep_output(path: Path, sample: str | None = None) -> dict[str, Any]:
     rows = []
     for delimiter in ("\t", ","):
         with path.open(encoding="utf-8", newline="") as handle:
             rows = list(csv.DictReader(handle, delimiter=delimiter))
         if rows and len(rows[0]) > 1: break
-    if not rows: return {}
-    row = rows[0]; norm = {re.sub(r"[^a-z0-9]", "", k.lower()): v for k, v in row.items()}
+    if not rows: raise ValueError("HaploGrep output has no data rows")
+    normalized = [{re.sub(r"[^a-z0-9]", "", str(k).lower()): v for k, v in r.items()} for r in rows]
+    sample_keys = ("sampleid", "sample", "id", "inputsample")
+    has_sample = any(any(k in r for k in sample_keys) for r in normalized)
+    if has_sample and sample is not None:
+        matches = [r for r in normalized if any(str(r.get(k, "")).strip() == sample for k in sample_keys)]
+        if len(matches) != 1:
+            raise ValueError(f"HaploGrep output expected exactly one row for sample {sample!r}, found {len(matches)}")
+        norm = matches[0]
+    elif len(normalized) == 1:
+        norm = normalized[0]
+    else:
+        raise ValueError("HaploGrep output has multiple rows but no usable sample identifier column")
     def get(*keys: str) -> str:
         return next((norm[k] for k in keys if norm.get(k) not in (None, "")), "")
     missing = get("missingpolys", "missingmarkers", "missing")
     private = get("privatepolys", "privatemarkers", "private")
-    return {"haplogrep_best_haplogroup": get("haplogroup", "besthaplogroup", "hg"),
-            "haplogrep_quality": parse_number(get("quality", "rankedquality", "score")),
+    haplogroup = get("haplogroup", "besthaplogroup", "besthaplogroupname", "hg")
+    quality = parse_number(get("quality", "rankedquality", "overallquality", "score"))
+    if not haplogroup or quality is None:
+        raise ValueError("HaploGrep output lacks a parseable haplogroup and/or numeric quality")
+    return {"haplogrep_best_haplogroup": haplogroup,
+            "haplogrep_quality": quality,
             "haplogrep_missing_markers": missing, "haplogrep_private_markers": private,
             "haplogrep_n_missing_markers": len([x for x in re.split(r"[,; ]+", missing) if x]),
             "haplogrep_n_private_markers": len([x for x in re.split(r"[,; ]+", private) if x])}
@@ -208,7 +223,8 @@ def analyze_sample(sample: str, species: str, path: Path | None, markers: dict, 
     if path:
         for v in parse_vcf(path):
             structural = v["pos"] is not None and len(v["ref"]) == len(v["alt"]) == 1 and v["ref"] in "ACGT" and v["alt"] in "ACGT" and "," not in v["alt"]
-            base_ok = structural and (not vf["pass_only"] or v["filter"] in {"PASS", "."}) and v["dp"] is not None and v["dp"] >= vf["dp_min"]
+            accepted_filter = v["filter"] == "PASS" or (vf.get("allow_dot_filter", False) and v["filter"] == ".")
+            base_ok = structural and (not vf["pass_only"] or accepted_filter) and v["dp"] is not None and v["dp"] >= vf["dp_min"]
             if base_ok and v["af"] is None: missing_af += 1
             if base_ok and v["af"] is not None and 0 <= v["af"] <= 1:
                 usable.append(v)
@@ -274,6 +290,31 @@ def write_tsv(path: Path, columns: list[str], rows: list[dict]) -> None:
         for row in rows: writer.writerow({k: ("NA" if v is None else boolean(v) if isinstance(v,bool) else v) for k,v in row.items()})
 
 
+def write_hsd(path: Path, sample: str, selected: list[tuple[tuple[int, str], dict]]) -> None:
+    """Write one headerless HaploGrep sample row with one mutation per field."""
+    mutations = [f"{pos}{alt}" for (pos, alt), _ in sorted(selected, key=lambda x: (x[0][0], x[0][1]))]
+    path.write_text("\t".join([sample, "1-16569", "?", *mutations]) + "\n", encoding="utf-8")
+
+
+def build_haplogrep_command(tool: list[str], cfg: dict[str, Any], profile: Path, output: Path) -> list[str]:
+    command = tool + ["classify", "--in", str(profile), "--out", str(output), "--tree", str(cfg["tree"])]
+    if cfg.get("extend_report", False):
+        command.append("--extend-report")
+    return command
+
+
+def apply_haplogrep_requirement(row: dict[str, Any], cfg: dict[str, Any]) -> None:
+    """Gate an otherwise biological FAIL only when explicitly requested."""
+    if not cfg.get("quality_required_for_fail", False) or row["human_contamination_status"] != "FAIL":
+        return
+    supportive = (row.get("haplogrep_status") == "COMPLETED" and
+                  row.get("haplogrep_quality") is not None and
+                  row["haplogrep_quality"] >= cfg["min_quality_for_support"])
+    if not supportive:
+        row["human_contamination_status"] = "CANDIDATE"
+        row["human_contamination_evidence"] += ";phylogenetic_support_unresolved"
+
+
 def main() -> int:
     ap=argparse.ArgumentParser(description=__doc__);ap.add_argument("--config",type=Path,required=True);ap.add_argument("--validate-inputs",action="store_true");ap.add_argument("--overwrite",action="store_true");args=ap.parse_args()
     config=read_simple_yaml(args.config); sec=config.get("human_contamination") or {}
@@ -282,9 +323,16 @@ def main() -> int:
     if not sample_file.is_file(): raise ValueError(f"sample metadata missing: {sample_file}")
     if not marker_file.is_file(): raise ValueError(f"PhyloTree marker file missing: {marker_file}")
     samples=load_samples(sample_file); markers,marker_qc=load_markers(marker_file)
+    marker_ref_qc=sec.get("marker_reference_qc", {})
+    minimum=int(marker_ref_qc.get("min_expected_simple_snv_markers",100))
+    marker_size_ok=len(markers)>=minimum
+    if not marker_size_ok and not marker_ref_qc.get("allow_small_marker_reference",False):
+        raise ValueError(f"PhyloTree marker reference has only {len(markers)} unique simple SNVs; expected at least {minimum} (set allow_small_marker_reference only for synthetic tests)")
     vcfs={s:find_vcf(vcf_dir,paths["input_vcf_pattern"],s) if vcf_dir.is_dir() else None for s,_ in samples}
     hg=sec["haplogrep"]; tool,mode=haplogrep_tool(hg); available=tool is not None
-    validation={"samples expected":len(samples),"lifted VCFs found":sum(v is not None for v in vcfs.values()),"lifted VCFs missing":sum(v is None for v in vcfs.values()),"PhyloTree markers raw":marker_qc["raw"],"PhyloTree simple SNVs":marker_qc["simple"],"PhyloTree back-mutation SNVs":marker_qc["back"],"PhyloTree duplicate POS/ALT removed":marker_qc["duplicates"],"HaploGrep enabled":boolean(hg["enabled"]),"HaploGrep executable mode":mode,"HaploGrep tool available":boolean(available)}
+    raw_marker=resolve(paths.get("phylotree_raw_marker_file","")) if paths.get("phylotree_raw_marker_file") else None
+    configured_tool=str(hg.get("executable") or hg.get("jar") or "")
+    validation={"samples expected":len(samples),"lifted VCFs found":sum(v is not None for v in vcfs.values()),"lifted VCFs missing":sum(v is None for v in vcfs.values()),"raw PhyloTree marker file":str(raw_marker or "not configured"),"PhyloTree markers raw":marker_qc["raw"],"PhyloTree simple SNVs":len(markers),"PhyloTree back-mutation SNVs":sum(m["is_back_mutation"] for m in markers.values()),"PhyloTree duplicate POS/ALT removed":marker_qc["duplicates"],"PhyloTree excluded complex markers":marker_qc["excluded"],"marker reference passes minimum-size QC":boolean(marker_size_ok),"HaploGrep enabled":boolean(hg["enabled"]),"HaploGrep execution mode":mode,"HaploGrep executable/JAR path":configured_tool or "not configured","Java availability when required":boolean(mode != "jar" or available),"HaploGrep tool available":boolean(available),"tree configured":hg.get("tree", ""),"extend_report enabled":boolean(hg.get("extend_report",False))}
     if args.validate_inputs:
         for k,v in validation.items(): print(f"{k}: {v}")
         if not vcf_dir.is_dir(): raise ValueError(f"input VCF directory missing: {vcf_dir}")
@@ -305,15 +353,20 @@ def main() -> int:
             if hg["require_tool_when_enabled"]: raise ValueError("HaploGrep tool unavailable")
         elif eligible:
             profile=input_dir/f"{sample}.human_contaminant.hsd"; audit_path=input_dir/f"{sample}.human_contaminant.audit.tsv"
-            profile.write_text("SampleID\tRange\tHaplogroup\tPolymorphisms\n"+f"{sample}\t1-16569\t?\t"+" ".join(f"{k[0]}{k[1]}" for k,_ in selected)+"\n")
+            write_hsd(profile,sample,selected)
             write_tsv(audit_path,["sample","human_pos","human_ref","human_alt","af","dp","ad","marker","is_back_mutation"],[dict(sample=sample,human_pos=k[0],human_ref=v["ref"],human_alt=k[1],af=v["af"],dp=v["dp"],ad=f'{v["ref_depth"]},{v["alt_depth"]}' if v["ref_depth"] is not None else "NA",marker=markers.get(k,{}).get("marker",f"{k[0]}{k[1]}"),is_back_mutation=markers.get(k,{}).get("is_back_mutation",False)) for k,v in selected])
-            raw=output_dir/f"{sample}.haplogrep.tsv"; command=tool+["classify","--in",str(profile),"--out",str(raw),"--tree",str(hg["tree"])]
+            raw=output_dir/f"{sample}.haplogrep.tsv"; command=build_haplogrep_command(tool,hg,profile,raw)
+            command_audit=output_dir/f"{sample}.command.json"
+            command_info={"sample":sample,"command":command,"tree":hg["tree"],"n_input_markers":n,"input_profile":str(profile),"output":str(raw)}
             try:
-                subprocess.run(command,check=True,capture_output=True,text=True); parsed=parse_haplogrep_output(raw);row.update(parsed);quality=parsed.get("haplogrep_quality");support="SUPPORTIVE" if quality is not None and quality>=hg["min_quality_for_support"] else "LOW_INFORMATION";row.update(haplogrep_status="COMPLETED",haplogrep_support_status=support)
-            except subprocess.CalledProcessError as exc:
-                (output_dir/f"{sample}.stderr.txt").write_text(exc.stderr or "");row.update(haplogrep_status="FAILED",haplogrep_support_status="LOW_INFORMATION")
+                completed=subprocess.run(command,check=True,capture_output=True,text=True); parsed=parse_haplogrep_output(raw,sample);row.update(parsed);quality=parsed.get("haplogrep_quality");support="SUPPORTIVE" if quality is not None and quality>=hg["min_quality_for_support"] else "LOW_INFORMATION";row.update(haplogrep_status="COMPLETED",haplogrep_support_status=support);command_info.update(return_code=completed.returncode,status="COMPLETED")
+            except (subprocess.CalledProcessError,ValueError,OSError) as exc:
+                diagnostic=getattr(exc,"stderr",None) or str(exc);(output_dir/f"{sample}.stderr.txt").write_text(diagnostic);row.update(haplogrep_status="FAILED",haplogrep_support_status="LOW_INFORMATION");command_info.update(return_code=getattr(exc,"returncode",None),status="FAILED",diagnostic=diagnostic)
+                if hg.get("require_tool_when_enabled",False): raise ValueError(f"HaploGrep failed for {sample}: {diagnostic}")
+            command_audit.write_text(json.dumps(command_info,indent=2)+"\n")
             if not hg["keep_input_files"]: profile.unlink(missing_ok=True);audit_path.unlink(missing_ok=True)
             if not hg["keep_raw_output"]: raw.unlink(missing_ok=True)
+        apply_haplogrep_requirement(row,hg)
         rows.append(row)
     write_tsv(reports/"human_contamination_report.tsv",REPORT_COLUMNS,rows)
     with gzip.open(reports/"human_marker_overlap_variants.tsv.gz","wt",encoding="utf-8",newline="") as handle:
@@ -321,7 +374,7 @@ def main() -> int:
         for r in audit:writer.writerow({k:boolean(v) if isinstance(v,bool) else "NA" if v is None else v for k,v in r.items()})
     metrics={"n_samples_total":len(rows),**{f"n_{s}":sum(r["human_contamination_status"]==s for r in rows) for s in ("PASS","CANDIDATE","FAIL","INSUFFICIENT_DATA")},"n_baseline_marker_screen_pass":sum(r["baseline_marker_screen_pass"] for r in rows),"n_vaf_coherence_pass":sum(r["vaf_coherence_pass"] for r in rows),"n_haplogrep_run":sum(r["haplogrep_status"]=="COMPLETED" for r in rows),"n_haplogrep_supportive":sum(r["haplogrep_support_status"] in {"SUPPORTIVE","HIGH_SUPPORT"} for r in rows),"n_haplogrep_low_information":sum(r["haplogrep_support_status"]=="LOW_INFORMATION" for r in rows)}
     with (reports/"human_contamination_summary.tsv").open("w",newline="") as h:w=csv.writer(h,delimiter="\t");w.writerow(("metric","value"));w.writerows(metrics.items());w.writerows((f"threshold.{section}.{k}",v) for section in ("variant_filters","marker_screen","vaf_coherence","control_region") for k,v in sec[section].items())
-    with (reports/"human_contamination_run_parameters.tsv").open("w",newline="") as h:w=csv.writer(h,delimiter="\t");w.writerow(("parameter","value"));w.writerow(("effective_config_json",json.dumps(sec,sort_keys=True,separators=(",",":"))));w.writerows((f"marker_qc.{k}",v) for k,v in marker_qc.items())
+    with (reports/"human_contamination_run_parameters.tsv").open("w",newline="") as h:w=csv.writer(h,delimiter="\t");w.writerow(("parameter","value"));w.writerow(("effective_config_json",json.dumps(sec,sort_keys=True,separators=(",",":"))));w.writerow(("phylotree_marker_version",marker_ref_qc.get("marker_version","")));w.writerow(("haplogrep_tree",hg.get("tree","")));w.writerows((f"marker_qc.{k}",v) for k,v in marker_qc.items())
     print(f"[human_contamination] samples={len(rows)} output={reports}");return 0
 
 if __name__=="__main__":

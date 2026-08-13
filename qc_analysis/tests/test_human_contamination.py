@@ -60,3 +60,44 @@ def test_back_mutation_exclusion_and_marker_only_profile(tmp_path):
     row,selected=mod.analyze_sample("s","sp",write_vcf(tmp_path,[(p,"G",.05) for p in positions]+[(1300,"T",.05)]),markers(positions,back=[700]),cfg,[])
     assert row["n_human_marker_hits"]==5
     assert all(k in markers(positions,back=[700]) for k,_ in selected) and len(selected)==6
+
+def test_hsd_is_headerless_tab_delimited_and_sorted(tmp_path):
+    path=tmp_path/"profile.hsd"
+    selected=[((263,"G"),{}),((73,"G"),{})]
+    mod.write_hsd(path,"Sample1",selected)
+    assert path.read_text()=="Sample1\t1-16569\t?\t73G\t263G\n"
+
+def test_haplogrep_commands_and_extend_report(tmp_path, monkeypatch):
+    profile,out=tmp_path/"in.hsd",tmp_path/"out.tsv"
+    cfg={"tree":"phylotree-rcrs@17.1","extend_report":True}
+    command=mod.build_haplogrep_command(["haplogrep3"],cfg,profile,out)
+    assert command[0]=="haplogrep3" and command[-1]=="--extend-report"
+    cfg["extend_report"]=False
+    assert "--extend-report" not in mod.build_haplogrep_command(["java","-Xmx4g","-jar","h.jar"],cfg,profile,out)
+
+def test_parser_selects_sample_and_rejects_malformed(tmp_path):
+    path=tmp_path/"extended.tsv"
+    path.write_text("Sample ID\tBest Haplogroup\tOverall Quality\tMissing Markers\tPrivate Polys\nother\tH\t0.1\t73G\t\ns1\tL3\t0.82\t73G;263G\t750G\n")
+    parsed=mod.parse_haplogrep_output(path,"s1")
+    assert parsed["haplogrep_best_haplogroup"]=="L3" and parsed["haplogrep_n_missing_markers"]==2
+    import pytest
+    with pytest.raises(ValueError): mod.parse_haplogrep_output(path,"absent")
+    path.write_text("foo\tbar\nx\ty\n")
+    with pytest.raises(ValueError): mod.parse_haplogrep_output(path,"s1")
+
+def test_quality_required_for_fail_is_explicit():
+    row={"human_contamination_status":"FAIL","human_contamination_evidence":"strict","haplogrep_status":"TOOL_UNAVAILABLE","haplogrep_quality":None}
+    mod.apply_haplogrep_requirement(row,{"quality_required_for_fail":False,"min_quality_for_support":.7})
+    assert row["human_contamination_status"]=="FAIL"
+    mod.apply_haplogrep_requirement(row,{"quality_required_for_fail":True,"min_quality_for_support":.7})
+    assert row["human_contamination_status"]=="CANDIDATE"
+    row={"human_contamination_status":"FAIL","human_contamination_evidence":"strict","haplogrep_status":"COMPLETED","haplogrep_quality":.8}
+    mod.apply_haplogrep_requirement(row,{"quality_required_for_fail":True,"min_quality_for_support":.7})
+    assert row["human_contamination_status"]=="FAIL"
+
+def test_dot_filter_requires_opt_in(tmp_path):
+    p=write_vcf(tmp_path,[(700,"G",.05)])
+    text=p.read_text().replace("\tPASS\t","\t.\t")
+    p.write_text(text)
+    row,_=mod.analyze_sample("s","sp",p,markers([700]),config(marker_screen={"min_low_variants_for_screen":1,"min_human_marker_hits":1,"min_fraction_low_variants_human_marker":1},control_region={"min_non_control_region_hits_for_fail":1}),[])
+    assert row["n_low_variants"]==0
