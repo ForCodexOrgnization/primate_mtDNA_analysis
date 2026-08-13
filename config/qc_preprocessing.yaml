@@ -279,7 +279,7 @@ human_contamination:
     enabled: true
     # An executable takes precedence over jar + java when both are configured.
     executable: ""
-    jar: /path/to/haplogrep3.jar
+    jar: /home/lt692/ycga_work/primate_run_manager/haplogrep3-3.3.2-linux/haplogrep3.jar
     java: java
     java_xmx: 4g
     tree: phylotree-rcrs@17.1
