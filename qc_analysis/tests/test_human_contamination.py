@@ -101,3 +101,18 @@ def test_dot_filter_requires_opt_in(tmp_path):
     p.write_text(text)
     row,_=mod.analyze_sample("s","sp",p,markers([700]),config(marker_screen={"min_low_variants_for_screen":1,"min_human_marker_hits":1,"min_fraction_low_variants_human_marker":1},control_region={"min_non_control_region_hits_for_fail":1}),[])
     assert row["n_low_variants"]==0
+
+def test_lifted_outputs_define_cohort_independent_of_metadata(tmp_path):
+    (tmp_path/"lifted").mkdir()
+    (tmp_path/"lifted"/"entered.lifted.raw.vcf").write_text("##fileformat=VCFv4.2\n")
+    (tmp_path/"lifted"/"entered2.lifted.raw.vcf.gz").write_bytes(b"")
+    found=mod.discover_lifted_vcfs(tmp_path/"lifted","{sample}.lifted.raw.vcf")
+    assert set(found)=={"entered","entered2"}
+    assert "metadata_only" not in found
+
+def test_lifted_cohort_rejects_ambiguous_compression(tmp_path):
+    import pytest
+    for suffix in (".vcf",".vcf.gz"):
+        (tmp_path/f"s.lifted.raw{suffix}").write_bytes(b"")
+    with pytest.raises(ValueError,match="ambiguous lifted VCF"):
+        mod.discover_lifted_vcfs(tmp_path,"{sample}.lifted.raw.vcf")
