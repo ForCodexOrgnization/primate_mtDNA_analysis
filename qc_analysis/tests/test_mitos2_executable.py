@@ -1,3 +1,4 @@
+import csv
 import importlib.util
 from pathlib import Path
 import pytest
@@ -443,7 +444,7 @@ def test_different_sequences_always_have_different_biological_reference_keys():
     assert module.biological_reference_key('a' * 64) == first
 
 
-def test_merge_writes_reference_key_once_and_mitos2_sample_map(tmp_path, monkeypatch):
+def test_merge_writes_reference_key_once_and_codon_sample_map(tmp_path, monkeypatch):
     module = load_module()
     sha = 'a' * 64
     ref = {'task_key': module.task_key(sha), 'reference_key': module.biological_reference_key(sha),
@@ -470,14 +471,43 @@ def test_merge_writes_reference_key_once_and_mitos2_sample_map(tmp_path, monkeyp
     paths = {name: str(tmp_path / name) for name in
              ('mitos2_feature_table', 'mitos2_cds_table', 'mitos2_summary_table')}
     paths.update(output_dir=str(tmp_path), mitos2_reference_cds_table=str(tmp_path / 'reference.tsv'),
-                 sample_reference_map=str(tmp_path / 'map.tsv'))
+                 codon_sample_reference_map=str(tmp_path / 'codon-map.tsv'))
     module.merge(paths, {}, [(ref, linked)])
 
     import csv
     reference_rows = list(csv.DictReader(open(paths['mitos2_reference_cds_table']), delimiter='\t'))
-    map_rows = list(csv.DictReader(open(paths['sample_reference_map']), delimiter='\t'))
+    map_rows = list(csv.DictReader(open(paths['codon_sample_reference_map']), delimiter='\t'))
     assert len(reference_rows) == 1
     assert reference_rows[0]['reference_key'] == ref['reference_key']
     assert {row['reference_key'] for row in map_rows} == {ref['reference_key']}
-    assert {row['annotation_source'] for row in map_rows} == {'MITOS2'}
-    assert all(row['status'] == 'PASS_PRODUCTION' for row in map_rows)
+    assert set(map_rows[0]) == set(module.SAMPLE_REFERENCE_FIELDS)
+
+
+def test_failed_mitos2_reference_stays_in_generic_map_but_not_codon_map(tmp_path, monkeypatch):
+    """MITOS2 codon failure must not make the reference ineligible for tRNAscan-SE."""
+    module = load_module()
+    sha = 'b' * 64
+    ref = {'task_key': module.task_key(sha), 'reference_key': module.biological_reference_key(sha),
+           'reference_species': 'Reference', 'coordinate_reference_fasta': '/refs/fail.fa',
+           'coordinate_reference_accession': '', 'coordinate_reference_sequence_sha256': sha,
+           'mitos2_input_sequence_sha256': sha}
+    linked = [{'sample': 'S-fail', 'species': 'Failed species',
+               'coordinate_reference_fasta': '/refs/fail.fa',
+               'coordinate_reference_accession': '',
+               'coordinate_reference_sequence_sha256': sha}]
+    generic = module.sample_reference_rows([(ref, linked)])
+    assert generic == [{
+        'sample': 'S-fail', 'species': 'Failed species', 'species_key': 'failed_species',
+        'reference_key': ref['reference_key'], 'coordinate_reference_fasta': '/refs/fail.fa',
+        'coordinate_reference_accession': '', 'coordinate_reference_sequence_sha256': sha,
+    }]
+    monkeypatch.setattr(module, 'collect_reference', lambda *args: {
+        'features': [], 'reference_codon_rows': [], 'sample_codon_rows': [],
+        'summary_row': {**ref, 'production_qc_status': 'FAIL_PRODUCTION'},
+    })
+    paths = {name: str(tmp_path / name) for name in
+             ('mitos2_feature_table', 'mitos2_cds_table', 'mitos2_summary_table')}
+    paths.update(output_dir=str(tmp_path), mitos2_reference_cds_table=str(tmp_path / 'reference.tsv'),
+                 codon_sample_reference_map=str(tmp_path / 'codon-map.tsv'))
+    module.merge(paths, {}, [(ref, linked)])
+    assert list(csv.DictReader(open(paths['codon_sample_reference_map']), delimiter='\t')) == []

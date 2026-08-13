@@ -3,7 +3,7 @@ import gzip
 from qc_analysis.scripts.build_trna_position_index import build
 from qc_analysis.lib.trnascan_utils import validate_trna_index
 import pytest
-from qc_analysis.scripts.build_all_trna_indexes import resolve_fastas, trna_chrom_normalization
+from qc_analysis.scripts.build_all_trna_indexes import add_coordinate_fastas, resolve_fastas, trna_chrom_normalization
 
 def test_existing_output_index_build(tmp_path):
     fasta=tmp_path/'r.fa';fasta.write_text('>chrM\nACGT\n')
@@ -35,3 +35,10 @@ def test_fasta_resolution_rejects_wg_and_ambiguous_multicontig(tmp_path):
     manifest.write_text(f'reference_key\tfasta_path\nR\t{wg}\n')
     with pytest.raises(ValueError,match='multi-contig'):
         resolve_fastas(manifest,1,10)
+
+def test_generic_map_keeps_reference_eligible_for_trnascan_without_codon_qc(tmp_path):
+    fasta=tmp_path/'failed-mitos2.fa'; fasta.write_text('>chrM\nACGT\n')
+    generic_rows=[{'sample':'S1','reference_key':'mtref_failed_codon_qc',
+                   'coordinate_reference_fasta':str(fasta)}]
+    resolved=add_coordinate_fastas({},generic_rows,1,10)
+    assert resolved['mtref_failed_codon_qc']['path']==str(fasta)

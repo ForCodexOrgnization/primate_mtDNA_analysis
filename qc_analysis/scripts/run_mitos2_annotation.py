@@ -12,7 +12,7 @@ REFERENCE_METADATA_FIELDS='target_species final_chrM_species final_chrM_accessio
 FEATURE_FIELDS=('reference_key reference_species coordinate_reference_accession coordinate_reference_fasta '+ ' '.join(REFERENCE_METADATA_FIELDS) +' feature_type gene gene_raw start end strand score source_file annotation_source').split()
 CODON_FIELDS=('file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS)).split()
 REFERENCE_CODON_FIELDS=('reference_key reference_species coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 pos ref_base_genome gene gene_raw strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic transl_table annotation_source file_name seq_name accession accession_version reference_id product protein_id codon_start_qualifier cds_tail_incomplete_bases mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS)).split()
-SAMPLE_REFERENCE_FIELDS='sample species species_key reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 status annotation_source'.split()
+SAMPLE_REFERENCE_FIELDS='sample species species_key reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256'.split()
 DEBUG_FIELDS='gff_seqid fasta_record_id fasta_length sequence_length original_gff_start original_gff_end canonical_start canonical_end circular_wrap_used wrapped_segment_count cds_length usable_cds_length n_codons n_position_rows status error gene gene_raw start end strand'.split()
 TASK_FIELDS=('task_id task_key reference_key reference_species coordinate_reference_accession coordinate_reference_fasta coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS) +' n_samples_using_reference status').split()
 SUMMARY_FIELDS=('task_key reference_key reference_species coordinate_reference_accession coordinate_reference_fasta coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS) +' status production_qc_status production_qc_reasons command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_linked_samples n_reference_coding_position_rows n_sample_level_coding_position_rows n_coding_position_rows n_output_files_scanned n_parseable_files result_gff_exists n_gff_gene_rows n_gff_cds_like_gene_rows n_gff_trna_rows n_gff_rrna_rows parser_status note').split()
@@ -346,6 +346,13 @@ def task_rows(refs, paths):
   marker=Path(paths['mitos2_raw_dir'])/ref['task_key']/'mitos2.completed.ok'
   rows.append({'task_id':task_id,**{k:ref[k] for k in TASK_FIELDS if k in ref},'n_samples_using_reference':len(linked),'status':'completed' if marker.exists() else ref.get('initial_status','pending')})
  return rows
+def sample_reference_rows(refs):
+ """Describe variant-calling coordinates without consulting annotation QC."""
+ return [{'sample':sample['sample'],'species':sample['species'],'species_key':sk(sample['species']),
+          'reference_key':ref['reference_key'],'coordinate_reference_fasta':sample['coordinate_reference_fasta'],
+          'coordinate_reference_accession':sample['coordinate_reference_accession'],
+          'coordinate_reference_sequence_sha256':sample['coordinate_reference_sequence_sha256']}
+         for ref,linked in refs for sample in linked]
 def merge(paths,settings,refs):
  results=[collect_reference(ref,linked,paths,settings) for ref,linked in refs]
  allf=[row for result in results for row in result['features']]
@@ -356,14 +363,14 @@ def merge(paths,settings,refs):
  mappings=[]
  for (ref,linked),result in zip(refs,results):
   passed=result['summary_row'].get('production_qc_status')=='PASS_PRODUCTION'
+  if not passed: continue
   for sample in linked:
    mappings.append({'sample':sample['sample'],'species':sample['species'],'species_key':sk(sample['species']),
     'reference_key':ref['reference_key'],'coordinate_reference_fasta':sample['coordinate_reference_fasta'],
     'coordinate_reference_accession':sample['coordinate_reference_accession'],
-    'coordinate_reference_sequence_sha256':sample['coordinate_reference_sequence_sha256'],
-    'status':'PASS_PRODUCTION' if passed else 'FAIL_PRODUCTION','annotation_source':'MITOS2'})
+    'coordinate_reference_sequence_sha256':sample['coordinate_reference_sequence_sha256']})
  write(paths['mitos2_feature_table'],FEATURE_FIELDS,allf);write(paths['mitos2_cds_table'],CODON_FIELDS,allc);write(reference_table,REFERENCE_CODON_FIELDS,allref);write(paths['mitos2_summary_table'],SUMMARY_FIELDS,summ)
- write(paths.get('sample_reference_map',str(Path(paths['output_dir'])/'sample_reference_map.tsv')),SAMPLE_REFERENCE_FIELDS,mappings)
+ write(paths.get('codon_sample_reference_map',str(Path(paths['output_dir'])/'codon_sample_reference_map.tsv')),SAMPLE_REFERENCE_FIELDS,mappings)
  print(f'Wrote {len(allf)} features and {len(allc)} sample-level coding rows.')
 def run_reference(ref,linked,paths,settings,a):
  """Execute one MITOS2 reference and always return its materialized result."""
@@ -412,6 +419,7 @@ def main():
  task_path=paths.get('mitos2_reference_tasks',str(Path(paths['output_dir'])/'mitos2_reference_tasks.tsv'))
  if a.prepare_tasks:
   tasks=task_rows(refs,paths);write(task_path,TASK_FIELDS,tasks)
+  write(paths['sample_coordinate_reference_map'],SAMPLE_REFERENCE_FIELDS,sample_reference_rows(refs))
   print(f'Wrote {len(tasks)} MITOS2 reference tasks to {task_path}.');return
  if a.merge_only:
   merge(paths,settings,refs);write(task_path,TASK_FIELDS,task_rows(refs,paths));return
