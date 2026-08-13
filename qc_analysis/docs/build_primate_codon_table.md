@@ -9,13 +9,12 @@ python qc_analysis/scripts/build_primate_codon_table.py --config config/qc_prepr
 bash qc_analysis/scripts/run_qc_preprocessing.sh build_primate_codon_table config/qc_preprocessing.yaml
 ```
 
-`codon_table_level: reference` is the default. In this mode the builder never
-loads `mitos2_cds_table`, which is a potentially multi-gigabyte sample-level
-artifact. MITOS2 fallback annotations come only from
+`codon_table_level: reference` is the production mode. The builder never needs
+a sample-expanded MITOS2 table; production MITOS2 merge no longer generates
+that legacy, potentially multi-gigabyte artifact. MITOS2 fallback annotations come only from
 `mitos2_reference_cds_table`, are grouped once by coordinate reference, and
 are written once per selected reference. `sample_reference_map.tsv` contains
-the per-sample association. Set `codon_table_level: sample` only for the
-explicit legacy workflow.
+the per-sample association.
 
 On the HPC, the preprocessing wrapper loads the Biopython module only for the
 `build_primate_codon_table` step. The default configuration uses:
