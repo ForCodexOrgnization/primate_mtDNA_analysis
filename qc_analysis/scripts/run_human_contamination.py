@@ -28,7 +28,10 @@ from qc_analysis.lib.simple_yaml import read_simple_yaml
 MARKER_RE = re.compile(r"^([0-9]+)([ACGT])(!?)$")
 REPORT_COLUMNS = """sample species human_contamination_status human_contamination_evidence
 n_usable_variants n_low_variants n_variants_missing_af n_human_marker_hits
-frac_low_variants_human_marker baseline_marker_screen_pass
+frac_low_variants_human_marker n_human_marker_hits_all n_human_marker_hits_background
+n_human_marker_hits_informative frac_low_variants_human_marker_all
+frac_low_variants_human_marker_background frac_low_variants_human_marker_informative
+baseline_marker_screen_pass
 n_human_marker_hits_control_region n_human_marker_hits_non_control_region
 frac_human_marker_hits_control_region non_control_marker_pass median_human_marker_af
 mean_human_marker_af min_human_marker_af max_human_marker_af human_marker_af_mad
@@ -41,7 +44,9 @@ haplogrep_support_status haplogrep_missing_markers haplogrep_private_markers
 haplogrep_n_missing_markers haplogrep_n_private_markers""".split()
 AUDIT_COLUMNS = """sample species human_chrom human_pos human_ref human_alt dp af
 af_source ref_depth alt_depth liftover_allele_status human_marker is_back_mutation
-in_control_region used_in_candidate_screen used_in_fail_screen used_in_haplogrep""".split()
+in_control_region used_in_candidate_screen used_in_fail_screen used_in_haplogrep
+primate_homo_background primate_background_level primate_background_frequency
+informative_human_marker""".split()
 
 
 def resolve(value: Any) -> Path:
@@ -242,7 +247,23 @@ def parse_haplogrep_output(path: Path, sample: str | None = None) -> dict[str, A
             "haplogrep_n_private_markers": len([x for x in re.split(r"[,; ]+", private) if x])}
 
 
-def analyze_sample(sample: str, species: str, path: Path | None, markers: dict, cfg: dict, audit: list) -> tuple[dict, list]:
+def load_primate_background(path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
+    """Load a global exact-allele (POS, REF, ALT) background index."""
+    if not path.is_file():
+        return {}
+    result = {}
+    with path.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            try:
+                key = (int(row["human_pos"]), row["human_ref"].upper(), row["human_alt"].upper())
+            except (KeyError, TypeError, ValueError):
+                continue
+            result[key] = row
+    return result
+
+
+def analyze_sample(sample: str, species: str, path: Path | None, markers: dict, cfg: dict, audit: list,
+                   primate_background: dict | None = None) -> tuple[dict, list]:
     vf, ms, vc, cr, hg = (cfg[x] for x in ("variant_filters", "marker_screen", "vaf_coherence", "control_region", "haplogrep"))
     usable, missing_af, low = [], 0, []
     if path:
@@ -262,6 +283,9 @@ def analyze_sample(sample: str, species: str, path: Path | None, markers: dict, 
     candidate_hits = [(k, v) for k, v in distinct.items() if ms["include_back_mutations_in_candidate_screen"] or not markers[k]["is_back_mutation"]]
     fail_hits = [(k, v) for k, v in distinct.items() if ms["include_back_mutations_in_fail_screen"] or not markers[k]["is_back_mutation"]]
     fraction = len(candidate_hits) / len(low) if low else None
+    background = primate_background or {}
+    background_hits = [(k, v) for k, v in candidate_hits if (v["pos"], v["ref"], v["alt"]) in background]
+    informative_hits = [(k, v) for k, v in candidate_hits if (v["pos"], v["ref"], v["alt"]) not in background]
     baseline = len(low) >= ms["min_low_variants_for_screen"] and len(candidate_hits) >= ms["min_human_marker_hits"] and fraction >= ms["min_fraction_low_variants_human_marker"]
     afs = [v["af"] for _, v in candidate_hits]; median = statistics.median(afs) if afs else None
     coherent_fraction = sum(abs(x - median) <= vc["tolerance"] for x in afs) / len(afs) if afs else None
@@ -284,6 +308,11 @@ def analyze_sample(sample: str, species: str, path: Path | None, markers: dict, 
     row.update(sample=sample, species=species, human_contamination_status=status, human_contamination_evidence=evidence,
                n_usable_variants=len(usable), n_low_variants=len(low), n_variants_missing_af=missing_af,
                n_human_marker_hits=len(candidate_hits), frac_low_variants_human_marker=fraction,
+               n_human_marker_hits_all=len(candidate_hits), n_human_marker_hits_background=len(background_hits),
+               n_human_marker_hits_informative=len(informative_hits),
+               frac_low_variants_human_marker_all=fraction,
+               frac_low_variants_human_marker_background=len(background_hits)/len(low) if low else None,
+               frac_low_variants_human_marker_informative=len(informative_hits)/len(low) if low else None,
                baseline_marker_screen_pass=baseline, n_human_marker_hits_control_region=n_control,
                n_human_marker_hits_non_control_region=n_noncontrol,
                frac_human_marker_hits_control_region=n_control/len(candidate_hits) if candidate_hits else None,
@@ -305,7 +334,8 @@ def analyze_sample(sample: str, species: str, path: Path | None, markers: dict, 
         selected = [((v["pos"],v["alt"]),v) for v in low if hg["input_vaf_min"] <= v["af"] <= hg["input_vaf_max"]]
     selected_keys = {k for k,_ in selected}; candidate_keys={k for k,_ in candidate_hits}; fail_keys={k for k,_ in fail_hits}
     for k, v in distinct.items():
-        m=markers[k]; audit.append(dict(sample=sample,species=species,human_chrom=v["chrom"],human_pos=v["pos"],human_ref=v["ref"],human_alt=v["alt"],dp=v["dp"],af=v["af"],af_source=v["af_source"],ref_depth=v["ref_depth"],alt_depth=v["alt_depth"],liftover_allele_status=v["liftover_allele_status"],human_marker=m["marker"],is_back_mutation=m["is_back_mutation"],in_control_region=in_cr(v["pos"]),used_in_candidate_screen=k in candidate_keys,used_in_fail_screen=k in fail_keys,used_in_haplogrep=k in selected_keys))
+        m=markers[k]; bg=background.get((v["pos"],v["ref"],v["alt"]));freq=parse_number((bg or {}).get("background_frequency",""))
+        audit.append(dict(sample=sample,species=species,human_chrom=v["chrom"],human_pos=v["pos"],human_ref=v["ref"],human_alt=v["alt"],dp=v["dp"],af=v["af"],af_source=v["af_source"],ref_depth=v["ref_depth"],alt_depth=v["alt_depth"],liftover_allele_status=v["liftover_allele_status"],human_marker=m["marker"],is_back_mutation=m["is_back_mutation"],in_control_region=in_cr(v["pos"]),used_in_candidate_screen=k in candidate_keys,used_in_fail_screen=k in fail_keys,used_in_haplogrep=k in selected_keys,primate_homo_background=bool(bg),primate_background_level="global" if bg else "none",primate_background_frequency=freq,informative_human_marker=not bool(bg)))
     return row, selected
 
 
@@ -348,6 +378,10 @@ def main() -> int:
     if not sample_file.is_file(): raise ValueError(f"sample metadata missing: {sample_file}")
     if not marker_file.is_file(): raise ValueError(f"PhyloTree marker file missing: {marker_file}")
     metadata=load_samples(sample_file); species_by_sample=dict(metadata); markers,marker_qc=load_markers(marker_file)
+    bgcfg=sec.get("primate_background") or {}; bg_enabled=bgcfg.get("enabled",False) is not False
+    bg_path=resolve(bgcfg.get("background_table","results/qc/primate_homo_background/primate_homo_marker_background.tsv"))
+    if bgcfg.get("mode","global") not in {"global","hierarchical"}: raise ValueError("primate background mode must be global or hierarchical")
+    background=load_primate_background(bg_path) if bg_enabled else {}
     marker_ref_qc=sec.get("marker_reference_qc", {})
     minimum=int(marker_ref_qc.get("min_expected_simple_snv_markers",100))
     marker_size_ok=len(markers)>=minimum
@@ -372,7 +406,7 @@ def main() -> int:
     reports.mkdir(parents=True); input_dir=resolve(hg["input_dir"]); output_dir=resolve(hg["output_dir"]);input_dir.mkdir(parents=True,exist_ok=True);output_dir.mkdir(parents=True,exist_ok=True)
     rows=[];audit=[]
     for sample,species in samples:
-        row,selected=analyze_sample(sample,species,vcfs[sample],markers,sec,audit); n=len(selected)
+        row,selected=analyze_sample(sample,species,vcfs[sample],markers,sec,audit,background); n=len(selected)
         row.update(haplogrep_status="NOT_RUN",haplogrep_support_status="NOT_RUN",haplogrep_n_input_markers=n,haplogrep_sparse_input=n<hg["sparse_input_marker_threshold"])
         mode_run=hg["run_mode"]; eligible=hg["enabled"] and mode_run!="disabled" and (mode_run=="all" or mode_run=="all_with_min_markers" and n>=hg["min_input_markers"] or mode_run=="candidate_only" and row["baseline_marker_screen_pass"])
         if eligible and n<hg["min_input_markers"]: row.update(haplogrep_status="INSUFFICIENT_MARKERS",haplogrep_support_status="INSUFFICIENT_MARKERS")
@@ -397,6 +431,7 @@ def main() -> int:
         apply_haplogrep_requirement(row,hg)
         rows.append(row)
     write_tsv(reports/"human_contamination_report.tsv",REPORT_COLUMNS,rows)
+    write_tsv(reports/"human_contamination_variant_audit.tsv",AUDIT_COLUMNS,audit)
     with gzip.open(reports/"human_marker_overlap_variants.tsv.gz","wt",encoding="utf-8",newline="") as handle:
         writer=csv.DictWriter(handle,fieldnames=AUDIT_COLUMNS,delimiter="\t");writer.writeheader()
         for r in audit:writer.writerow({k:boolean(v) if isinstance(v,bool) else "NA" if v is None else v for k,v in r.items()})

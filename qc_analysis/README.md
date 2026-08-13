@@ -277,3 +277,33 @@ Run directly or submit the singleton step:
 bash qc_analysis/scripts/run_qc_preprocessing.sh human_contamination config/qc_preprocessing.yaml
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit human_contamination config/qc_preprocessing.yaml
 ```
+
+## Non-destructive orthology and primate background workflow
+
+The post-liftover dependency order is:
+
+```
+coordinate_liftover
+  -> MITOS2/reference preparation
+  -> codon_match -> trna_match -> rrna_match
+  -> build_primate_homo_background
+  -> human_contamination
+  -> interspecies contamination report (when configured)
+  -> final_filter
+```
+
+Codon/tRNA/rRNA matching generates QC annotations and reports; variants are not
+removed until `final_filter`. The fully annotated, unfiltered input is
+`results/qc/rrna_match/vcf_rrna/{sample}.lifted.codon.trna.rrna.vcf`.
+`build_primate_homo_background` consolidates those existing annotations into
+`orthology_match_report.tsv`; it does not replace or rewrite the VCF.
+
+The primate homoplasmic background is an intermediate calibration dataset used
+to distinguish recurrent/evolutionary primate alleles from more informative
+Human PhyloTree marker hits. By default it contains exact post-liftover
+`human_pos + human_ref + human_alt` SNVs with VCF `FILTER=PASS`, DP >= 100,
+AF >= 0.95, and orthology status `PASS`. It does not read Human or interspecies
+contamination status and is never a final-output VCF source. Human QC retains
+its historical all-marker screen and reports background and informative subsets;
+the new corrected metrics do not affect classification by default. HaploGrep
+remains supplementary (`quality_required_for_fail: false`).

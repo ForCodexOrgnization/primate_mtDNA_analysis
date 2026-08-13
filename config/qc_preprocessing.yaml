@@ -85,7 +85,12 @@ final_filter:
       path: results/qc/interspecies_contamination/reports/interspecies_contamination_report.tsv
     sample_qc:
       path: results/qc/sample_variant_filtering/reports/sample_qc.tsv
-  variant_reports: {}
+  variant_reports:
+    orthology:
+      path: results/qc/orthology_match/reports/orthology_match_report.tsv
+      coordinate_system: human
+      status_columns: orthology_match_status
+      fail_status: FAIL
 
 collect_variant_calling:
   # Aggregated run-manager result root. receipts/ and all unrelated directories
@@ -236,12 +241,31 @@ coordinate_liftover:
   #     cov: /path/to/sample.coverage.tsv
   samples_by_name: {}
 
-# Human-marker screening is deliberately downstream of coordinate liftover.
+# Non-destructive consolidation of existing codon/tRNA/rRNA annotations. This
+# step does not consume Human or inter-species contamination reports.
+primate_homo_background:
+  enabled: true
+  paths:
+    input_vcf_dir: results/qc/rrna_match/vcf_rrna
+    input_vcf_pattern: "{sample}.lifted.codon.trna.rrna.vcf"
+    sample_ref_file: config/sample_ref_file.tsv
+    orthology_reports_dir: results/qc/orthology_match/reports
+    output_dir: results/qc/primate_homo_background
+    human_marker_table: data/reference_tables/human_phylotree_rcrs_v17.1_snv.tsv
+  settings:
+    homoplasmy_af_min: 0.95
+    dp_min: 100
+    pass_only: true
+    snv_only: true
+    accepted_orthology_statuses: PASS
+    human_marker_reference_version: rcrs-v17.1
+
+# Human-marker screening is downstream of orthology annotation/background construction.
 human_contamination:
   enabled: true
   paths:
-    input_vcf_dir: results/qc/coordinate_liftover/vcf_lifted_raw
-    input_vcf_pattern: "{sample}.lifted.raw.vcf"
+    input_vcf_dir: results/qc/rrna_match/vcf_rrna
+    input_vcf_pattern: "{sample}.lifted.codon.trna.rrna.vcf"
     sample_ref_file: config/sample_ref_file.tsv
     phylotree_raw_marker_file: data/reference_tables/haplogrep-rcrs-v17.1_uniq_SNP.txt
     phylotree_marker_file: data/reference_tables/human_phylotree_rcrs_v17.1_snv.tsv
@@ -257,6 +281,18 @@ human_contamination:
     snv_only: true
     low_vaf_min: 0.01
     low_vaf_max: 0.50
+  primate_background:
+    enabled: true
+    background_table: results/qc/primate_homo_background/primate_homo_marker_background.tsv
+    species_background_table: results/qc/primate_homo_background/species_marker_background.tsv
+    mode: global
+    species_min_samples: 10
+    genus_min_samples: 10
+    family_min_samples: 20
+  background_corrected_screen:
+    enabled_for_classification: false
+    min_informative_hits: null
+    min_informative_fraction: null
   marker_screen:
     min_low_variants_for_screen: 6
     min_human_marker_hits: 6
