@@ -30,7 +30,7 @@ except ImportError:  # checked in main so importing helpers remains possible in 
 OUTPUT_FIELDS = "reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 genbank_record_sequence_sha256 genbank_record_length mitos2_input_sequence_sha256 file_name seq_name accession accession_version reference_id pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used".split()
 LEGACY_OUTPUT_FIELDS = ['sample', 'species', *OUTPUT_FIELDS]
 SAMPLE_REFERENCE_MAP_FIELDS = "sample species species_key reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 status annotation_source".split()
-SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path accession_record genbank_file sequence_compatibility coordinate_reference_length genbank_record_length coordinate_reference_sequence_sha256 genbank_record_sequence_sha256 genbank_direct_annotation_allowed fallback_reason annotation_source n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
+SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path coordinate_fasta_resolution_source original_manifest_fasta_path selected_coordinate_reference_fasta stale_manifest_fasta_path accession_record genbank_file sequence_compatibility coordinate_reference_length genbank_record_length coordinate_reference_sequence_sha256 genbank_record_sequence_sha256 genbank_direct_annotation_allowed fallback_reason annotation_source n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
 FAIL_FIELDS = "sample species accession_query reason".split()
 MITOS2_FALLBACK_SELECTION_FIELDS = "sample species accession coordinate_reference_fasta coordinate_reference_accession original_sample_fasta canonical_sample_fasta original_mitos2_fasta canonical_mitos2_fasta fasta_match group_row_count normalized_gene_count has_all_13_protein_coding_genes coding_row_count_in_expected_range fallback_match_mode n_candidate_rows n_selected_rows_before_dedup n_selected_rows_after_dedup n_duplicate_rows_collapsed n_candidate_reference_groups selected_reference_group selection_status rejection_reason note".split()
 MITOS2_NUMERIC_FIELDS = ('pos', 'codon_index', 'codon_pos_in_triplet', 'codon_pos1_genomic', 'codon_pos2_genomic', 'codon_pos3_genomic')
@@ -75,8 +75,11 @@ def fasta_sequence(path):
     if not path.is_file():
         return ''
     opener = gzip.open if path.name.endswith('.gz') else open
-    with opener(path, 'rt') as handle:
-        return ''.join(''.join(line.split()) for line in handle if not line.startswith('>')).upper()
+    try:
+        with opener(path, 'rt') as handle:
+            return ''.join(''.join(line.split()) for line in handle if not line.startswith('>')).upper()
+    except (OSError, UnicodeError):
+        return ''
 
 def reverse_complement(sequence):
     return sequence.translate(str.maketrans('ACGTRYMKBDHVN', 'TGCAYRKMVHDBN'))[::-1]
@@ -237,6 +240,69 @@ def find_species_fasta(species, fasta_dir, extensions, fasta_index=None):
         if species_key(name) == target:
             return path
     return None
+
+def _fasta_candidates(fasta_dir, extensions):
+    directory = Path(fasta_dir)
+    if not directory.is_dir():
+        return []
+    suffixes = tuple(item.strip() for item in str(extensions).split(',') if item.strip())
+    return [path for path in sorted(directory.iterdir())
+            if path.is_file() and path.name.endswith(suffixes) and fasta_sequence(path)]
+
+def _fasta_header(path):
+    opener = gzip.open if path.name.endswith('.gz') else open
+    try:
+        with opener(path, 'rt') as handle:
+            return next((line[1:].strip() for line in handle if line.startswith('>')), '')
+    except (OSError, UnicodeError):
+        return ''
+
+def resolve_coordinate_fasta(metadata, manifest_fasta, accession, paths, settings):
+    """Select a readable, current coordinate FASTA without hiding ambiguity."""
+    original_manifest = manifest_fasta or ''
+    manifest_path = canonical_path(original_manifest, repo_root)
+    if manifest_path and fasta_sequence(manifest_path):
+        return manifest_path, 'manifest_existing', 'no', [], ''
+
+    stale = 'yes' if original_manifest else 'no'
+    # An explicitly supplied sample path is useful when no manifest materialization
+    # exists, but it is subject to the same readable-sequence requirement.
+    explicit = next((value(metadata, key) for key in
+                     ('coordinate_reference_fasta', 'species_fasta_path', 'fasta_path')
+                     if value(metadata, key)), '')
+    explicit_path = canonical_path(explicit, repo_root)
+    if explicit_path and fasta_sequence(explicit_path):
+        return explicit_path, 'metadata_explicit', stale, [], ''
+
+    extensions = paths.get('species_fasta_extensions', '.fa,.fasta,.fna,.fa.gz,.fasta.gz,.fna.gz')
+    candidates = _fasta_candidates(paths.get('species_fasta_dir', ''), extensions)
+    accession = (accession or '').strip()
+    if accession:
+        token = re.compile(r'(?<![A-Za-z0-9])' + re.escape(accession) + r'(?![A-Za-z0-9])', re.I)
+        exact = [path for path in candidates if token.search(path.name) or token.search(_fasta_header(path))]
+        if len(exact) == 1:
+            return str(exact[0].resolve()), 'variant_calling_ref_dir', stale, exact, ''
+        if len(exact) > 1:
+            listed = ', '.join(str(path.resolve()) for path in exact)
+            return '', 'unresolved', stale, exact, f'Ambiguous coordinate FASTA accession match {accession}: {listed}'
+
+    target = species_key(value(metadata, 'species'))
+    species_matches = []
+    for path in candidates:
+        stem = path.name
+        for extension in sorted((item.strip() for item in str(extensions).split(',') if item.strip()), key=len, reverse=True):
+            if stem.endswith(extension):
+                stem = stem[:-len(extension)]
+                break
+        header_key = species_key(_fasta_header(path))
+        if target and (species_key(stem) == target or target in header_key):
+            species_matches.append(path)
+    if len(species_matches) == 1:
+        return str(species_matches[0].resolve()), 'variant_calling_ref_dir', stale, species_matches, ''
+    if len(species_matches) > 1:
+        listed = ', '.join(str(path.resolve()) for path in species_matches)
+        return '', 'unresolved', stale, species_matches, f'Ambiguous coordinate FASTA species match {metadata["species"]}: {listed}'
+    return '', 'unresolved', stale, [], ''
 
 def fasta_accession(path, regex):
     pattern = re.compile(regex)
@@ -604,21 +670,29 @@ def prepare_sample(order_metadata, context):
     metadata = dict(raw_metadata); metadata['sample'] = value(metadata, sample_col); metadata['species'] = value(metadata, species_col)
     accession, source, accession_note, manifest_file, matched_species, fasta_path = resolve_accession(metadata, columns, manifests, settings, paths, fasta_index)
     manifest_fasta, manifest_accession, _ = manifest_coordinate_reference(metadata, manifest_file, manifests, settings)
-    if manifest_fasta: fasta_path = manifest_fasta
     if manifest_accession: accession = manifest_accession
     metadata['accession_query'] = accession
-    coordinate = fasta_path or str(find_species_fasta(metadata['species'], paths.get('species_fasta_dir', ''), paths.get('species_fasta_extensions', '.fa,.fasta,.fna'), fasta_index) or '')
+    coordinate, resolution_source, stale_manifest, _, resolution_error = resolve_coordinate_fasta(
+        metadata, manifest_fasta, accession, paths, settings)
+    # Preserve a FASTA discovered while inferring the accession as explicit input.
+    if not coordinate and fasta_path and fasta_sequence(canonical_path(fasta_path, repo_root)):
+        coordinate, resolution_source = canonical_path(fasta_path, repo_root), 'metadata_explicit'
     metadata['coordinate_reference_fasta'] = coordinate; metadata['coordinate_reference_accession'] = accession
     metadata['_canonical_coordinate_reference_fasta'] = canonical_path(coordinate, repo_root)
     metadata['coordinate_reference_sequence_sha256'] = fasta_sequence_sha256(metadata['_canonical_coordinate_reference_fasta'])
     metadata['reference_key'] = make_reference_key(metadata['_canonical_coordinate_reference_fasta'], accession, metadata['coordinate_reference_sequence_sha256'])
-    original_species_fasta = fasta_path or coordinate
+    original_species_fasta = coordinate
     coordinate_sequence = fasta_sequence(metadata['_canonical_coordinate_reference_fasta'])
-    base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'accession_source':source, 'accession_note':accession_note, 'manifest_file':manifest_file, 'matched_manifest_species':matched_species, 'species_fasta_path':original_species_fasta, '_canonical_species_fasta_path':canonical_path(original_species_fasta, repo_root), 'accession_record':'', 'genbank_file':'', 'sequence_compatibility':'missing_coordinate_fasta' if not coordinate_sequence else '', 'coordinate_reference_length':len(coordinate_sequence) if coordinate_sequence else '', 'genbank_record_length':'', 'coordinate_reference_sequence_sha256':metadata['coordinate_reference_sequence_sha256'], 'genbank_record_sequence_sha256':'', 'genbank_direct_annotation_allowed':'no', 'fallback_reason':'genbank_not_coordinate_compatible' if not coordinate_sequence else '', 'annotation_source':'', 'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'', 'max_pos':'', 'status':'failed', 'note':''}
+    base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'accession_source':source, 'accession_note':accession_note, 'manifest_file':manifest_file, 'matched_manifest_species':matched_species, 'species_fasta_path':original_species_fasta, '_canonical_species_fasta_path':canonical_path(original_species_fasta, repo_root), 'coordinate_fasta_resolution_source':resolution_source, 'original_manifest_fasta_path':manifest_fasta, 'selected_coordinate_reference_fasta':metadata['_canonical_coordinate_reference_fasta'], 'stale_manifest_fasta_path':stale_manifest, 'accession_record':'', 'genbank_file':'', 'sequence_compatibility':'missing_coordinate_fasta' if not coordinate_sequence else '', 'coordinate_reference_length':len(coordinate_sequence) if coordinate_sequence else '', 'genbank_record_length':'', 'coordinate_reference_sequence_sha256':metadata['coordinate_reference_sequence_sha256'], 'genbank_record_sequence_sha256':'', 'genbank_direct_annotation_allowed':'no', 'fallback_reason':'genbank_not_coordinate_compatible' if not coordinate_sequence else '', 'annotation_source':'', 'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'', 'max_pos':'', 'status':'failed', 'note':resolution_error}
     if not accession:
         reason = 'No accession found from sample_ref_file, reference manifest, or FASTA.'
         base['note'] = reason; base['status'] = 'dry_run_unresolved' if dry_run else 'failed'
         return SampleResult(metadata['sample'], order, metadata, [], base, {**base, 'reason':reason}, accession, '', base['status'], reason)
+    if resolution_error:
+        base['status'] = 'dry_run_unresolved' if dry_run else 'failed'
+        return SampleResult(metadata['sample'], order, metadata, [], base,
+                            {**base, 'reason': resolution_error}, accession, '',
+                            base['status'], resolution_error)
     gb = Path(paths['genbank_dir']) / safe_filename(accession); base['genbank_file'] = str(gb)
     return SampleResult(metadata['sample'], order, metadata, [], base, None, accession, str(gb), 'prepared')
 

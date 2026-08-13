@@ -257,6 +257,50 @@ class BuildPrimateCodonTableParallelHelperTests(unittest.TestCase):
             self.module.resolve_workers('zero', {}, 'workers')
         self.assertIn('positive integer', str(error.exception))
 
+    def test_coordinate_fasta_resolution_manifest_fallback_priority_and_ambiguity(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td)
+            manifest = directory / 'historical.fa'
+            manifest.write_text('>OLD.1\nAAAA\n')
+            ref_dir = directory / 'Ref_chrM'; ref_dir.mkdir()
+            accession_fasta = ref_dir / 'current.fa'
+            accession_fasta.write_text('>NC_024630.1 Macaca mulatta\nACGTAC\n')
+            species_fasta = ref_dir / 'Macaca_mulatta.fa'
+            species_fasta.write_text('>Macaca mulatta\nTTTT\n')
+            paths = {'species_fasta_dir': str(ref_dir), 'species_fasta_extensions': '.fa'}
+            metadata = {'species': 'Macaca mulatta'}
+
+            selected = self.module.resolve_coordinate_fasta(metadata, str(manifest), 'NC_024630.1', paths, {})
+            self.assertEqual((selected[0], selected[1], selected[2]),
+                             (str(manifest.resolve()), 'manifest_existing', 'no'))
+
+            manifest.unlink()
+            selected = self.module.resolve_coordinate_fasta(metadata, str(manifest), 'NC_024630.1', paths, {})
+            self.assertEqual(selected[0], str(accession_fasta.resolve()))
+            self.assertEqual((selected[1], selected[2], selected[4]),
+                             ('variant_calling_ref_dir', 'yes', ''))
+            sequence_hash = self.module.fasta_sequence_sha256(selected[0])
+            key = self.module.make_reference_key(selected[0], 'NC_024630.1', sequence_hash)
+            self.assertIn(f'sequence_sha256={sequence_hash}', key)
+
+            duplicate = ref_dir / 'NC_024630.1.fa'
+            duplicate.write_text('>NC_024630.1 duplicate\nACGTAC\n')
+            ambiguous = self.module.resolve_coordinate_fasta(metadata, str(manifest), 'NC_024630.1', paths, {})
+            self.assertEqual(ambiguous[0:2], ('', 'unresolved'))
+            self.assertIn(str(accession_fasta.resolve()), ambiguous[4])
+            self.assertIn(str(duplicate.resolve()), ambiguous[4])
+
+    def test_coordinate_fasta_resolution_missing_everywhere(self):
+        with tempfile.TemporaryDirectory() as td:
+            selected = self.module.resolve_coordinate_fasta(
+                {'species': 'Absent species'}, str(Path(td) / 'old.fa'), 'ABSENT.1',
+                {'species_fasta_dir': str(Path(td) / 'Ref_chrM'),
+                 'species_fasta_extensions': '.fa'}, {})
+            self.assertEqual((selected[0], selected[1], selected[2], selected[4]),
+                             ('', 'unresolved', 'yes', ''))
+            self.assertEqual(self.module.classify_sequence_compatibility('', 'ACGT'),
+                             'missing_coordinate_fasta')
+
     def test_coordinate_sequence_compatibility_categories_are_conservative(self):
         classify = self.module.classify_sequence_compatibility
         self.assertEqual(classify('AACCGGTT', 'AACCGGTT'), 'exact')
