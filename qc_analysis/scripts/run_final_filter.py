@@ -89,6 +89,7 @@ def main():
      reasons.extend("sample_qc:"+x for x in failed.split(";") if x)
     else:reasons.append(n+":"+v)
    elif n=="intraspecies" and (v.startswith("insufficient_") or v=="candidate_contaminated"):warnings.append(n+":"+v)
+   elif n=="human" and v.upper() in {"CANDIDATE","INSUFFICIENT_DATA"}:warnings.append(n+":"+v)
    elif v=="NOT_AVAILABLE" and n in required:reasons.append(n+":missing")
   src=next((x for _,d,p in vcf_sources if (x:=find_vcf(d,sample,p))),None)
   if not reasons and src is None:reasons.append("vcf:missing_downstream_source")

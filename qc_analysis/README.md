@@ -208,3 +208,42 @@ Candidate/insufficient contamination results remain warnings. VCFs are selected
 in deterministic priority order: rRNA, tRNA, codon, then raw coordinate
 liftover. There is intentionally no original-coordinate collection fallback.
 Final VCFs are BGZF compressed and tabix indexed (pysam or bgzip+tabix required).
+# Human mtDNA contamination QC
+
+`run_human_contamination.py` runs immediately after coordinate liftover. It
+matches only the canonical post-liftover Human rCRS `POS + ALT` allele; source
+coordinates and source alleles are never used for PhyloTree matching. This is
+important when liftover has performed an `ALT_REF_FLIP` and transformed the
+allele-specific FORMAT values.
+
+The transparent baseline screen asks whether sufficiently deep, low-VAF
+primate variants are enriched for Human PhyloTree SNVs. The default low-VAF
+range is 0.01--0.50, with at least six denominator variants, six distinct
+marker hits, and a marker fraction of at least 0.60. A strict `FAIL` additionally
+requires at least 70% of marker AFs to lie within 0.03 of their median and at
+least three eligible non-control-region hits. A baseline-positive sample that
+lacks strict support is a `CANDIDATE`; fewer than six low-VAF variants is
+`INSUFFICIENT_DATA`, not `PASS`.
+
+HaploGrep 3 is optional supplementary phylogenetic characterization. It is
+given a synthetic profile containing only selected, deep, low-VAF Human-marker
+alleles—never the complete primate VCF. An explicitly configured wrapper
+executable takes precedence over `jar + java`. Missing tools are reported as
+`TOOL_UNAVAILABLE` unless strict tool availability is requested. HaploGrep
+quality is not a probability and is not required for `FAIL`: low quality can
+reflect a sparse contaminant profile with too few downstream markers for a
+fine-scale assignment.
+
+Validate configuration and inputs without analysis:
+
+```bash
+python3 qc_analysis/scripts/run_human_contamination.py \
+  --config config/qc_preprocessing.yaml --validate-inputs
+```
+
+Run directly or submit the singleton step:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh human_contamination config/qc_preprocessing.yaml
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit human_contamination config/qc_preprocessing.yaml
+```

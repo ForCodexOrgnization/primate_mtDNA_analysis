@@ -52,8 +52,8 @@ final_filter:
   enabled: true
   collected_dir: results/qc/collected_variant_calling_results
   output_dir: results/qc/final_filter
-  required_sample_reports: intraspecies,sample_qc
-  optional_sample_reports: human,interspecies
+  required_sample_reports: intraspecies,human,sample_qc
+  optional_sample_reports: interspecies
   strict_missing_samples: true
   # Priority-ordered exact filenames. Directory-only comma-separated values
   # remain accepted, but are resolved against known exact suffixes (never globs).
@@ -235,6 +235,62 @@ coordinate_liftover:
   #     vcf: /path/to/sample.vcf.gz
   #     cov: /path/to/sample.coverage.tsv
   samples_by_name: {}
+
+# Human-marker screening is deliberately downstream of coordinate liftover.
+human_contamination:
+  enabled: true
+  paths:
+    input_vcf_dir: results/qc/coordinate_liftover/vcf_lifted_raw
+    input_vcf_pattern: "{sample}.lifted.raw.vcf"
+    sample_ref_file: config/sample_ref_file.tsv
+    phylotree_marker_file: data/reference_tables/human_phylotree_rcrs_v17.1_snv.tsv
+    output_dir: results/qc/human_contamination
+  variant_filters:
+    dp_min: 100
+    pass_only: true
+    snv_only: true
+    low_vaf_min: 0.01
+    low_vaf_max: 0.50
+  marker_screen:
+    min_low_variants_for_screen: 6
+    min_human_marker_hits: 6
+    min_fraction_low_variants_human_marker: 0.60
+    include_back_mutations_in_candidate_screen: true
+    include_back_mutations_in_fail_screen: false
+  vaf_coherence:
+    enabled: true
+    tolerance: 0.03
+    min_fraction_markers_coherent: 0.70
+  control_region:
+    start: 16000
+    end: 576
+    min_non_control_region_hits_for_fail: 3
+  classification:
+    require_baseline_marker_screen_for_fail: true
+    require_vaf_coherence_for_fail: true
+    require_non_control_markers_for_fail: true
+  haplogrep:
+    enabled: true
+    # An executable takes precedence over jar + java when both are configured.
+    executable: ""
+    jar: /path/to/haplogrep3.jar
+    java: java
+    java_xmx: 4g
+    tree: phylotree-rcrs@17.1
+    run_mode: candidate_only
+    min_input_markers: 6
+    sparse_input_marker_threshold: 10
+    input_vaf_min: 0.01
+    input_vaf_max: 0.50
+    require_phylotree_marker: true
+    exclude_back_mutations: false
+    min_quality_for_support: 0.70
+    quality_required_for_fail: false
+    require_tool_when_enabled: false
+    keep_input_files: true
+    keep_raw_output: true
+    input_dir: results/qc/human_contamination/haplogrep_inputs
+    output_dir: results/qc/human_contamination/haplogrep_outputs
 
 # Generates reference-level codon annotations and a sample-to-reference map consumed by codon_match.
 build_primate_codon_table:

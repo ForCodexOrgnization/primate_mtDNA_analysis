@@ -9,11 +9,13 @@ SAMPLE_STEPS = {"coordinate_liftover", "codon_match", "trna_match", "rrna_match"
 GLOBAL_STEPS = {"collect_variant_calling_results", "discover_global_anchor", "build_primate_codon_table",
  "compare_genbank_mitos2", "mitos2_prepare_tasks", "mitos2_merge", "codon_match_validate",
  "codon_match_merge", "intraspecies_contamination", "sample_variant_filtering", "final_filter"}
+GLOBAL_STEPS.add("human_contamination")
 
 STEP_SECTIONS = {
     "collect_variant_calling_results": "collect_variant_calling",
     "discover_global_anchor": "global_anchor_discovery",
     "coordinate_liftover": "coordinate_liftover",
+    "human_contamination": "human_contamination",
     "mitos2_prepare_tasks": "mitos2_annotation", "mitos2_annotation": "mitos2_annotation",
     "mitos2_merge": "mitos2_annotation", "build_primate_codon_table": "build_primate_codon_table",
     "compare_genbank_mitos2": "genbank_mitos2_comparison",
@@ -27,6 +29,7 @@ FALLBACK_OUTPUTS = {
     "collect_variant_calling_results": "results/qc/variant_calling_collection",
     "discover_global_anchor": "results/qc/coordinate_liftover/global_anchor",
     "coordinate_liftover": "results/qc/coordinate_liftover",
+    "human_contamination": "results/qc/human_contamination",
     "mitos2_prepare_tasks": "results/qc/mitos2_annotation", "mitos2_annotation": "results/qc/mitos2_annotation",
     "mitos2_merge": "results/qc/mitos2_annotation", "build_primate_codon_table": "results/qc/codon_table_build",
     "compare_genbank_mitos2": "results/qc/genbank_mitos2_comparison",
