@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Run MITOS2 per target-species variant-calling chrM FASTA."""
-import argparse, csv, re, shlex, shutil, subprocess, sys
+import argparse, csv, hashlib, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.match_utils import yaml
@@ -11,9 +11,11 @@ except ImportError: SeqIO = None
 REFERENCE_METADATA_FIELDS='target_species final_chrM_species final_chrM_accession coordinate_reference_fasta_from_manifest mitos2_input_fasta'.split()
 FEATURE_FIELDS=('reference_key reference_species coordinate_reference_accession coordinate_reference_fasta '+ ' '.join(REFERENCE_METADATA_FIELDS) +' feature_type gene gene_raw start end strand score source_file annotation_source').split()
 CODON_FIELDS=('file_name seq_name sample species species_key accession accession_version reference_id family pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS)).split()
+REFERENCE_CODON_FIELDS=('reference_key reference_species coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 pos ref_base_genome gene gene_raw strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic transl_table annotation_source file_name seq_name accession accession_version reference_id product protein_id codon_start_qualifier cds_tail_incomplete_bases mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS)).split()
+SAMPLE_REFERENCE_FIELDS='sample species species_key reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 status annotation_source'.split()
 DEBUG_FIELDS='gff_seqid fasta_record_id fasta_length sequence_length original_gff_start original_gff_end canonical_start canonical_end circular_wrap_used wrapped_segment_count cds_length usable_cds_length n_codons n_position_rows status error gene gene_raw start end strand'.split()
-TASK_FIELDS=('task_id reference_key reference_species coordinate_reference_accession coordinate_reference_fasta coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS) +' n_samples_using_reference status').split()
-SUMMARY_FIELDS=('reference_key reference_species coordinate_reference_accession coordinate_reference_fasta coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS) +' status command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_linked_samples n_reference_coding_position_rows n_sample_level_coding_position_rows n_coding_position_rows n_output_files_scanned n_parseable_files result_gff_exists n_gff_gene_rows n_gff_cds_like_gene_rows n_gff_trna_rows n_gff_rrna_rows parser_status note').split()
+TASK_FIELDS=('task_id task_key reference_key reference_species coordinate_reference_accession coordinate_reference_fasta coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS) +' n_samples_using_reference status').split()
+SUMMARY_FIELDS=('task_key reference_key reference_species coordinate_reference_accession coordinate_reference_fasta coordinate_reference_sequence_sha256 mitos2_input_sequence_sha256 mitos2_input_sequence_length '+ ' '.join(REFERENCE_METADATA_FIELDS) +' status production_qc_status production_qc_reasons command_mode mitos2_command attempted_commands return_code stdout_log stderr_log help_log raw_dir n_features n_cds_features n_linked_samples n_reference_coding_position_rows n_sample_level_coding_position_rows n_coding_position_rows n_output_files_scanned n_parseable_files result_gff_exists n_gff_gene_rows n_gff_cds_like_gene_rows n_gff_trna_rows n_gff_rrna_rows parser_status note').split()
 DIAG_FIELDS='reference_key file suffix n_lines n_candidate_feature_lines parser_used n_features_parsed'.split()
 GENES = {
  'ND1':'MT-ND1', 'NAD1':'MT-ND1', 'ND2':'MT-ND2', 'NAD2':'MT-ND2',
@@ -25,8 +27,14 @@ GENES = {
  'RRNS':'MT-RNR1', 'RRNL':'MT-RNR2',
 }
 CODING = {key for key, value in GENES.items() if value not in ('MT-RNR1', 'MT-RNR2')}
+EXPECTED_GENES={f'MT-ND{i}' for i in (1,2,3,4,5,6)}|{'MT-ND4L','MT-CO1','MT-CO2','MT-CO3','MT-CYB','MT-ATP6','MT-ATP8'}
+IUPAC=set('ACGTRYSWKMBDHVN')
 def val(r,k): return (r.get(k) or '').strip()
 def sk(s): return re.sub(r'_+','_',re.sub(r'\s+','_',s.lower())).strip('_')
+def biological_reference_key(sequence_sha256):
+ if not re.fullmatch(r'[0-9a-f]{64}', sequence_sha256 or ''): return ''
+ return 'mtref_'+sequence_sha256
+def task_key(sequence_sha256): return 'seq_'+sequence_sha256
 def write(p,fields,rows):
  Path(p).parent.mkdir(parents=True,exist_ok=True)
  with open(p,'w',newline='') as h:
@@ -200,25 +208,49 @@ def build_reference_codon_rows(features,fasta,ref,code):
    except ValueError as exc:
     raise ValueError(f"Reference {ref.get('reference_key','')}, gene {f['gene']}: {exc}") from exc
    strand=f['strand'];genomic_dna=''.join(seq[position] for position in coords)
-   if strand=='-': coords=list(reversed(coords));dna=genomic_dna.translate(str.maketrans('ACGTN','TGCAN'))[::-1]
+   if strand=='-': coords=list(reversed(coords));dna=genomic_dna.translate(str.maketrans('ACGTRYSWKMBDHVN','TGCAYRSWMKVHDBN'))[::-1]
    else: dna=genomic_dna
    usable=len(dna)//3*3; d.update(cds_length=len(dna),usable_cds_length=usable,n_codons=usable//3)
    for i in range(0,usable,3):
     trip=coords[i:i+3]
-    for phase,pos in enumerate(trip,1): base.append({'file_name':Path(fasta).name,'seq_name':rec.id,'sample':'','species':'','species_key':'','accession':ref['coordinate_reference_accession'],'accession_version':ref['coordinate_reference_accession'],'reference_id':ref['coordinate_reference_accession'],'family':'','pos':pos+1,'ref_base_genome':seq[pos],'gene':f['gene'],'gene_raw':f['gene_raw'],'product':f['gene_raw'],'protein_id':'','strand':strand,'codon_index':i//3+1,'codon_pos_in_triplet':phase,'codon_seq':dna[i:i+3],'codon_pos1_genomic':trip[0]+1,'codon_pos2_genomic':trip[1]+1,'codon_pos3_genomic':trip[2]+1,'codon_start_qualifier':'1','transl_table':code,'cds_tail_incomplete_bases':len(dna)-usable,'annotation_source':'MITOS2','coordinate_reference_fasta':str(fasta),'coordinate_reference_accession':ref['coordinate_reference_accession'],'coordinate_reference_sequence_sha256':ref.get('coordinate_reference_sequence_sha256',''),'mitos2_input_sequence_sha256':ref.get('mitos2_input_sequence_sha256',''),'mitos2_input_sequence_length':ref.get('mitos2_input_sequence_length',''),**{k:ref.get(k,'') for k in REFERENCE_METADATA_FIELDS}})
+    for phase,pos in enumerate(trip,1): base.append({'reference_key':ref['reference_key'],'reference_species':ref.get('reference_species',''),'file_name':Path(fasta).name,'seq_name':rec.id,'sample':'','species':'','species_key':'','accession':ref['coordinate_reference_accession'],'accession_version':ref['coordinate_reference_accession'],'reference_id':ref['coordinate_reference_accession'],'family':'','pos':pos+1,'ref_base_genome':seq[pos],'gene':f['gene'],'gene_raw':f['gene_raw'],'product':f['gene_raw'],'protein_id':'','strand':strand,'codon_index':i//3+1,'codon_pos_in_triplet':phase,'codon_seq':dna[i:i+3],'codon_pos1_genomic':trip[0]+1,'codon_pos2_genomic':trip[1]+1,'codon_pos3_genomic':trip[2]+1,'codon_start_qualifier':'1','transl_table':code,'cds_tail_incomplete_bases':len(dna)-usable,'annotation_source':'MITOS2','coordinate_reference_fasta':str(fasta),'coordinate_reference_accession':ref['coordinate_reference_accession'],'coordinate_reference_sequence_sha256':ref.get('coordinate_reference_sequence_sha256',''),'mitos2_input_sequence_sha256':ref.get('mitos2_input_sequence_sha256',''),'mitos2_input_sequence_length':ref.get('mitos2_input_sequence_length',''),**{k:ref.get(k,'') for k in REFERENCE_METADATA_FIELDS}})
    d.update(n_position_rows=usable,status='completed')
   except Exception as exc: d.update(status='failed',error=f'{type(exc).__name__}: {exc}')
   debug.append(d)
  raw_dir=ref.get('raw_dir','')
  if raw_dir: write(Path(raw_dir)/'mitos2_reference_codon_debug.tsv',DEBUG_FIELDS,debug)
  return base
+def production_qc(ref, rows, settings):
+ """Return strict production disposition and all reasons; never hide a failure."""
+ failures=[]; warnings=[]; fasta=Path(ref.get('coordinate_reference_fasta',''))
+ try:
+  if not fasta.is_file(): raise OSError('not a readable file')
+  actual=normalized_fasta_sequence_sha256(fasta)
+  if actual['sequence_sha256'] != ref.get('coordinate_reference_sequence_sha256'): failures.append('coordinate_fasta_hash_changed')
+ except (OSError,ValueError) as exc: failures.append(f'coordinate_fasta_unreadable:{exc}')
+ if not ref.get('coordinate_reference_sequence_sha256') or ref.get('mitos2_input_sequence_sha256') != ref.get('coordinate_reference_sequence_sha256'): failures.append('mitos2_input_hash_mismatch')
+ genes={r.get('gene') for r in rows}
+ if genes != EXPECTED_GENES: failures.append('expected_13_genes_missing_or_extra:'+','.join(sorted(EXPECTED_GENES-genes)))
+ if any(r.get('strand') not in ('+','-') for r in rows): failures.append('invalid_strand')
+ if any(str(r.get('codon_pos_in_triplet')) not in ('1','2','3') for r in rows): failures.append('invalid_codon_position')
+ if any(len(r.get('codon_seq','')) != 3 or not set(r.get('codon_seq','')).issubset(IUPAC) for r in rows): failures.append('invalid_iupac_codon')
+ try: seq=''.join(str(rec.seq).upper() for rec in SeqIO.parse(str(fasta),'fasta'))
+ except Exception: seq=''
+ if any(not str(r.get('pos','')).isdigit() or int(r['pos'])<1 or int(r['pos'])>len(seq) or r.get('ref_base_genome') != seq[int(r['pos'])-1] for r in rows): failures.append('reference_base_disagrees_with_fasta')
+ resolved={}
+ for r in rows: resolved.setdefault((r.get('reference_key'),r.get('pos')),set()).add(r.get('ref_base_genome'))
+ if any(len(v)>1 for v in resolved.values()): failures.append('conflicting_reference_bases')
+ low=int(settings.get('min_production_coding_position_rows',9000)); high=int(settings.get('max_production_coding_position_rows',13000))
+ if not low <= len(rows) <= high: failures.append(f'implausible_coding_position_rows:{len(rows)}')
+ if not rows: failures.append('codon_construction_failed')
+ return ('FAIL_PRODUCTION' if failures else 'WARN_PRODUCTION' if warnings else 'PASS_PRODUCTION'), ';'.join(failures+warnings)
 def expand_reference_codon_rows(reference_codon_rows,linked_samples):
  return [{**r,'sample':sample['sample'],'species':sample['species'],'species_key':sk(sample['species'])} for sample in linked_samples for r in reference_codon_rows]
 def collect_reference(ref,linked,paths,settings):
  """Return a complete result object for one reference; never abort a batch."""
- raw=Path(paths['mitos2_raw_dir'])/ref['reference_key']; ref={**ref,'raw_dir':str(raw)}; logs={x:str(raw/f'mitos2.{x}.txt') for x in ('command','stdout','stderr','returncode','help')}
+ raw=Path(paths['mitos2_raw_dir'])/ref.get('task_key',ref['reference_key']); ref={**ref,'raw_dir':str(raw)}; logs={x:str(raw/f'mitos2.{x}.txt') for x in ('command','stdout','stderr','returncode','help')}
  if ref.get('status') == 'skipped_no_chrM_reference':
-  summary={**ref,'status':'skipped_no_chrM_reference','command_mode':'not_run','mitos2_command':'','attempted_commands':'','return_code':'','stdout_log':'','stderr_log':'','help_log':'','n_features':0,'n_cds_features':0,'n_linked_samples':len(linked),'n_reference_coding_position_rows':0,'n_sample_level_coding_position_rows':0,'n_coding_position_rows':0,'n_output_files_scanned':0,'n_parseable_files':0,'result_gff_exists':False,'n_gff_gene_rows':0,'n_gff_cds_like_gene_rows':0,'n_gff_trna_rows':0,'n_gff_rrna_rows':0,'parser_status':'skipped_no_chrM_reference','note':'Manifest row has neither a materialized chrM FASTA nor a final chrM accession.'}
+  summary={**ref,'status':'skipped_no_chrM_reference','production_qc_status':'FAIL_PRODUCTION','production_qc_reasons':'coordinate_fasta_unavailable','command_mode':'not_run','mitos2_command':'','attempted_commands':'','return_code':'','stdout_log':'','stderr_log':'','help_log':'','n_features':0,'n_cds_features':0,'n_linked_samples':len(linked),'n_reference_coding_position_rows':0,'n_sample_level_coding_position_rows':0,'n_coding_position_rows':0,'n_output_files_scanned':0,'n_parseable_files':0,'result_gff_exists':False,'n_gff_gene_rows':0,'n_gff_cds_like_gene_rows':0,'n_gff_trna_rows':0,'n_gff_rrna_rows':0,'parser_status':'skipped_no_chrM_reference','note':'Manifest row has no materialized chrM FASTA; accession is not a production fallback.'}
   return {'features':[],'reference_codon_rows':[],'sample_codon_rows':[],'summary_row':summary,'status':'skipped_no_chrM_reference','note':summary['note']}
  gff=gff_diagnostics(raw); features=[];diag=[];reference_codon_rows=[];sample_codon_rows=[];note=''
  recorded_status=(raw/'mitos2.status.txt').read_text().strip() if (raw/'mitos2.status.txt').exists() else ''
@@ -244,7 +276,8 @@ def collect_reference(ref,linked,paths,settings):
  if recorded_status and not gff['result_gff_exists'] and not features: status=recorded_status
  rc=Path(logs['returncode']).read_text().strip() if Path(logs['returncode']).exists() else ''
  command_text=Path(logs['command']).read_text().strip() if Path(logs['command']).exists() else ''
- summary={**ref,'status':status,'command_mode':'runmitos','mitos2_command':'runmitos','attempted_commands':command_text,'return_code':rc,'stdout_log':logs['stdout'],'stderr_log':logs['stderr'],'help_log':logs['help'],'raw_dir':str(raw),'n_features':len(features),'n_cds_features':n_cds,'n_linked_samples':len(linked),'n_reference_coding_position_rows':len(reference_codon_rows),'n_sample_level_coding_position_rows':len(sample_codon_rows),'n_coding_position_rows':len(sample_codon_rows),'n_output_files_scanned':len(diag),'n_parseable_files':sum(bool(d['n_features_parsed']) for d in diag),**gff,'parser_status':status,'note':note}
+ qc,qc_reasons=production_qc(ref,reference_codon_rows,settings)
+ summary={**ref,'status':status,'production_qc_status':qc,'production_qc_reasons':qc_reasons,'command_mode':'runmitos','mitos2_command':'runmitos','attempted_commands':command_text,'return_code':rc,'stdout_log':logs['stdout'],'stderr_log':logs['stderr'],'help_log':logs['help'],'raw_dir':str(raw),'n_features':len(features),'n_cds_features':n_cds,'n_linked_samples':len(linked),'n_reference_coding_position_rows':len(reference_codon_rows),'n_sample_level_coding_position_rows':len(sample_codon_rows),'n_coding_position_rows':len(sample_codon_rows),'n_output_files_scanned':len(diag),'n_parseable_files':sum(bool(d['n_features_parsed']) for d in diag),**gff,'parser_status':status,'note':note}
  return {'features':features,'reference_codon_rows':reference_codon_rows,'sample_codon_rows':sample_codon_rows,'summary_row':summary,'status':status,'note':note}
 def sanitized_fallback_fasta(source, target, paths):
  """Copy a manifest fallback with MITOS2's stable ``>chrM`` record identifier."""
@@ -275,21 +308,34 @@ def references(paths, sample_filter=None):
    hash_info=normalized_fasta_sequence_sha256(fasta) if fasta and Path(fasta).is_file() else {}
   except (OSError, ValueError) as exc:
    hash_info={}
-  # A target species is the task identity: cross-species targets can share an accession but not a FASTA.
-  key=re.sub(r'[^A-Za-z0-9_.-]+','_',target or Path(fasta).stem)
-  refs[key]={'reference_key':key,'reference_species':species,'coordinate_reference_accession':acc,
-             'coordinate_reference_fasta':str(Path(fasta)) if fasta else '',
-             'coordinate_reference_sequence_sha256':hash_info.get('sequence_sha256',''),
-             'mitos2_input_sequence_sha256':hash_info.get('sequence_sha256',''),
+  sequence_sha=hash_info.get('sequence_sha256','')
+  # Execution is deduplicated by sequence.  Species and accession are provenance,
+  # never biological identity and never a reason to collapse distinct sequences.
+  key=biological_reference_key(sequence_sha) or 'missing_'+hashlib.sha256(str(Path(fasta).resolve()).encode()).hexdigest()
+  tkey=task_key(sequence_sha) if sequence_sha else 'missing_'+re.sub(r'[^A-Za-z0-9_.-]+','_',target or Path(fasta).stem)
+  candidate={'task_key':tkey,'reference_key':key,'reference_species':species,'coordinate_reference_accession':acc,
+             'coordinate_reference_fasta':str(Path(fasta).resolve()) if fasta else '',
+             'coordinate_reference_sequence_sha256':sequence_sha,
+             'mitos2_input_sequence_sha256':sequence_sha,
              'mitos2_input_sequence_length':hash_info.get('sequence_length',''),'coordinate_reference_fasta_from_manifest':manifest_fasta,
-             'mitos2_input_fasta':str(Path(fasta)) if fasta else '','target_species':target,'final_chrM_species':val(m,'final_chrM_species'),
+             'mitos2_input_fasta':str(Path(fasta).resolve()) if fasta else '','target_species':target,'final_chrM_species':val(m,'final_chrM_species'),
              'final_chrM_accession':val(m,'final_chrM_accession'),'chrM_selection_status':val(m,'chrM_selection_status'),
              'final_reference_strategy':val(m,'final_reference_strategy'),'reference_pairing_status':val(m,'reference_pairing_status'),
-             'targets':{sk(target)},'initial_status':status,
+             'targets':{sk(target)},'target_records':{},'initial_status':status,
              **({'status':status} if val(m,'chrM_selection_status') == 'missing_chrM_ref' else {})}
+  candidate['target_records'][sk(target)]={'coordinate_reference_fasta':str(Path(fasta).resolve()) if fasta else '',
+   'coordinate_reference_accession':acc,'coordinate_reference_sequence_sha256':sequence_sha}
+  if key in refs:
+   refs[key]['targets'].update(candidate['targets']); refs[key]['target_records'].update(candidate['target_records'])
+  else: refs[key]=candidate
  result=[]
  for ref in refs.values():
-  linked=[{'sample':val(s,'sample'),'species':val(s,'species')} for s in samples if sk(val(s,'species')) in ref['targets'] or sk(val(s,'species'))==sk(ref['reference_species'])]
+  linked=[]
+  for s in samples:
+   species_key=sk(val(s,'species'))
+   if species_key in ref['targets'] or species_key==sk(ref['reference_species']):
+    provenance=ref['target_records'].get(species_key,{'coordinate_reference_fasta':ref['coordinate_reference_fasta'],'coordinate_reference_accession':ref['coordinate_reference_accession'],'coordinate_reference_sequence_sha256':ref['coordinate_reference_sequence_sha256']})
+    linked.append({'sample':val(s,'sample'),'species':val(s,'species'),**provenance})
   result.append((ref,linked))
  return sorted(result,key=lambda pair:(pair[0]['reference_key'], pair[0]['coordinate_reference_fasta']))
 def task_rows(refs, paths):
@@ -297,21 +343,31 @@ def task_rows(refs, paths):
  for ref,linked in refs:
   if ref.get('status') == 'skipped_no_chrM_reference': continue
   task_id=len(rows)+1
-  marker=Path(paths['mitos2_raw_dir'])/ref['reference_key']/'mitos2.completed.ok'
+  marker=Path(paths['mitos2_raw_dir'])/ref['task_key']/'mitos2.completed.ok'
   rows.append({'task_id':task_id,**{k:ref[k] for k in TASK_FIELDS if k in ref},'n_samples_using_reference':len(linked),'status':'completed' if marker.exists() else ref.get('initial_status','pending')})
  return rows
 def merge(paths,settings,refs):
  results=[collect_reference(ref,linked,paths,settings) for ref,linked in refs]
  allf=[row for result in results for row in result['features']]
- allc=[row for result in results for row in result['sample_codon_rows']]
- allref=[row for result in results for row in result['reference_codon_rows']]
+ allc=[row for result in results if result['summary_row'].get('production_qc_status')=='PASS_PRODUCTION' for row in result['sample_codon_rows']]
+ allref=[row for result in results if result['summary_row'].get('production_qc_status')=='PASS_PRODUCTION' for row in result['reference_codon_rows']]
  summ=[result['summary_row'] for result in results]
  reference_table=paths.get('mitos2_reference_cds_table',str(Path(paths['output_dir'])/'all_mitos2_reference_position_codon_table.tsv'))
- write(paths['mitos2_feature_table'],FEATURE_FIELDS,allf);write(paths['mitos2_cds_table'],CODON_FIELDS,allc);write(reference_table,CODON_FIELDS,allref);write(paths['mitos2_summary_table'],SUMMARY_FIELDS,summ)
+ mappings=[]
+ for (ref,linked),result in zip(refs,results):
+  passed=result['summary_row'].get('production_qc_status')=='PASS_PRODUCTION'
+  for sample in linked:
+   mappings.append({'sample':sample['sample'],'species':sample['species'],'species_key':sk(sample['species']),
+    'reference_key':ref['reference_key'],'coordinate_reference_fasta':sample['coordinate_reference_fasta'],
+    'coordinate_reference_accession':sample['coordinate_reference_accession'],
+    'coordinate_reference_sequence_sha256':sample['coordinate_reference_sequence_sha256'],
+    'status':'PASS_PRODUCTION' if passed else 'FAIL_PRODUCTION','annotation_source':'MITOS2'})
+ write(paths['mitos2_feature_table'],FEATURE_FIELDS,allf);write(paths['mitos2_cds_table'],CODON_FIELDS,allc);write(reference_table,REFERENCE_CODON_FIELDS,allref);write(paths['mitos2_summary_table'],SUMMARY_FIELDS,summ)
+ write(paths.get('sample_reference_map',str(Path(paths['output_dir'])/'sample_reference_map.tsv')),SAMPLE_REFERENCE_FIELDS,mappings)
  print(f'Wrote {len(allf)} features and {len(allc)} sample-level coding rows.')
 def run_reference(ref,linked,paths,settings,a):
  """Execute one MITOS2 reference and always return its materialized result."""
- fasta=ref['mitos2_input_fasta'];raw=Path(paths['mitos2_raw_dir'])/ref['reference_key'];raw.mkdir(parents=True,exist_ok=True)
+ fasta=ref['mitos2_input_fasta'];raw=Path(paths['mitos2_raw_dir'])/ref.get('task_key',ref['reference_key']);raw.mkdir(parents=True,exist_ok=True)
  logs={x:str(raw/f'mitos2.{x}.txt') for x in ('command','stdout','stderr','returncode','help')}; marker=raw/'mitos2.completed.ok';status_file=raw/'mitos2.status.txt'
  if ref.get('initial_status') == 'skipped_no_chrM_reference':
   status_file.write_text('skipped_no_chrM_reference\n'); return collect_reference(ref,linked,paths,settings)

@@ -113,7 +113,7 @@ def test_parser_failure_status_flags_unrecognized_cds_like_gff_genes():
     assert module.parser_failure_status([], diagnostics) == 'failed_parser_cds_gene_detection'
 
 
-def test_reference_tasks_are_one_based_per_target_species_and_report_completion(tmp_path):
+def test_reference_tasks_are_deduplicated_by_coordinate_sequence_identity(tmp_path):
     module = load_module()
     manifest = tmp_path / 'manifest.tsv'
     samples = tmp_path / 'samples.tsv'
@@ -132,10 +132,10 @@ def test_reference_tasks_are_one_based_per_target_species_and_report_completion(
 
     rows = module.task_rows(refs, paths)
 
-    assert [row['task_id'] for row in rows] == [1, 2, 3]
-    assert [row['reference_key'] for row in rows] == ['Species_one', 'Species_three', 'Species_two']
-    assert [row['n_samples_using_reference'] for row in rows] == [1, 1, 1]
-    assert [row['status'] for row in rows] == ['pending', 'pending', 'pending']
+    assert [row['task_id'] for row in rows] == [1, 2]
+    assert all(row['reference_key'].startswith('missing_') for row in rows)
+    assert sorted(row['n_samples_using_reference'] for row in rows) == [1, 2]
+    assert [row['status'] for row in rows] == ['pending', 'pending']
 
 
 def test_references_prefers_target_variant_calling_fasta_for_cross_species_reference(tmp_path):
@@ -160,7 +160,10 @@ def test_references_prefers_target_variant_calling_fasta_for_cross_species_refer
     assert ref['final_chrM_species'] == 'Other species'
     assert ref['final_chrM_accession'] == 'GB_1.1'
     assert ref['coordinate_reference_accession'] == 'GB_1.1'
-    assert linked == [{'sample': 'S1', 'species': 'Target_species'}]
+    assert linked[0]['sample'] == 'S1'
+    assert linked[0]['species'] == 'Target_species'
+    assert linked[0]['coordinate_reference_fasta'] == str(target_fasta)
+    assert linked[0]['coordinate_reference_sequence_sha256'] == ref['coordinate_reference_sequence_sha256']
 
 
 def test_references_sanitizes_manifest_fallback_and_skips_known_no_chrm(tmp_path):
@@ -407,3 +410,74 @@ def test_codon_spanning_origin_keeps_circular_genomic_order(tmp_path, monkeypatc
     assert [row['pos'] for row in rows] == [9, 10, 1]
     assert [rows[0][f'codon_pos{i}_genomic'] for i in range(1, 4)] == [9, 10, 1]
     assert rows[0]['codon_seq'] == 'AAA'
+
+
+def test_reference_identity_is_sequence_based_not_species_or_accession(tmp_path):
+    module = load_module()
+    fasta_dir = tmp_path / 'Ref_chrM'; fasta_dir.mkdir()
+    (fasta_dir / 'Species_one.fa').write_text('>chrM\nATGCCN\n')
+    (fasta_dir / 'Species_two.fa').write_text('>chrM\nATGCCN\n')
+    manifest = tmp_path / 'manifest.tsv'
+    manifest.write_text(
+        'target_species\tfinal_chrM_species\tfinal_chrM_accession\n'
+        'Species_one\tReference one\t\n'
+        'Species_two\tReference two\tDIFFERENT.1\n')
+    samples = tmp_path / 'samples.tsv'
+    samples.write_text('sample\tspecies\nS1\tSpecies_one\nS2\tSpecies_two\n')
+    refs = module.references({'reference_manifest': str(manifest), 'sample_ref_file': str(samples),
+                              'fasta_dir': str(fasta_dir), 'mitos2_raw_dir': str(tmp_path / 'raw')})
+
+    assert len(refs) == 1
+    ref, linked = refs[0]
+    assert ref['reference_key'] == module.biological_reference_key(ref['coordinate_reference_sequence_sha256'])
+    assert ref['task_key'] == module.task_key(ref['coordinate_reference_sequence_sha256'])
+    assert {row['sample'] for row in linked} == {'S1', 'S2'}
+    assert any(not row['coordinate_reference_accession'] for row in linked)
+
+
+def test_different_sequences_always_have_different_biological_reference_keys():
+    module = load_module()
+    first = module.biological_reference_key('a' * 64)
+    second = module.biological_reference_key('b' * 64)
+    assert first != second
+    assert module.biological_reference_key('a' * 64) == first
+
+
+def test_merge_writes_reference_key_once_and_mitos2_sample_map(tmp_path, monkeypatch):
+    module = load_module()
+    sha = 'a' * 64
+    ref = {'task_key': module.task_key(sha), 'reference_key': module.biological_reference_key(sha),
+           'reference_species': 'Reference', 'coordinate_reference_fasta': '/refs/a.fa',
+           'coordinate_reference_accession': '', 'coordinate_reference_sequence_sha256': sha,
+           'mitos2_input_sequence_sha256': sha}
+    linked = [
+        {'sample': 'S1', 'species': 'One', 'coordinate_reference_fasta': '/refs/one.fa',
+         'coordinate_reference_accession': '', 'coordinate_reference_sequence_sha256': sha},
+        {'sample': 'S2', 'species': 'Two', 'coordinate_reference_fasta': '/refs/two.fa',
+         'coordinate_reference_accession': 'ACC.1', 'coordinate_reference_sequence_sha256': sha},
+    ]
+    codon = {field: '' for field in module.REFERENCE_CODON_FIELDS}
+    codon.update(reference_key=ref['reference_key'], reference_species='Reference', pos='1',
+                 ref_base_genome='A', gene='MT-ND1', gene_raw='nad1', strand='+', codon_index='1',
+                 codon_pos_in_triplet='1', codon_seq='ATG', codon_pos1_genomic='1',
+                 codon_pos2_genomic='2', codon_pos3_genomic='3', transl_table='2',
+                 annotation_source='MITOS2', coordinate_reference_sequence_sha256=sha,
+                 mitos2_input_sequence_sha256=sha)
+    monkeypatch.setattr(module, 'collect_reference', lambda *args: {
+        'features': [], 'reference_codon_rows': [codon], 'sample_codon_rows': [],
+        'summary_row': {**ref, 'production_qc_status': 'PASS_PRODUCTION'},
+    })
+    paths = {name: str(tmp_path / name) for name in
+             ('mitos2_feature_table', 'mitos2_cds_table', 'mitos2_summary_table')}
+    paths.update(output_dir=str(tmp_path), mitos2_reference_cds_table=str(tmp_path / 'reference.tsv'),
+                 sample_reference_map=str(tmp_path / 'map.tsv'))
+    module.merge(paths, {}, [(ref, linked)])
+
+    import csv
+    reference_rows = list(csv.DictReader(open(paths['mitos2_reference_cds_table']), delimiter='\t'))
+    map_rows = list(csv.DictReader(open(paths['sample_reference_map']), delimiter='\t'))
+    assert len(reference_rows) == 1
+    assert reference_rows[0]['reference_key'] == ref['reference_key']
+    assert {row['reference_key'] for row in map_rows} == {ref['reference_key']}
+    assert {row['annotation_source'] for row in map_rows} == {'MITOS2'}
+    assert all(row['status'] == 'PASS_PRODUCTION' for row in map_rows)
