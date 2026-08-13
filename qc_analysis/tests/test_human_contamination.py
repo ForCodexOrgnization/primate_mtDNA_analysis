@@ -116,3 +116,20 @@ def test_lifted_cohort_rejects_ambiguous_compression(tmp_path):
         (tmp_path/f"s.lifted.raw{suffix}").write_bytes(b"")
     with pytest.raises(ValueError,match="ambiguous lifted VCF"):
         mod.discover_lifted_vcfs(tmp_path,"{sample}.lifted.raw.vcf")
+
+def test_background_correction_uses_exact_post_liftover_allele(tmp_path):
+    positions=[700,800,900,1000,1100,1200]
+    background={(700,"A","G"):{"n_primate_samples":"2"},
+                # Same position and ALT, wrong REF: it must not match.
+                (800,"C","G"):{"n_primate_samples":"3"}}
+    audit=[]
+    row,_=mod.analyze_sample("s","sp",write_vcf(tmp_path,[(p,"G",.05) for p in positions]),
+                             markers(positions),config(),audit,background)
+    assert row["n_human_marker_hits_all"]==6
+    assert row["n_human_marker_hits_background"]==1
+    assert row["n_human_marker_hits_informative"]==5
+    assert row["frac_low_variants_human_marker_informative"]==5/6
+    assert next(x for x in audit if x["human_pos"]==700)["primate_homo_background"]
+    assert next(x for x in audit if x["human_pos"]==800)["informative_human_marker"]
+    # Background correction remains audit-only during calibration.
+    assert row["human_contamination_status"]=="FAIL"
