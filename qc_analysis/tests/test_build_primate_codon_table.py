@@ -257,6 +257,28 @@ class BuildPrimateCodonTableParallelHelperTests(unittest.TestCase):
             self.module.resolve_workers('zero', {}, 'workers')
         self.assertIn('positive integer', str(error.exception))
 
+    def test_coordinate_sequence_compatibility_categories_are_conservative(self):
+        classify = self.module.classify_sequence_compatibility
+        self.assertEqual(classify('AACCGGTT', 'AACCGGTT'), 'exact')
+        self.assertEqual(classify('GG TTAACC', 'AACCGGTT'), 'rotation_equivalent')
+        self.assertEqual(classify('AACCGT', 'ACGGTT'), 'reverse_complement_equivalent')
+        self.assertEqual(classify('AACCGGTA', 'AACCGGTT'), 'sequence_mismatch')
+        self.assertEqual(classify('', 'AACCGGTT'), 'missing_coordinate_fasta')
+
+    def test_mitos2_group_with_different_sequence_is_not_selected(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td)
+            coordinate, other = directory / 'coordinate.fa', directory / 'other.fa'
+            coordinate.write_text('>chrM\nAACCGGTT\n')
+            other.write_text('>chrM\nAACCGGTA\n')
+            rows = [{'coordinate_reference_fasta': str(other),
+                     '_canonical_coordinate_reference_fasta': str(other.resolve()),
+                     'coordinate_reference_accession': 'SAME.1', 'gene': 'ND1', 'pos': '1'}]
+            selected, mode, profiles = self.module.select_reference_group(
+                {(str(other), 'SAME.1'): rows}, str(coordinate.resolve()), 'SAME.1')
+            self.assertEqual((selected, mode), ([], 'none'))
+            self.assertFalse(profiles[0]['sequence_match'])
+
     def test_fasta_index_matches_find_species_fasta(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td); (d / 'Species_one.fa').write_text('>x\nA\n'); (d / 'Species_one.fasta.gz').write_text('not a real gzip')

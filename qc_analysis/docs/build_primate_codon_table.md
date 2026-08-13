@@ -45,6 +45,25 @@ is also supported for existing workflows. Useful optional fields are `species` a
 `family`. Several samples can share one coordinate reference; they receive one map
 row each, while codons are emitted once for that reference.
 
+## Coordinate-sequence compatibility
+
+GenBank CDS annotations are used directly only when the GenBank mitochondrial
+sequence is identical to the exact coordinate-reference FASTA in the same origin
+and orientation. Circularly rotated, reverse-complement-equivalent, or genuinely
+different sequences are not allowed to contribute untransformed GenBank coordinates;
+these references fall back to annotation of the actual coordinate FASTA. A missing
+coordinate FASTA is likewise unsafe.
+
+The build summary records the compatibility category, both lengths and normalized
+sequence SHA256 values, whether direct GenBank annotation was allowed, and the
+fallback reason. MITOS2 fallback requires its input sequence hash (or the hash
+calculated from its input FASTA) to equal the coordinate FASTA hash. Accession,
+species, gene count, and coding-row count cannot substitute for sequence identity;
+if identity cannot be established, that reference fails.
+
+Overlapping CDS features remain separate `(reference_key, position, gene,
+codon/phase)` rows and are never collapsed to one gene per position.
+
 ## Inferring accession from reference manifests
 
 An accession in the first populated direct sample column is always preferred;

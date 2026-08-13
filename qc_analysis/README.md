@@ -46,6 +46,17 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 | 10 | `codon_match_validate` | 在读取 VCF 前校验并建立密码子输入索引 | 仅 `--submit all` 中的显式校验节点 |
 | 11 | `codon_match` | 给 lifted VCF 添加密码子匹配注释 | tRNA 注释输入 |
 | 12 | `codon_match_merge` | 原子合并每个样本的密码子汇总 | cohort 汇总 |
+
+GenBank CDS annotations are used directly only when the GenBank mitochondrial
+sequence is identical to the exact coordinate-reference FASTA in the same origin
+and orientation. Circularly rotated, reverse-complement-equivalent, or genuinely
+different sequences are not allowed to contribute untransformed GenBank coordinates;
+these references fall back to annotation of the actual coordinate FASTA. MITOS2
+input and coordinate FASTA sequence identity must be established; accession or
+biological similarity alone is insufficient.
+
+Codon matching retains overlapping CDS genes and evaluates all compatible source ×
+human gene/phase candidate pairs instead of collapsing a position to one gene.
 | 13 | `trna_match` | 给 VCF 添加 tRNA 匹配和结构相关注释 | rRNA 注释输入 |
 | 14 | `rrna_match` | 给 VCF 添加 rRNA 区域/可选结构注释 | 最终注释报告 |
 | 15 | `final_filter` | 汇总所有样本级和变异级报告并一次性生成最终文件 | `final_vcf/final_cov/final_mtcn` |

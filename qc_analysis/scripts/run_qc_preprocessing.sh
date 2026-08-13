@@ -467,6 +467,7 @@ case "$STEP" in
     if comparison_enabled; then
       run_compare_genbank_mitos2
     fi
+    "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --validate-inputs
     run_annotation codon_match "$CODON_SCRIPT"
     "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --merge-summaries
     "$BASE_PYTHON" "$TRNA_INDEX_SCRIPT" --config "$CONFIG" --workers "${SLURM_CPUS_PER_TASK:-4}"

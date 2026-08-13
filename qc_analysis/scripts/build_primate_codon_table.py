@@ -27,10 +27,10 @@ try:
 except ImportError:  # checked in main so importing helpers remains possible in tests
     Entrez = SeqIO = None
 
-OUTPUT_FIELDS = "reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 genbank_record_sequence_sha256 genbank_record_length file_name seq_name accession accession_version reference_id pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used".split()
+OUTPUT_FIELDS = "reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 genbank_record_sequence_sha256 genbank_record_length mitos2_input_sequence_sha256 file_name seq_name accession accession_version reference_id pos ref_base_genome gene gene_raw product protein_id strand codon_index codon_pos_in_triplet codon_seq codon_pos1_genomic codon_pos2_genomic codon_pos3_genomic codon_start_qualifier transl_table cds_tail_incomplete_bases annotation_source annotation_fallback_used".split()
 LEGACY_OUTPUT_FIELDS = ['sample', 'species', *OUTPUT_FIELDS]
 SAMPLE_REFERENCE_MAP_FIELDS = "sample species species_key reference_key coordinate_reference_fasta coordinate_reference_accession coordinate_reference_sequence_sha256 status annotation_source".split()
-SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path accession_record genbank_file n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
+SUMMARY_FIELDS = "sample species accession_query accession_source accession_note manifest_file matched_manifest_species species_fasta_path accession_record genbank_file sequence_compatibility coordinate_reference_length genbank_record_length coordinate_reference_sequence_sha256 genbank_record_sequence_sha256 genbank_direct_annotation_allowed fallback_reason annotation_source n_cds_features n_coding_position_rows n_genes min_pos max_pos status note".split()
 FAIL_FIELDS = "sample species accession_query reason".split()
 MITOS2_FALLBACK_SELECTION_FIELDS = "sample species accession coordinate_reference_fasta coordinate_reference_accession original_sample_fasta canonical_sample_fasta original_mitos2_fasta canonical_mitos2_fasta fasta_match group_row_count normalized_gene_count has_all_13_protein_coding_genes coding_row_count_in_expected_range fallback_match_mode n_candidate_rows n_selected_rows_before_dedup n_selected_rows_after_dedup n_duplicate_rows_collapsed n_candidate_reference_groups selected_reference_group selection_status rejection_reason note".split()
 MITOS2_NUMERIC_FIELDS = ('pos', 'codon_index', 'codon_pos_in_triplet', 'codon_pos1_genomic', 'codon_pos2_genomic', 'codon_pos3_genomic')
@@ -68,6 +68,41 @@ def fasta_sequence_sha256(path):
     with opener(path, 'rt') as handle:
         sequence = ''.join(line.strip() for line in handle if not line.startswith('>'))
     return hashlib.sha256(sequence.upper().encode()).hexdigest() if sequence else ''
+
+def fasta_sequence(path):
+    """Read the normalized sequence whose bases define the coordinate system."""
+    path = Path(path)
+    if not path.is_file():
+        return ''
+    opener = gzip.open if path.name.endswith('.gz') else open
+    with opener(path, 'rt') as handle:
+        return ''.join(''.join(line.split()) for line in handle if not line.startswith('>')).upper()
+
+def reverse_complement(sequence):
+    return sequence.translate(str.maketrans('ACGTRYMKBDHVN', 'TGCAYRKMVHDBN'))[::-1]
+
+def is_circular_rotation(first, second):
+    return bool(first) and len(first) == len(second) and second in (first + first)
+
+def classify_sequence_compatibility(coordinate_sequence, genbank_sequence):
+    """Classify identity before any GenBank genomic coordinate is accepted."""
+    coordinate_sequence = ''.join(str(coordinate_sequence or '').split()).upper()
+    genbank_sequence = ''.join(str(genbank_sequence or '').split()).upper()
+    if not coordinate_sequence:
+        return 'missing_coordinate_fasta'
+    if coordinate_sequence == genbank_sequence:
+        return 'exact'
+    if is_circular_rotation(genbank_sequence, coordinate_sequence):
+        return 'rotation_equivalent'
+    if is_circular_rotation(reverse_complement(genbank_sequence), coordinate_sequence):
+        return 'reverse_complement_equivalent'
+    return 'sequence_mismatch'
+
+def compatibility_fallback_reason(status):
+    return {'rotation_equivalent': 'rotation_requires_coordinate_transform',
+            'reverse_complement_equivalent': 'reverse_complement_requires_coordinate_transform',
+            'sequence_mismatch': 'sequence_mismatch',
+            'missing_coordinate_fasta': 'genbank_not_coordinate_compatible'}.get(status, '')
 
 def make_reference_key(coordinate_fasta, accession, sequence_sha256):
     """Stable identity for annotation coordinate space; species is deliberately absent."""
@@ -457,7 +492,8 @@ def load_mitos_reference_groups(path):
 
 
 def select_reference_group(groups, coordinate_fasta, accession):
-    """Select a pre-grouped MITOS2 reference without rebuilding row indexes."""
+    """Select MITOS2 rows only when their input sequence is the coordinate FASTA."""
+    coordinate_hash = fasta_sequence_sha256(coordinate_fasta)
     profiles = []
     for group, rows in groups.items():
         genes = {normalize_gene(value(row, 'gene')) for row in rows}
@@ -468,14 +504,20 @@ def select_reference_group(groups, coordinate_fasta, accession):
                    'in_expected_range': 5000 <= len(rows) <= 13000,
                    'distance': abs(len(rows) - EXPECTED_MAMMALIAN_CODING_TOTAL)}
         profile['fasta_match'] = bool(coordinate_fasta and profile['canonical_fasta'] == coordinate_fasta)
+        supplied_hash = value(rows[0], 'mitos2_input_sequence_sha256') or value(rows[0], 'coordinate_reference_sequence_sha256')
+        actual_hash = fasta_sequence_sha256(profile['canonical_fasta'])
+        profile['sequence_sha256'] = supplied_hash or actual_hash
+        profile['sequence_match'] = bool(coordinate_hash and profile['sequence_sha256'] == coordinate_hash)
         profile['accession_match'] = bool(accession and group[1] == accession)
-        profile['rank'] = (-profile['fasta_match'], -profile['accession_match'],
+        profile['rank'] = (-profile['sequence_match'], -profile['fasta_match'], -profile['accession_match'],
                            -profile['has_13_genes'], -profile['in_expected_range'], profile['distance'])
         profiles.append(profile)
     if not profiles:
         return [], 'none', []
     profiles.sort(key=lambda p: (*p['rank'], *p['group']))
     chosen = profiles[0]
+    if not chosen['sequence_match']:
+        return [], 'none', profiles
     return [dict(row) for row in chosen['rows']], ('coordinate_fasta' if chosen['fasta_match'] else
             'accession' if chosen['accession_match'] else 'gene_count_row_count'), profiles
 
@@ -571,7 +613,8 @@ def prepare_sample(order_metadata, context):
     metadata['coordinate_reference_sequence_sha256'] = fasta_sequence_sha256(metadata['_canonical_coordinate_reference_fasta'])
     metadata['reference_key'] = make_reference_key(metadata['_canonical_coordinate_reference_fasta'], accession, metadata['coordinate_reference_sequence_sha256'])
     original_species_fasta = fasta_path or coordinate
-    base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'accession_source':source, 'accession_note':accession_note, 'manifest_file':manifest_file, 'matched_manifest_species':matched_species, 'species_fasta_path':original_species_fasta, '_canonical_species_fasta_path':canonical_path(original_species_fasta, repo_root), 'accession_record':'', 'genbank_file':'', 'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'', 'max_pos':'', 'status':'failed', 'note':''}
+    coordinate_sequence = fasta_sequence(metadata['_canonical_coordinate_reference_fasta'])
+    base = {'sample':metadata['sample'], 'species':metadata['species'], 'accession_query':accession, 'accession_source':source, 'accession_note':accession_note, 'manifest_file':manifest_file, 'matched_manifest_species':matched_species, 'species_fasta_path':original_species_fasta, '_canonical_species_fasta_path':canonical_path(original_species_fasta, repo_root), 'accession_record':'', 'genbank_file':'', 'sequence_compatibility':'missing_coordinate_fasta' if not coordinate_sequence else '', 'coordinate_reference_length':len(coordinate_sequence) if coordinate_sequence else '', 'genbank_record_length':'', 'coordinate_reference_sequence_sha256':metadata['coordinate_reference_sequence_sha256'], 'genbank_record_sequence_sha256':'', 'genbank_direct_annotation_allowed':'no', 'fallback_reason':'genbank_not_coordinate_compatible' if not coordinate_sequence else '', 'annotation_source':'', 'n_cds_features':0, 'n_coding_position_rows':0, 'n_genes':0, 'min_pos':'', 'max_pos':'', 'status':'failed', 'note':''}
     if not accession:
         reason = 'No accession found from sample_ref_file, reference manifest, or FASTA.'
         base['note'] = reason; base['status'] = 'dry_run_unresolved' if dry_run else 'failed'
@@ -584,11 +627,31 @@ def parse_sample(result):
     if result.status != 'prepared': return result
     try:
         record = SeqIO.read(result.genbank_file, 'genbank')
+        coordinate_sequence = fasta_sequence(value(result.metadata, '_canonical_coordinate_reference_fasta'))
+        genbank_sequence = ''.join(str(record.seq).split()).upper()
+        compatibility = classify_sequence_compatibility(coordinate_sequence, genbank_sequence)
+        coordinate_hash = (normalized_sequence_sha256(coordinate_sequence) if coordinate_sequence else '')
+        genbank_hash = normalized_sequence_sha256(genbank_sequence)
+        result.summary.update(sequence_compatibility=compatibility,
+            coordinate_reference_length=len(coordinate_sequence) if coordinate_sequence else '',
+            genbank_record_length=len(genbank_sequence),
+            coordinate_reference_sequence_sha256=coordinate_hash,
+            genbank_record_sequence_sha256=genbank_hash,
+            genbank_direct_annotation_allowed='yes' if compatibility == 'exact' else 'no',
+            fallback_reason=compatibility_fallback_reason(compatibility))
+        if compatibility != 'exact':
+            result.status = 'failed'
+            result.summary.update(status='failed', annotation_source='',
+                note=f'GenBank annotation rejected: {result.summary["fallback_reason"]}.')
+            result.failure = {'sample': result.sample, 'species': result.metadata['species'],
+                              'accession_query': result.accession,
+                              'reason': result.summary['note']}
+            return result
         rows, n_cds = parse_record(record, result.metadata, result.genbank_file)
         notes = []
         if len(rows) < 5000 or len(rows) > 13000: notes.append(f'Coding rows outside expected mammalian range: {len(rows)}')
         result.rows = rows
-        result.summary.update(accession_record=record.id, n_cds_features=n_cds, n_coding_position_rows=len(rows), n_genes=len({r['gene'] for r in rows}), min_pos=min((r['pos'] for r in rows), default=''), max_pos=max((r['pos'] for r in rows), default=''), status='completed' if rows else 'failed', note='; '.join(notes or ([] if rows else ['No CDS codon rows parsed.'])))
+        result.summary.update(accession_record=record.id, annotation_source='GenBank', n_cds_features=n_cds, n_coding_position_rows=len(rows), n_genes=len({r['gene'] for r in rows}), min_pos=min((r['pos'] for r in rows), default=''), max_pos=max((r['pos'] for r in rows), default=''), status='completed' if rows else 'failed', note='; '.join(notes or ([] if rows else ['No CDS codon rows parsed.'])))
         result.status = result.summary['status']
         if not rows: result.failure = {'sample':result.sample, 'species':result.metadata['species'], 'accession_query':result.accession, 'reason':'No CDS codon rows parsed.'}
     except Exception as exc:
@@ -667,15 +730,28 @@ def main_reference(args, section):
                     coordinate_reference_fasta=value(result.metadata, '_canonical_coordinate_reference_fasta'),
                     coordinate_reference_accession=value(result.metadata, 'coordinate_reference_accession'),
                     coordinate_reference_sequence_sha256=value(result.metadata, 'coordinate_reference_sequence_sha256'),
+                    mitos2_input_sequence_sha256=value(row, 'mitos2_input_sequence_sha256') or value(row, 'coordinate_reference_sequence_sha256'),
                     annotation_source='MITOS2', annotation_fallback_used='yes')
                 row['gene'] = normalize_gene(value(row, 'gene'))
             rows, _ = deduplicate_rows(rows, fallback_duplicate_key)
-            reference_rows[key] = rows; reference_source[key] = 'MITOS2'; result.status = 'completed_mitos2_fallback'; result.summary['status'] = result.status
+            reference_rows[key] = rows; reference_source[key] = 'MITOS2'; result.status = 'completed_mitos2_fallback'; result.summary.update(status=result.status, annotation_source='MITOS2')
             fallback_summary.append({'sample': '', 'species': '', 'accession': value(result.metadata, 'accession_query'), 'coordinate_reference_fasta': value(result.metadata, '_canonical_coordinate_reference_fasta'), 'coordinate_reference_accession': value(result.metadata, 'coordinate_reference_accession'), 'fallback_match_mode': mode, 'n_candidate_reference_groups': len(profiles), 'selection_status': 'selected'})
+        elif result.status != 'completed' and groups:
+            reason = 'mitos2_coordinate_sequence_identity_not_established'
+            result.summary['fallback_reason'] = ';'.join(filter(None, [value(result.summary, 'fallback_reason'), reason]))
+            result.summary['note'] = '; '.join(filter(None, [value(result.summary, 'note'), reason]))
     summary, failures, sample_map = [], [], []
     for result in prepared:
         representative = by_reference[result.metadata['reference_key']]
         status = representative.status
+        # Samples sharing a reference inherit the one representative's auditable
+        # compatibility decision; the annotation itself is still emitted once.
+        for field in ('accession_record', 'genbank_file', 'sequence_compatibility',
+                      'coordinate_reference_length', 'genbank_record_length',
+                      'coordinate_reference_sequence_sha256', 'genbank_record_sequence_sha256',
+                      'genbank_direct_annotation_allowed', 'fallback_reason',
+                      'annotation_source', 'note'):
+            result.summary[field] = representative.summary.get(field, '')
         result.summary.update(status=status, n_coding_position_rows=len(reference_rows.get(result.metadata['reference_key'], [])), n_genes=len({value(r, 'gene') for r in reference_rows.get(result.metadata['reference_key'], [])}))
         summary.append(result.summary)
         if status not in SUCCESS_STATUSES and not args.dry_run:
