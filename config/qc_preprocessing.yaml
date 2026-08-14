@@ -421,11 +421,13 @@ trna_match:
     species_trnascan_prefix_template: results/qc/trna_match/trnascan/{sample}
   settings:
     enabled: true
+    conda_module: miniconda/24.11.3
+    conda_env: trnascan_env
+    trnascan_bin: tRNAscan-SE
     input_vcf_pattern: "{sample}.lifted.codon.vcf"
     fallback_input_vcf_pattern: "{sample}.lifted.raw.vcf"
     output_suffix: ".lifted.codon.trna.vcf"
     run_trnascan_if_missing: false
-    trnascan_bin: tRNAscan-SE
     trnascan_mode: mito_mammal
     trnascan_threads: 4
     trnascan_extra_args: ""

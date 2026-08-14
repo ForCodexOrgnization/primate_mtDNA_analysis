@@ -277,6 +277,33 @@ configured_mitos2_value() {
   ' "$CONFIG"
 }
 
+# Read the independent tRNAscan-SE conda settings without requiring PyYAML.
+# This intentionally does not consult the MITOS2 environment configuration.
+configured_trnascan_value() {
+  local requested_key="$1"
+  awk -v requested_key="$requested_key" '
+    function indent(line) { match(line, /^[[:space:]]*/); return RLENGTH }
+    function trim(value) { sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); return value }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      if (line !~ /[^[:space:]]/) next
+      level = indent(line)
+      content = trim(line)
+
+      if (content == "trna_match:") { trna_indent = level; in_trna = 1; in_settings = 0; next }
+      if (in_trna && level <= trna_indent) { in_trna = 0; in_settings = 0 }
+      if (in_trna && content == "settings:") { settings_indent = level; in_settings = 1; next }
+      if (in_settings && level <= settings_indent) in_settings = 0
+      if (in_settings && content ~ ("^" requested_key ":[[:space:]]*")) {
+        sub("^" requested_key ":[[:space:]]*", "", content)
+        print trim(content)
+        exit
+      }
+    }
+  ' "$CONFIG"
+}
+
 if [[ -z "${BIOPYTHON_USE_MODULE+x}" ]]; then
   configured_use_module="$(configured_biopython_value use_module)"
   case "${configured_use_module,,}" in
@@ -288,6 +315,9 @@ BIOPYTHON_MODULE="${BIOPYTHON_MODULE:-$(configured_biopython_value module_load)}
 BIOPYTHON_MODULE="${BIOPYTHON_MODULE:-Biopython/1.83-foss-2022b}"
 MITOS2_CONDA_MODULE="$(configured_mitos2_value conda_module)"
 MITOS2_CONDA_ENV="$(configured_mitos2_value conda_env)"
+TRNASCAN_CONDA_MODULE="$(configured_trnascan_value conda_module)"
+TRNASCAN_CONDA_ENV="$(configured_trnascan_value conda_env)"
+TRNASCAN_BIN="$(configured_trnascan_value trnascan_bin)"
 
 run_collect_variant_calling_results() {
   echo "[qc_preprocessing] Running collect_variant_calling_results with config: ${CONFIG}" >&2
@@ -375,6 +405,80 @@ activate_mitos2_environment() {
   echo "[qc_preprocessing] command -v runmitos=$(command -v runmitos || true)" >&2
 }
 
+activate_trnascan_environment() {
+  if [[ -z "$TRNASCAN_CONDA_MODULE" || -z "$TRNASCAN_CONDA_ENV" ]]; then
+    echo "ERROR: trna_match.settings must define conda_module and conda_env." >&2
+    exit 1
+  fi
+  if [[ -z "$TRNASCAN_BIN" ]]; then
+    echo "ERROR: trna_match.settings must define trnascan_bin." >&2
+    exit 1
+  fi
+
+  echo "[qc_preprocessing] Loading tRNAscan-SE conda module: ${TRNASCAN_CONDA_MODULE}" >&2
+  if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile.d/modules.sh ]]; then
+    # module is commonly initialized only for login shells on HPC systems.
+    source /etc/profile.d/modules.sh
+  fi
+  if ! command -v module >/dev/null 2>&1; then
+    echo "ERROR: module command is unavailable; cannot load ${TRNASCAN_CONDA_MODULE}." >&2
+    echo "ERROR: failed to activate tRNAscan environment." >&2
+    exit 1
+  fi
+  if ! module load "$TRNASCAN_CONDA_MODULE"; then
+    echo "ERROR: failed to load tRNAscan conda module: ${TRNASCAN_CONDA_MODULE}." >&2
+    echo "ERROR: failed to activate tRNAscan environment." >&2
+    exit 1
+  fi
+
+  local conda_base
+  if ! conda_base="$(conda info --base)" || [[ -z "$conda_base" || ! -f "$conda_base/etc/profile.d/conda.sh" ]]; then
+    echo "ERROR: could not locate conda initialization script for tRNAscan-SE." >&2
+    echo "ERROR: failed to activate tRNAscan environment." >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  source "$conda_base/etc/profile.d/conda.sh"
+  echo "[qc_preprocessing] Activating tRNAscan conda environment: ${TRNASCAN_CONDA_ENV}" >&2
+  if ! conda activate "$TRNASCAN_CONDA_ENV"; then
+    echo "ERROR: failed to activate tRNAscan environment: ${TRNASCAN_CONDA_ENV}." >&2
+    exit 1
+  fi
+  hash -r
+
+  if [[ -z "${CONDA_PREFIX:-}" ]]; then
+    echo "ERROR: conda activation did not set CONDA_PREFIX for tRNAscan environment: ${TRNASCAN_CONDA_ENV}." >&2
+    exit 1
+  fi
+  local trnascan_executable trnascan_version
+  if ! trnascan_executable="$(command -v "$TRNASCAN_BIN")"; then
+    echo "ERROR: tRNAscan-SE was not found after activating conda environment: ${TRNASCAN_CONDA_ENV}" >&2
+    echo "Configured executable: ${TRNASCAN_BIN}" >&2
+    exit 127
+  fi
+  if ! trnascan_version="$("$TRNASCAN_BIN" --version 2>&1)"; then
+    echo "ERROR: tRNAscan-SE version check failed after activating conda environment: ${TRNASCAN_CONDA_ENV}" >&2
+    echo "Configured executable: ${TRNASCAN_BIN}" >&2
+    exit 1
+  fi
+
+  echo "[qc_preprocessing] CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-}" >&2
+  echo "[qc_preprocessing] CONDA_PREFIX=${CONDA_PREFIX}" >&2
+  echo "[qc_preprocessing] tRNAscan-SE executable=${trnascan_executable}" >&2
+  echo "[qc_preprocessing] tRNAscan-SE version=${trnascan_version}" >&2
+}
+
+run_build_trna_indexes() {
+  activate_trnascan_environment
+  echo "[qc_preprocessing] Running build_trna_indexes with config: ${CONFIG}" >&2
+  "$BASE_PYTHON" "$TRNA_INDEX_SCRIPT" --config "$CONFIG" --workers "${SLURM_CPUS_PER_TASK:-4}"
+}
+
+run_trna_match() {
+  activate_trnascan_environment
+  run_annotation trna_match "$TRNA_SCRIPT"
+}
+
 run_build_primate_codon_table() {
   echo "[qc_preprocessing] Running build_primate_codon_table with config: ${CONFIG}" >&2
   if [[ "${BIOPYTHON_USE_MODULE}" == "1" ]]; then
@@ -459,8 +563,8 @@ case "$STEP" in
   codon_match) run_annotation codon_match "$CODON_SCRIPT" ;;
   codon_match_validate) "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --validate-inputs ;;
   codon_match_merge) "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --merge-summaries ;;
-  build_trna_indexes) "$BASE_PYTHON" "$TRNA_INDEX_SCRIPT" --config "$CONFIG" --workers "${SLURM_CPUS_PER_TASK:-4}" ;;
-  trna_match) run_annotation trna_match "$TRNA_SCRIPT" ;;
+  build_trna_indexes) run_build_trna_indexes ;;
+  trna_match) run_trna_match ;;
   trna_gene_qc) echo 'Run run_trna_gene_liftover_qc.py with source index, human index, and coordinate map for each sample.' ;;
   rrna_match) run_annotation rrna_match "$RRNA_SCRIPT" ;;
   intraspecies_contamination) "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG" ;;
@@ -476,8 +580,8 @@ case "$STEP" in
     "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --validate-inputs
     run_annotation codon_match "$CODON_SCRIPT"
     "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --merge-summaries
-    "$BASE_PYTHON" "$TRNA_INDEX_SCRIPT" --config "$CONFIG" --workers "${SLURM_CPUS_PER_TASK:-4}"
-    run_annotation trna_match "$TRNA_SCRIPT"
+    run_build_trna_indexes
+    run_trna_match
     run_annotation rrna_match "$RRNA_SCRIPT"
     "$BASE_PYTHON" "$PRIMATE_BACKGROUND_SCRIPT" --config "$CONFIG"
     "$BASE_PYTHON" "$HUMAN_CONTAMINATION_SCRIPT" --config "$CONFIG"
