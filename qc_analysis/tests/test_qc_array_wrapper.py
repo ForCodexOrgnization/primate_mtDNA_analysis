@@ -17,7 +17,8 @@ WRAPPER=ROOT/'qc_analysis/scripts/run_qc_preprocessing.sh'
     ('build_primate_codon_table','results/qc/codon_table_build'),
     ('compare_genbank_mitos2','results/qc/genbank_mitos2_comparison'),
     ('codon_match_validate','results/qc/codon_match'), ('codon_match','results/qc/codon_match'),
-    ('codon_match_merge','results/qc/codon_match'), ('trna_match','results/qc/trna_match'),
+    ('codon_match_merge','results/qc/codon_match'), ('build_trna_indexes','results/qc/trna_match'),
+    ('trna_match','results/qc/trna_match'),
     ('rrna_match','results/qc/rrna_match'), ('intraspecies_contamination','results/qc/intraspecies_contamination'),
     ('sample_variant_filtering','results/qc/sample_variant_filtering'),
 ])

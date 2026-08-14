@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
+from qc_analysis.lib.reference_utils import normalized_sequence_sha256
 from qc_analysis.scripts.build_trna_position_index import build
 from qc_analysis.lib.trnascan_utils import read_fasta, validate_trna_index
 
@@ -31,19 +32,40 @@ def resolve_fastas(manifest, min_length=14000, max_length=19000):
     return result
 
 def add_coordinate_fastas(result, samples, min_length=14000, max_length=19000):
-    """Add exact variant-calling FASTAs from the annotation-independent map."""
+    """Resolve one exact variant-calling FASTA per coordinate reference.
+
+    Values from the coordinate map deliberately replace legacy manifest values.
+    Validation is grouped by reference key so that inconsistent sample rows fail
+    before any tRNAscan tasks are started.
+    """
+    grouped={}
     for row in samples:
-        key, path = row.get("reference_key"), row.get("coordinate_reference_fasta")
-        if not key or not path: continue
+        key=(row.get("reference_key") or "").strip()
+        if not key:
+            raise ValueError("Coordinate reference map row is missing reference_key")
+        grouped.setdefault(key,[]).append(row)
+    for key,rows in grouped.items():
+        paths={(row.get("coordinate_reference_fasta") or "").strip() for row in rows}
+        if "" in paths:
+            raise ValueError(f"Reference {key}: missing coordinate_reference_fasta")
+        if len(paths) != 1:
+            raise ValueError(f"Reference {key}: conflicting coordinate FASTAs: {sorted(paths)}")
+        path=next(iter(paths))
+        if not Path(path).is_file():
+            raise ValueError(f"Reference {key}: coordinate FASTA does not exist: {path}")
         seqs=read_fasta(path)
         if len(seqs) != 1:
             raise ValueError(f"Reference {key}: coordinate FASTA must contain exactly one record: {path}")
-        length=len(next(iter(seqs.values())))
+        sequence=next(iter(seqs.values()));length=len(sequence)
         if not min_length <= length <= max_length:
             raise ValueError(f"Reference {key}: mitochondrial length {length} outside [{min_length}, {max_length}]")
-        prior=result.get(key)
-        if prior and Path(prior["path"]).resolve() != Path(path).resolve():
-            raise ValueError(f"Reference {key}: conflicting coordinate FASTAs")
+        declared={(row.get("coordinate_reference_sequence_sha256") or "").strip().lower() for row in rows}
+        declared.discard("")
+        if len(declared) > 1:
+            raise ValueError(f"Reference {key}: conflicting coordinate_reference_sequence_sha256 values")
+        actual=normalized_sequence_sha256(sequence)
+        if declared and actual != next(iter(declared)):
+            raise ValueError(f"Reference {key}: coordinate FASTA SHA256 mismatch for {path}: expected {next(iter(declared))}, observed {actual}")
         result[key]={"path":path,"target_sequence_id":None}
     return result
 
@@ -67,7 +89,12 @@ def main():
     ap.add_argument("--overwrite",action="store_true");ap.add_argument("--reference-key");ap.add_argument("--task-manifest");a=ap.parse_args()
     cfg=read_simple_yaml(Path(a.config));sec=cfg["trna_match"];p,s=sec["paths"],sec["settings"]
     samples=table(p["sample_reference_map"]); minimum=int(s.get("min_mitochondrial_reference_length",14000)); maximum=int(s.get("max_mitochondrial_reference_length",19000))
-    fastas=add_coordinate_fastas(resolve_fastas(p["reference_fasta_manifest"],minimum,maximum),samples,minimum,maximum)
+    # The sample coordinate map is authoritative.  The old manifest remains an
+    # optional source only for legacy configurations and is overridden below.
+    fastas={}
+    if p.get("reference_fasta_manifest"):
+        fastas.update(resolve_fastas(p["reference_fasta_manifest"],minimum,maximum))
+    fastas=add_coordinate_fastas(fastas,samples,minimum,maximum)
     keys=sorted({r["reference_key"] for r in samples if r.get("reference_key")})
     if a.reference_key: keys=[a.reference_key]
     outdir=Path(p["reference_trna_index_dir"]); reportdir=Path(p["index_build_reports_dir"]); scan=Path(p["trnascan_output_dir"])
