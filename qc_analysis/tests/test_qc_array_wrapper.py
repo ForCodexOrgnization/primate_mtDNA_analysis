@@ -252,7 +252,7 @@ def test_step_specific_metadata_and_log_directories(tmp_path, step, section, exp
         paths+=f'    sample_reference_map: {samples}\n    input_vcf_dir: {inputs}\n'
         settings='  settings:\n    input_vcf_pattern: "{sample}.vcf"\n    output_suffix: .out.vcf\n'
     elif step=='trna_match':
-        paths+=f'    input_vcf_dir: {inputs}\n    fallback_input_vcf_dir: {inputs}\n'
+        paths+=f'    sample_reference_map: {samples}\n    input_vcf_dir: {inputs}\n    fallback_input_vcf_dir: {inputs}\n'
         settings='  settings:\n    input_vcf_pattern: "{sample}.vcf"\n    fallback_input_vcf_pattern: "{sample}.vcf"\n    output_suffix: .out.vcf\n'
     else:
         paths+=f'    input_vcf_dir: {inputs}\n    fallback_codon_vcf_dir: {inputs}\n    fallback_raw_vcf_dir: {inputs}\n'
@@ -264,6 +264,33 @@ def test_step_specific_metadata_and_log_directories(tmp_path, step, section, exp
     assert f'task_file={output}/job_arrays/' in result.stderr
     assert f'logs={output}/logs/job_arrays/%A_%a.{{out,err}}' in result.stderr
     assert (set(legacy.iterdir()) if legacy.exists() else set()) == before
+
+
+def test_trna_scheduler_uses_trna_reference_map_and_filters_inputs(tmp_path):
+    mapped=tmp_path/'trna-map.tsv'; mapped.write_text('sample\treference_key\nS1\tmtref_'+'d'*64+'\nS3\tmtref_'+'e'*64+'\n')
+    generic=tmp_path/'generic.tsv'; generic.write_text('sample\nS1\nS2\n')
+    inputs=tmp_path/'inputs'; inputs.mkdir()
+    for sample in ('S1','S2'):(inputs/f'{sample}.vcf').write_text('input\n')
+    cfg=tmp_path/'trna.yaml'; cfg.write_text(f'''coordinate_liftover:
+  paths:
+    sample_ref_file: {generic}
+trna_match:
+  paths:
+    sample_reference_map: {mapped}
+    input_vcf_dir: {inputs}
+    fallback_input_vcf_dir: {inputs}
+    output_dir: {tmp_path}/out
+  settings:
+    input_vcf_pattern: "{{sample}}.vcf"
+    fallback_input_vcf_pattern: "{{sample}}.vcf"
+    output_suffix: .out.vcf
+''')
+    result=run('--dry-run-submit','trna_match',str(cfg),env={'AUTO_SUBMIT_MERGE':'false'})
+    assert result.returncode == 0,result.stderr
+    task=next((tmp_path/'out/job_arrays').glob('trna_match.*.tasks.txt'))
+    assert task.read_text() == 'S1\n'  # S2 is unmapped; mapped S3 has no input VCF.
+    absent=run('--dry-run-submit','--sample','S2','trna_match',str(cfg),env={'AUTO_SUBMIT_MERGE':'false'})
+    assert absent.returncode != 0 and 'no eligible tasks' in absent.stderr
 
 
 def test_explicit_metadata_and_global_log_overrides_and_immutable_worker_path(tmp_path):
