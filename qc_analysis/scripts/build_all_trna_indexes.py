@@ -8,7 +8,7 @@ from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 from qc_analysis.lib.reference_utils import normalized_fasta_sequence_sha256
-from qc_analysis.scripts.build_trna_position_index import build
+from qc_analysis.scripts.build_trna_position_index import build, SUPPORTED_CHROM_NORMALIZATIONS
 from qc_analysis.lib.trnascan_utils import read_fasta, validate_trna_index
 
 def table(path):
@@ -98,7 +98,12 @@ def valid(path, reference_key):
     except (OSError, EOFError, ValueError):return False
 
 def trna_chrom_normalization(reference_key, settings):
-    return settings.get("human_trna_chrom_norm","none") if reference_key == "human" else settings.get("species_trna_chrom_norm","none")
+    key = "human_trna_chrom_norm" if reference_key == "human" else "species_trna_chrom_norm"
+    configured = settings.get(key)
+    value = str(configured or "none").strip().lower()
+    if value not in SUPPORTED_CHROM_NORMALIZATIONS:
+        raise ValueError(f"Unsupported chromosome normalization for {key}: {configured!r}")
+    return value
 
 def write(path,rows,columns):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)

@@ -3,7 +3,7 @@ import gzip
 import csv
 import hashlib
 import sys
-from qc_analysis.scripts.build_trna_position_index import build
+from qc_analysis.scripts.build_trna_position_index import build, SUPPORTED_CHROM_NORMALIZATIONS
 from qc_analysis.lib.trnascan_utils import validate_trna_index
 import pytest
 from qc_analysis.scripts import build_all_trna_indexes
@@ -29,6 +29,27 @@ def test_human_and_species_normalization_differ():
     settings={'human_trna_chrom_norm':'mitochondrial_alias','species_trna_chrom_norm':'strip_chr'}
     assert trna_chrom_normalization('human',settings)=='mitochondrial_alias'
     assert trna_chrom_normalization('Pan_troglodytes',settings)=='strip_chr'
+
+@pytest.mark.parametrize('reference_key,config_key',[
+    ('human', 'human_trna_chrom_norm'),
+    ('Pan_troglodytes', 'species_trna_chrom_norm'),
+])
+@pytest.mark.parametrize('case,configured', [('absent', None), ('null', None), ('empty', ''), ('none', 'none')])
+def test_chrom_normalization_defaults_to_none(reference_key, config_key, case, configured):
+    settings = {} if case == 'absent' else {config_key: configured}
+    assert trna_chrom_normalization(reference_key, settings) == 'none'
+
+@pytest.mark.parametrize('mode', SUPPORTED_CHROM_NORMALIZATIONS)
+def test_chrom_normalization_preserves_supported_explicit_modes(mode):
+    assert trna_chrom_normalization('human', {'human_trna_chrom_norm': f' {mode.upper()} '}) == mode
+
+@pytest.mark.parametrize('reference_key,config_key',[
+    ('human', 'human_trna_chrom_norm'),
+    ('Pan_troglodytes', 'species_trna_chrom_norm'),
+])
+def test_chrom_normalization_rejects_unsupported_value(reference_key, config_key):
+    with pytest.raises(ValueError, match=rf"{config_key}.*'invalid_mode'"):
+        trna_chrom_normalization(reference_key, {config_key: 'invalid_mode'})
 
 def test_fasta_resolution_rejects_wg_and_ambiguous_multicontig(tmp_path):
     mito=tmp_path/'mito.fa'; mito.write_text('>MT\nACGT\n')

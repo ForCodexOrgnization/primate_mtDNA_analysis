@@ -10,6 +10,7 @@ SUMMARY_COLUMNS = ["reference_key", "fasta", "selected_record_id", "fasta_length
                    "output_index", "n_trna_records", "n_index_rows", "n_positive_strand_trna",
                    "n_negative_strand_trna", "n_stem_positions", "n_loop_positions",
                    "n_missing_structure", "n_fasta_sequence_mismatch", "status", "notes"]
+SUPPORTED_CHROM_NORMALIZATIONS = ("none", "strip_chr", "add_chr", "mitochondrial_alias")
 
 def write_summary(path, row):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +56,7 @@ def parser():
     p.add_argument("--output",required=True); p.add_argument("--overwrite",action="store_true"); p.add_argument("--summary")
     p.add_argument("--target-sequence-id", help="Explicit FASTA record to index (required for multi-contig FASTA)")
     p.add_argument("--allow-ss-order-fallback", action="store_true", help="Unsafe compatibility mode; emits a warning")
-    p.add_argument("--chrom-normalization",default="none",choices=["none","strip_chr","add_chr","mitochondrial_alias"])
+    p.add_argument("--chrom-normalization",default="none",choices=SUPPORTED_CHROM_NORMALIZATIONS)
     p.add_argument("--max-sequence-mismatch-rate",type=float,default=0.0); return p
 
 def main():
