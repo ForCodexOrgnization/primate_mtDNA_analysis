@@ -1,8 +1,12 @@
 from types import SimpleNamespace
 import gzip
+import csv
+import hashlib
+import sys
 from qc_analysis.scripts.build_trna_position_index import build
 from qc_analysis.lib.trnascan_utils import validate_trna_index
 import pytest
+from qc_analysis.scripts import build_all_trna_indexes
 from qc_analysis.scripts.build_all_trna_indexes import add_coordinate_fastas, resolve_fastas, trna_chrom_normalization
 
 def test_existing_output_index_build(tmp_path):
@@ -42,3 +46,42 @@ def test_generic_map_keeps_reference_eligible_for_trnascan_without_codon_qc(tmp_
                    'coordinate_reference_fasta':str(fasta)}]
     resolved=add_coordinate_fastas({},generic_rows,1,10)
     assert resolved['mtref_failed_codon_qc']['path']==str(fasta)
+
+def test_coordinate_map_deduplicates_references_and_separates_human(tmp_path,monkeypatch):
+    one=tmp_path/'one.fa';one.write_text('>MT\nACGT\n')
+    two=tmp_path/'two.fa';two.write_text('>MT\nTGCA\n')
+    sample_map=tmp_path/'map.tsv'
+    sample_map.write_text(
+        'sample\treference_key\tcoordinate_reference_fasta\tcoordinate_reference_sequence_sha256\n'
+        f'S1\tR1\t{one}\t{hashlib.sha256(b"ACGT").hexdigest()}\n'
+        f'S2\tR1\t{one}\t{hashlib.sha256(b"ACGT").hexdigest()}\n'
+        f'S3\tR2\t{two}\t{hashlib.sha256(b"TGCA").hexdigest()}\n')
+    manifest=tmp_path/'tasks.tsv';config=tmp_path/'config.yaml'
+    config.write_text(
+        'trna_match:\n  paths:\n'
+        f'    sample_reference_map: {sample_map}\n    human_fasta: {tmp_path}/human.fa\n'
+        f'    human_trna_index: {tmp_path}/human.tsv.gz\n    reference_trna_index_dir: {tmp_path}/indexes\n'
+        '    reference_trna_index_template: "{reference_trna_index_dir}/{reference_key}.tsv.gz"\n'
+        f'    index_build_reports_dir: {tmp_path}/reports\n    trnascan_output_dir: {tmp_path}/scan\n'
+        '  settings:\n    min_mitochondrial_reference_length: 1\n    max_mitochondrial_reference_length: 10\n')
+    monkeypatch.setattr(sys,'argv',['build_all_trna_indexes.py','--config',str(config),'--task-manifest',str(manifest)])
+    build_all_trna_indexes.main()
+    with manifest.open() as handle: rows=list(csv.DictReader(handle,delimiter='\t'))
+    assert [row['reference_key'] for row in rows]==['human','R1','R2']
+    assert rows[0]['fasta']==str(tmp_path/'human.fa')
+
+@pytest.mark.parametrize('rows,message',[
+    ([('S1','R','', '')],'missing coordinate_reference_fasta'),
+    ([('S1','R','one.fa',''),('S2','R','two.fa','')],'conflicting coordinate FASTAs'),
+])
+def test_coordinate_map_rejects_missing_or_conflicting_fastas(tmp_path,rows,message):
+    for name in ('one.fa','two.fa'):(tmp_path/name).write_text('>MT\nACGT\n')
+    mapped=[{'sample':sample,'reference_key':key,'coordinate_reference_fasta':str(tmp_path/path) if path else '',
+             'coordinate_reference_sequence_sha256':sha} for sample,key,path,sha in rows]
+    with pytest.raises(ValueError,match=message):add_coordinate_fastas({},mapped,1,10)
+
+def test_coordinate_map_rejects_sequence_hash_mismatch(tmp_path):
+    fasta=tmp_path/'one.fa';fasta.write_text('>MT\nACGT\n')
+    rows=[{'sample':'S1','reference_key':'R','coordinate_reference_fasta':str(fasta),
+           'coordinate_reference_sequence_sha256':'0'*64}]
+    with pytest.raises(ValueError,match='SHA256 mismatch'):add_coordinate_fastas({},rows,1,10)
