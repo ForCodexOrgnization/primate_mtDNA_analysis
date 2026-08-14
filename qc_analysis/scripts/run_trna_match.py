@@ -91,17 +91,27 @@ def paired_rna(record):
 def read_mapping(path):
     with open(path,newline='') as h:return list(csv.DictReader(h,delimiter='\t'))
 
-def sample_reference_key(path,sample):
-    for row in read_mapping(path):
-        if row.get('sample',row.get('sample_name'))==sample:return row.get('reference_key')
-    raise ValueError(f'Sample {sample!r} is absent from sample-reference map {path}')
+def sample_reference_rows(path,sample):
+    matches=[row for row in read_mapping(path) if row.get('sample',row.get('sample_name'))==sample]
+    if not matches: raise ValueError(f'Sample {sample!r} is absent from sample-reference map {path}')
+    keys={row.get('reference_key','').strip() for row in matches if row.get('reference_key','').strip()}
+    if len(keys) != 1:
+        raise ValueError(f'Sample {sample!r} must have exactly one reference_key in {path}; found {sorted(keys)!r}')
+    return matches,keys.pop()
 
-def resolve_reference_fasta(path,key):
-    for row in read_mapping(path):
-        if row.get('reference_key',row.get('reference_id'))==key:
-            for col in ('chrM_fasta_path','chrM_expected_output_fasta','fasta','fasta_path'):
-                if row.get(col):return row[col]
-    raise ValueError(f'No FASTA for reference_key {key!r} in {path}')
+def sample_reference_key(path,sample):
+    return sample_reference_rows(path,sample)[1]
+
+def resolve_coordinate_reference_fasta(path,sample,key=None):
+    """Resolve the sample's exact Ref_chrM FASTA from the authoritative map."""
+    matches,mapped_key=sample_reference_rows(path,sample)
+    if key is not None and mapped_key != key:
+        raise ValueError(f'Sample {sample!r} maps to {mapped_key!r}, not requested reference_key {key!r}')
+    fastas={row.get('coordinate_reference_fasta','').strip() for row in matches
+            if row.get('reference_key','').strip()==mapped_key and row.get('coordinate_reference_fasta','').strip()}
+    if len(fastas) != 1:
+        raise ValueError(f'Sample {sample!r} must have exactly one coordinate_reference_fasta for {mapped_key!r} in {path}; found {sorted(fastas)!r}')
+    return fastas.pop()
 
 def ensure_index(path,key,fasta,p,s,chrom_norm):
     path=Path(path)
@@ -129,12 +139,22 @@ def main():
         if not inp.exists(): raise SystemExit(f'Missing input VCF for sample {sample}; attempted primary {primary} and fallback {fallback}' + (f'; explicit input {inp}' if a.input else ''))
         if p.get('reference_trna_index_template'):
             spi=Path(str(p['reference_trna_index_template']).format(reference_trna_index_dir=p['reference_trna_index_dir'],reference_key=reference_key))
-            fasta=resolve_reference_fasta(p['reference_fasta_manifest'],reference_key)
+            # A materialized, valid reference-level index is self-contained.  Only
+            # consult the coordinate map for its FASTA if the index must be built.
+            if spi.exists():
+                si=index(spi,s.get('species_trna_chrom_norm','none'))
+                fasta=None
+            else:
+                fasta=resolve_coordinate_reference_fasta(p['sample_reference_map'],sample,reference_key)
         elif p.get('species_trna_index_template'): # explicitly configured legacy mode
             spi=Path(str(p['species_trna_index_template']).format(species_trna_index_dir=p['species_trna_index_dir'],sample=sample));fasta=''
         else: raise SystemExit('Configure reference_trna_index_template (preferred) or the legacy species_trna_index_template')
-        ensure_index(spi,reference_key,fasta,p,s,s.get('species_trna_chrom_norm','none'))
-        si=index(spi,s.get('species_trna_chrom_norm','none')); cmap=map_for(p.get('coordinate_map_dir',''),sample)
+        if not spi.exists():
+            ensure_index(spi,reference_key,fasta,p,s,s.get('species_trna_chrom_norm','none'))
+            si=index(spi,s.get('species_trna_chrom_norm','none'))
+        elif not p.get('reference_trna_index_template'):
+            si=index(spi,s.get('species_trna_chrom_norm','none'))
+        cmap=map_for(p.get('coordinate_map_dir',''),sample)
         out=Path(a.output) if a.output else Path(p['output_dir'])/'vcf_trna'/f"{sample}{s['output_suffix'] if codon else '.lifted.trna.vcf'}"; out.parent.mkdir(parents=True,exist_ok=True)
         head=[]; body=[]; counts=Counter()
         for lineno,line in enumerate(open_text(inp),1):

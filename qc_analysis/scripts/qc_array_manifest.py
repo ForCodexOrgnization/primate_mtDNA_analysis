@@ -94,7 +94,11 @@ def main():
         print(f'OUTPUT_DIR={runtime["output_dir"]}');print(f'JOB_ARRAY_DIR={runtime["job_array_dir"]}');print(f'LOG_DIR={runtime["log_dir"]}');return
     # --sample narrows only genuinely sample-level steps. In particular, do
     # not turn a singleton/reference manifest entry into a sample identifier.
-    if a.sample and step in SAMPLE_STEPS: candidates=[a.sample]
+    if a.sample and step in SAMPLE_STEPS:
+        if step == 'trna_match':
+            mapped=table_samples(cfg[step]['paths'].get('sample_reference_map',''))
+            candidates=[a.sample] if a.sample in mapped else []
+        else: candidates=[a.sample]
     elif step in GLOBAL_STEPS: candidates=[step]
     elif step=='mitos2_annotation':
         task=Path(cfg[step]['paths'].get('mitos2_reference_tasks',''))
@@ -107,7 +111,7 @@ def main():
             candidates=['reference:'+x for x in table_samples(sample_file)]
     elif step in SAMPLE_STEPS:
         if step=='coordinate_liftover': source=cfg[step]['paths']['sample_ref_file']
-        elif step=='codon_match': source=cfg[step]['paths']['sample_reference_map']
+        elif step in {'codon_match','trna_match'}: source=cfg[step]['paths']['sample_reference_map']
         else: source=cfg.get('coordinate_liftover',{}).get('paths',{}).get('sample_ref_file','')
         candidates=table_samples(source)
     else: raise SystemExit(f'Unsupported array step: {step}')

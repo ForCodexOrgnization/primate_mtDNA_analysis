@@ -408,7 +408,6 @@ trna_match:
     reports_dir: results/qc/trna_match/reports
     coordinate_map_dir: results/qc/coordinate_liftover/maps
     sample_reference_map: data/reference_tables/sample_coordinate_reference_map.tsv
-    reference_fasta_manifest: references/manifests/reference_materialization_manifest.resolved.tsv
     human_fasta: data/reference_tables/human_chrM.fa
     human_trna_index: data/reference_tables/trna_index/human.trna_position_index.tsv.gz
     reference_trna_index_dir: data/reference_tables/trna_index/references

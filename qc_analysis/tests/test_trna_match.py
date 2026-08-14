@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from qc_analysis.scripts.run_trna_match import index, normalize_chrom, oriented
+from qc_analysis.scripts.run_trna_match import (
+    index, normalize_chrom, oriented, resolve_coordinate_reference_fasta,
+    sample_reference_key,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 HEADER = ('chrom\tpos\ttrna_id\tlocal_pos\tstruct_class\tstruct_element\tpair_type\t'
@@ -104,3 +107,48 @@ def test_pass_only_and_summary_controls(tmp_path):
 def test_v2_paired_rna_is_not_complemented_twice():
     from qc_analysis.scripts.run_trna_match import paired_rna
     assert paired_rna({'strand':'-','paired_base_rna':'U','paired_base':'A','index_format_version':'2'}) == 'U'
+
+def test_sha_reference_key_resolves_exact_coordinate_fasta(tmp_path):
+    digest='a'*64; key=f'mtref_{digest}'; exact=tmp_path/'Ref_chrM.fa'
+    mapping=tmp_path/'sample_coordinate_reference_map.tsv'
+    mapping.write_text('sample\treference_key\tcoordinate_reference_fasta\tcoordinate_reference_sequence_sha256\n'
+                       f'S1\t{key}\t{exact}\t{digest}\n')
+    assert sample_reference_key(mapping,'S1') == key
+    assert resolve_coordinate_reference_fasta(mapping,'S1',key) == str(exact)
+
+def test_sample_must_have_exactly_one_reference_key(tmp_path):
+    mapping=tmp_path/'sample_coordinate_reference_map.tsv'
+    mapping.write_text('sample\treference_key\tcoordinate_reference_fasta\n'
+                       'S1\tmtref_'+'a'*64+'\ta.fa\n'
+                       'S1\tmtref_'+'b'*64+'\tb.fa\n')
+    with pytest.raises(ValueError,match='exactly one reference_key'):
+        sample_reference_key(mapping,'S1')
+
+def test_existing_valid_reference_index_needs_no_fasta_lookup(tmp_path):
+    human=tmp_path/'human.tsv'; human.write_text(HEADER+row('chrM',ident='H'))
+    digest='c'*64; key=f'mtref_{digest}'; indexes=tmp_path/'indexes'; indexes.mkdir()
+    (indexes/f'{key}.tsv').write_text(HEADER+row())
+    mapping=tmp_path/'sample_coordinate_reference_map.tsv'
+    # Deliberately no coordinate_reference_fasta column: it must not be read.
+    mapping.write_text(f'sample\treference_key\nS1\t{key}\n')
+    inp=tmp_path/'input.vcf'; inp.write_text('##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchrM\t10\t.\tA\tT\t.\tPASS\tSRC_CHROM=species;SRC_POS=10\n')
+    cfg=tmp_path/'config.yaml'; cfg.write_text(f'''trna_match:
+  paths:
+    input_vcf_dir: {tmp_path}
+    fallback_input_vcf_dir: {tmp_path}
+    output_dir: {tmp_path}
+    reports_dir: {tmp_path}/reports
+    coordinate_map_dir: {tmp_path}/maps
+    sample_reference_map: {mapping}
+    human_trna_index: {human}
+    reference_trna_index_dir: {indexes}
+    reference_trna_index_template: "{{reference_trna_index_dir}}/{{reference_key}}.tsv"
+  settings:
+    input_vcf_pattern: unused.vcf
+    fallback_input_vcf_pattern: unused.vcf
+    output_suffix: .out.vcf
+    run_trnascan_if_missing: false
+''')
+    result=run(cfg,inp,tmp_path/'out.vcf')
+    assert result.returncode == 0,result.stderr
+    assert f'MTTRNA_REFERENCE_KEY={key}' in (tmp_path/'out.vcf').read_text()
