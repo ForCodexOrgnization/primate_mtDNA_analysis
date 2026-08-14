@@ -1743,7 +1743,6 @@ ERS1126695	Gorilla_beringei
 ERS11527608	Papio_ursinus
 ERS11527609	Papio_ursinus
 ERS1162825	Gorilla_beringei
-ERS12091962	Pithecia_chrysocephala
 ERS12091966	Pithecia_pissinatti
 ERS12091967	Pithecia_pissinatti
 ERS12091968	Pithecia_pissinatti
@@ -2198,7 +2197,6 @@ SRS009936	Otolemur_garnettii
 SRS009937	Otolemur_garnettii
 SRS009938	Otolemur_garnettii
 SRS009939	Otolemur_garnettii
-SRS10344273	Pithecia_pithecia
 SRS10344291	Callimico_goeldii
 SRS10344295	Erythrocebus_patas
 SRS10344301	Hylobates_agilis
@@ -2208,12 +2206,6 @@ SRS11183128	Hylobates_lar
 SRS11183130	Hylobates_lar
 SRS11183131	Hylobates_lar
 SRS11183151	Mandrillus_leucophaeus
-SRS11183162	Pithecia_pithecia
-SRS11183174	Pithecia_pithecia
-SRS11183175	Pithecia_pithecia
-SRS11183176	Pithecia_pithecia
-SRS11183177	Pithecia_pithecia
-SRS11183178	Pithecia_pithecia
 SRS11183180	Saimiri_boliviensis
 SRS11183182	Saimiri_boliviensis
 SRS11183183	Saimiri_boliviensis
@@ -2221,7 +2213,6 @@ SRS11183186	Saimiri_boliviensis
 SRS11183188	Saimiri_boliviensis
 SRS11183189	Saimiri_boliviensis
 SRS11183190	Saimiri_boliviensis
-SRS11183239	Pithecia_pithecia
 SRS11183258	Mandrillus_leucophaeus
 SRS11183264	Mandrillus_leucophaeus
 SRS11183265	Mandrillus_leucophaeus
@@ -2237,7 +2228,6 @@ SRS11219893	Erythrocebus_patas
 SRS11219894	Hoolock_leuconedys
 SRS11219895	Pygathrix_nigripes
 SRS11219896	Ateles_geoffroyi
-SRS11219898	Pithecia_pithecia
 SRS11219900	Hylobates_pileatus
 SRS11219901	Galago_moholi
 SRS11219902	Lophocebus_aterrimus
@@ -2308,7 +2298,6 @@ SRS1279259	Papio_cynocephalus
 SRS1279260	Papio_cynocephalus
 SRS1386483	Propithecus_diadema
 SRS1386484	Propithecus_diadema
-SRS13919147	Miopithecus_talapoin
 SRS13919154	Symphalangus_syndactylus
 SRS13919162	Varecia_variegata
 SRS15139582	Macaca_mulatta
