@@ -47,14 +47,42 @@ def test_generic_map_keeps_reference_eligible_for_trnascan_without_codon_qc(tmp_
     resolved=add_coordinate_fastas({},generic_rows,1,10)
     assert resolved['mtref_failed_codon_qc']['path']==str(fasta)
 
+def test_coordinate_map_accepts_identical_fasta_aliases(tmp_path):
+    one=tmp_path/'one.fa'; one.write_text('>MT\nACGT\n')
+    two=tmp_path/'two.fa'; two.write_text('>different_header\nac gt\n')
+    sha=hashlib.sha256(b'ACGT').hexdigest(); key=f'mtref_{sha}'
+    rows=[{'sample':'S1','reference_key':key,'coordinate_reference_fasta':str(one)},
+          {'sample':'S2','reference_key':key,'coordinate_reference_fasta':str(two)}]
+    resolved=add_coordinate_fastas({},rows,1,10)[key]
+    assert resolved['path']==min(str(one),str(two))
+    assert resolved['n_fasta_aliases']==2
+    assert resolved['validation_status']=='VALID_IDENTICAL_FASTA_ALIASES'
+    assert resolved['normalized_sequence_sha256']==sha
+
+def test_coordinate_map_rejects_different_fasta_alias_sequences(tmp_path):
+    one=tmp_path/'one.fa'; one.write_text('>MT\nACGT\n')
+    two=tmp_path/'two.fa'; two.write_text('>MT\nTGCA\n')
+    rows=[{'sample':'S1','reference_key':'R','coordinate_reference_fasta':str(one)},
+          {'sample':'S2','reference_key':'R','coordinate_reference_fasta':str(two)}]
+    with pytest.raises(ValueError,match='FAIL_HASH_CONFLICT'):
+        add_coordinate_fastas({},rows,1,10)
+
+def test_coordinate_map_rejects_reference_key_hash_mismatch(tmp_path):
+    fasta=tmp_path/'one.fa'; fasta.write_text('>MT\nACGT\n')
+    rows=[{'sample':'S1','reference_key':f'mtref_{"0"*64}',
+           'coordinate_reference_fasta':str(fasta)}]
+    with pytest.raises(ValueError,match='FAIL_REFERENCE_KEY_HASH_MISMATCH'):
+        add_coordinate_fastas({},rows,1,10)
+
 def test_coordinate_map_deduplicates_references_and_separates_human(tmp_path,monkeypatch):
     one=tmp_path/'one.fa';one.write_text('>MT\nACGT\n')
+    one_alias=tmp_path/'one-alias.fa';one_alias.write_text('>another_name\nACGT\n')
     two=tmp_path/'two.fa';two.write_text('>MT\nTGCA\n')
     sample_map=tmp_path/'map.tsv'
     sample_map.write_text(
         'sample\treference_key\tcoordinate_reference_fasta\tcoordinate_reference_sequence_sha256\n'
         f'S1\tR1\t{one}\t{hashlib.sha256(b"ACGT").hexdigest()}\n'
-        f'S2\tR1\t{one}\t{hashlib.sha256(b"ACGT").hexdigest()}\n'
+        f'S2\tR1\t{one_alias}\t{hashlib.sha256(b"ACGT").hexdigest()}\n'
         f'S3\tR2\t{two}\t{hashlib.sha256(b"TGCA").hexdigest()}\n')
     manifest=tmp_path/'tasks.tsv';config=tmp_path/'config.yaml'
     config.write_text(
@@ -69,12 +97,13 @@ def test_coordinate_map_deduplicates_references_and_separates_human(tmp_path,mon
     with manifest.open() as handle: rows=list(csv.DictReader(handle,delimiter='\t'))
     assert [row['reference_key'] for row in rows]==['human','R1','R2']
     assert rows[0]['fasta']==str(tmp_path/'human.fa')
+    assert rows[1]['n_fasta_aliases']=='2'
+    assert rows[1]['validation_status']=='VALID_IDENTICAL_FASTA_ALIASES'
 
 @pytest.mark.parametrize('rows,message',[
     ([('S1','R','', '')],'missing coordinate_reference_fasta'),
-    ([('S1','R','one.fa',''),('S2','R','two.fa','')],'conflicting coordinate FASTAs'),
 ])
-def test_coordinate_map_rejects_missing_or_conflicting_fastas(tmp_path,rows,message):
+def test_coordinate_map_rejects_missing_fasta(tmp_path,rows,message):
     for name in ('one.fa','two.fa'):(tmp_path/name).write_text('>MT\nACGT\n')
     mapped=[{'sample':sample,'reference_key':key,'coordinate_reference_fasta':str(tmp_path/path) if path else '',
              'coordinate_reference_sequence_sha256':sha} for sample,key,path,sha in rows]
