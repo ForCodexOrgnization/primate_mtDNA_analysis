@@ -288,6 +288,9 @@ def references(paths, sample_filter=None):
  manifest=read(paths['reference_manifest']); samples=read(paths['sample_ref_file'])
  if sample_filter: samples=[s for s in samples if val(s,'sample')==sample_filter]
  refs={}
+ # This is the authoritative coordinate-assignment index.  In particular,
+ # reference_species is provenance and must never participate in this index.
+ target_references={}
  for m in manifest:
   target=val(m,'target_species'); species=val(m,'final_chrM_species') or target
   fasta_dir=paths.get('final_chrM_fasta_dir',paths.get('fasta_dir','references/variant_calling/Ref_chrM'))
@@ -320,6 +323,16 @@ def references(paths, sample_filter=None):
              **({'status':status} if val(m,'chrM_selection_status') == 'missing_chrM_ref' else {})}
   candidate['target_records'][sk(target)]={'coordinate_reference_fasta':str(Path(fasta).resolve()) if fasta else '',
    'coordinate_reference_accession':acc,'coordinate_reference_sequence_sha256':sequence_sha}
+  target_key=sk(target)
+  assignment={'reference_key':key,**candidate['target_records'][target_key]}
+  previous=target_references.get(target_key)
+  if previous and previous != assignment:
+   raise SystemExit('Conflicting coordinate references for target species '
+    f'{target!r}: reference_keys={[previous["reference_key"], key]}; '
+    f'FASTA paths={[previous["coordinate_reference_fasta"], assignment["coordinate_reference_fasta"]]}; '
+    f'accessions={[previous["coordinate_reference_accession"], acc]}; '
+    f'SHA256 values={[previous["coordinate_reference_sequence_sha256"], sequence_sha]}')
+  target_references[target_key]=assignment
   if key in refs:
    refs[key]['targets'].update(candidate['targets']); refs[key]['target_records'].update(candidate['target_records'])
   else: refs[key]=candidate
@@ -327,11 +340,17 @@ def references(paths, sample_filter=None):
  for ref in refs.values():
   linked=[]
   for s in samples:
-   species_key=sk(val(s,'species'))
-   if species_key in ref['targets'] or species_key==sk(ref['reference_species']):
-    provenance=ref['target_records'].get(species_key,{'coordinate_reference_fasta':ref['coordinate_reference_fasta'],'coordinate_reference_accession':ref['coordinate_reference_accession'],'coordinate_reference_sequence_sha256':ref['coordinate_reference_sequence_sha256']})
+   sample_species=val(s,'target_species') or val(s,'species')
+   species_key=sk(sample_species)
+   assignment=target_references.get(species_key)
+   if assignment and assignment['reference_key']==ref['reference_key']:
+    provenance={k:assignment[k] for k in ('coordinate_reference_fasta','coordinate_reference_accession','coordinate_reference_sequence_sha256')}
     linked.append({'sample':val(s,'sample'),'species':val(s,'species'),**provenance})
   result.append((ref,linked))
+ unresolved=[f"{val(s,'sample')} ({val(s,'target_species') or val(s,'species')})" for s in samples
+             if sk(val(s,'target_species') or val(s,'species')) not in target_references]
+ if unresolved:
+  print('Samples with no resolved target coordinate reference: '+', '.join(unresolved),file=sys.stderr)
  return sorted(result,key=lambda pair:(pair[0]['reference_key'], pair[0]['coordinate_reference_fasta']))
 def task_rows(refs, paths):
  rows=[]
@@ -343,11 +362,32 @@ def task_rows(refs, paths):
  return rows
 def sample_reference_rows(refs):
  """Describe variant-calling coordinates without consulting annotation QC."""
- return [{'sample':sample['sample'],'species':sample['species'],'species_key':sk(sample['species']),
+ rows=[{'sample':sample['sample'],'species':sample['species'],'species_key':sk(sample['species']),
           'reference_key':ref['reference_key'],'coordinate_reference_fasta':sample['coordinate_reference_fasta'],
           'coordinate_reference_accession':sample['coordinate_reference_accession'],
           'coordinate_reference_sequence_sha256':sample['coordinate_reference_sequence_sha256']}
          for ref,linked in refs for sample in linked]
+ return validate_sample_reference_rows(rows,'sample_coordinate_reference_map.tsv')
+def validate_sample_reference_rows(rows, table_name):
+ """Collapse exact duplicates and reject distinct coordinate references per sample."""
+ unique=[]; seen=set(); by_sample={}
+ for row in rows:
+  signature=tuple((field,str(row.get(field,''))) for field in SAMPLE_REFERENCE_FIELDS)
+  if signature in seen: continue
+  seen.add(signature); unique.append(row)
+  by_sample.setdefault(row.get('sample',''),[]).append(row)
+ conflicts={sample: entries for sample,entries in by_sample.items()
+            if len({entry.get('reference_key','') for entry in entries}) > 1}
+ if conflicts:
+  details=[]
+  for sample,entries in sorted(conflicts.items()):
+   details.append(f"sample={sample!r}; species={sorted({e.get('species','') for e in entries})}; "
+    f"reference_keys={sorted({e.get('reference_key','') for e in entries})}; "
+    f"FASTA paths={sorted({e.get('coordinate_reference_fasta','') for e in entries})}; "
+    f"accessions={sorted({e.get('coordinate_reference_accession','') for e in entries})}; "
+    f"SHA256 values={sorted({e.get('coordinate_reference_sequence_sha256','') for e in entries})}")
+  raise SystemExit(f'Conflicting reference keys in {table_name}: '+' | '.join(details))
+ return unique
 def merge(paths,settings,refs):
  """Merge one reference at a time without constructing sample-expanded rows."""
  reference_table=paths.get('mitos2_reference_cds_table',str(Path(paths['output_dir'])/'all_mitos2_reference_position_codon_table.tsv'))
@@ -355,7 +395,12 @@ def merge(paths,settings,refs):
  outputs=[(reference_table,REFERENCE_CODON_FIELDS),(mapping_table,SAMPLE_REFERENCE_FIELDS),
           (paths['mitos2_summary_table'],SUMMARY_FIELDS)]
  if paths.get('mitos2_feature_table'): outputs.append((paths['mitos2_feature_table'],FEATURE_FIELDS))
- counts={'references':0,'codons':0,'mappings':0,'features':0}
+ # Validate the complete assignment set before opening either output.  The
+ # production mapping is a subset of these rows, so it cannot introduce a
+ # distinct-key conflict; it is validated again as rows are selected below.
+ validated_assignments=validate_sample_reference_rows(sample_reference_rows(refs),Path(mapping_table).name)
+ assignment_by_sample={row['sample']:row for row in validated_assignments}
+ counts={'references':0,'codons':0,'mappings':0,'features':0}; codon_mapping_rows=[]
  with ExitStack() as stack:
   writers={}
   for path,fields in outputs:
@@ -369,13 +414,11 @@ def merge(paths,settings,refs):
     writers[paths['mitos2_feature_table']].writerows(result['features']);counts['features']+=len(result['features'])
    if result['summary_row'].get('production_qc_status')=='PASS_PRODUCTION':
     writers[reference_table].writerows(result['reference_codon_rows']);counts['codons']+=len(result['reference_codon_rows'])
-    for sample in linked:
-     writers[mapping_table].writerow({'sample':sample['sample'],'species':sample['species'],'species_key':sk(sample['species']),
-      'reference_key':ref['reference_key'],'coordinate_reference_fasta':sample['coordinate_reference_fasta'],
-      'coordinate_reference_accession':sample['coordinate_reference_accession'],
-      'coordinate_reference_sequence_sha256':sample['coordinate_reference_sequence_sha256']})
-     counts['mappings']+=1
+    codon_mapping_rows.extend(assignment_by_sample[sample['sample']] for sample in linked)
    del result
+  codon_mapping_rows=validate_sample_reference_rows(codon_mapping_rows,Path(mapping_table).name)
+  counts['mappings']=len(codon_mapping_rows)
+  writers[mapping_table].writerows(codon_mapping_rows)
  print(f"Wrote {counts['codons']} reference coding rows and {counts['mappings']} sample/reference mappings from {counts['references']} references.")
 def run_reference(ref,linked,paths,settings,a):
  """Execute one MITOS2 reference and always return its materialized result."""
