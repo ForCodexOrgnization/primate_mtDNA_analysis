@@ -120,7 +120,11 @@ def test_trna_steps_activate_configured_environment_and_binary(tmp_path, step, e
     )
     write_executable(
         trna_bin / "custom-trnascan",
-        "#!/usr/bin/env bash\n[[ \"$1\" == --version ]] && echo 'custom tRNAscan-SE 2.0'\n",
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$1\" == --version ]]; then\n"
+        "  echo 'custom tRNAscan-SE 2.0'\n"
+        "  exit 2\n"
+        "fi\n",
     )
     config = tmp_path / "qc.yaml"
     config.write_text(
@@ -150,7 +154,7 @@ def test_trna_steps_activate_configured_environment_and_binary(tmp_path, step, e
     assert module_log.read_text() == "load miniconda/trna-test\n"
     assert "CONDA_DEFAULT_ENV=bespoke_trna" in completed.stderr
     assert f"tRNAscan-SE executable={trna_bin / 'custom-trnascan'}" in completed.stderr
-    assert "tRNAscan-SE version=custom tRNAscan-SE 2.0" in completed.stderr
+    assert "tRNAscan-SE version/info=custom tRNAscan-SE 2.0" in completed.stderr
     assert expected_script in call_log.read_text()
 
 

@@ -456,16 +456,19 @@ activate_trnascan_environment() {
     echo "Configured executable: ${TRNASCAN_BIN}" >&2
     exit 127
   fi
-  if ! trnascan_version="$("$TRNASCAN_BIN" --version 2>&1)"; then
-    echo "ERROR: tRNAscan-SE version check failed after activating conda environment: ${TRNASCAN_CONDA_ENV}" >&2
-    echo "Configured executable: ${TRNASCAN_BIN}" >&2
-    exit 1
+  # tRNAscan-SE releases differ in their handling of --version: some print
+  # useful version or help text but still return a non-zero status.  Finding
+  # the configured executable is the mandatory preflight; version output is
+  # diagnostic only.
+  trnascan_version="$("$TRNASCAN_BIN" --version 2>&1 || true)"
+  if [[ -z "$trnascan_version" ]]; then
+    "$TRNASCAN_BIN" -h >/dev/null 2>&1 || true
   fi
 
   echo "[qc_preprocessing] CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-}" >&2
   echo "[qc_preprocessing] CONDA_PREFIX=${CONDA_PREFIX}" >&2
   echo "[qc_preprocessing] tRNAscan-SE executable=${trnascan_executable}" >&2
-  echo "[qc_preprocessing] tRNAscan-SE version=${trnascan_version}" >&2
+  echo "[qc_preprocessing] tRNAscan-SE version/info=${trnascan_version}" >&2
 }
 
 run_build_trna_indexes() {
