@@ -4,7 +4,9 @@ from pathlib import Path
 
 from qc_analysis.lib.match_utils import (
     compare_values, lift_source_pos_to_human, load_coordinate_map,
-    normalize_rna_base, pair_effect, pair_type,
+    is_iupac_dna_base, is_iupac_rna_base, is_resolved_rna_base,
+    normalize_rna_base, normalize_rna_symbol, orient_dna_base_to_rna,
+    pair_effect, pair_type, rna_symbols_compatible,
 )
 from qc_analysis.scripts.run_rrna_match import (
     infer_species_pair_pos_from_human_pair_local, load_rrna_structure_table,
@@ -18,9 +20,32 @@ class RnaMatchUtilityTests(unittest.TestCase):
         self.assertEqual(pair_type("A", "T"), "WC")
         self.assertEqual(pair_type("G", "U"), "GU_wobble")
         self.assertEqual(pair_type("A", "C"), "non_WC")
-        self.assertEqual(pair_type("N", "C"), "NA")
+        self.assertEqual(pair_type("N", "C"), "ambiguous")
         self.assertEqual(pair_effect("WC", "non_WC"), "WC_to_non_WC")
         self.assertEqual(pair_effect("WC", "WC"), "unchanged")
+
+    def test_iupac_symbols_are_preserved_but_not_treated_as_resolved(self):
+        for symbol in "ACGTRYSWKMBDHVN":
+            self.assertTrue(is_iupac_dna_base(symbol))
+        for symbol in "ACGURYSWKMBDHVN":
+            self.assertTrue(is_iupac_rna_base(symbol))
+        self.assertEqual(normalize_rna_symbol("m"), "M")
+        self.assertIsNone(normalize_rna_base("M"))
+        self.assertFalse(is_resolved_rna_base("R"))
+
+    def test_iupac_orientation_compatibility_and_conservative_pairs(self):
+        self.assertEqual(orient_dna_base_to_rna("R", "+"), "R")
+        expected={"R":"Y","Y":"R","M":"K","K":"M","W":"W","S":"S",
+                  "B":"V","V":"B","D":"H","H":"D","A":"U","T":"A"}
+        for genomic,rna in expected.items():
+            self.assertEqual(orient_dna_base_to_rna(genomic, "-"), rna)
+        for reference,allowed in {"R":"AGR","Y":"CUY","M":"ACM","W":"AUW"}.items():
+            for observed in allowed:
+                self.assertTrue(rna_symbols_compatible(reference, observed))
+        for observed in "CU": self.assertFalse(rna_symbols_compatible("R", observed))
+        self.assertEqual(pair_type("R", "C"), "ambiguous")
+        self.assertEqual(pair_effect("ambiguous", "WC"), "NA")
+        self.assertEqual(pair_effect("WC", "ambiguous"), "NA")
 
     def test_rrna_gene_normalization_and_pair_coordinate_inference(self):
         self.assertEqual(normalize_rrna_gene("12S"), "MT-RNR1")

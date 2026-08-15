@@ -16,6 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from qc_analysis.lib.match_utils import (
+    IUPAC_DNA_BASES, IUPAC_RNA_BASES, orient_dna_base_to_rna, pair_type,
+    rna_symbols_compatible,
+)
+
 INDEX_FORMAT_VERSION = "2"
 INDEX_COLUMNS = ["index_format_version", "base_orientation", "pair_type_orientation",
                  "coordinate_space", "reference_key", "chrom", "pos", "trna_id",
@@ -301,15 +306,11 @@ def read_fasta(path: str | Path) -> dict[str, str]:
 
 
 def _rna(genomic: str, strand: str) -> str:
-    base = genomic.upper().replace("T", "U")
-    return base if strand == "+" else {"A": "U", "U": "A", "C": "G", "G": "C"}.get(base, base)
+    return orient_dna_base_to_rna(genomic, strand) or ""
 
 
 def _pair_type(a: str, b: str) -> str:
-    pair = (a, b)
-    if pair in {("A", "U"), ("U", "A"), ("C", "G"), ("G", "C")}: return "WC"
-    if pair in {("G", "U"), ("U", "G")}: return "GU_wobble"
-    return "non_WC"
+    return pair_type(a, b)
 
 
 def build_trna_position_index(reference_key: str, fasta: str | Path, trnascan_out: str | Path,
@@ -339,7 +340,7 @@ def build_trna_position_index(reference_key: str, fasta: str | Path, trnascan_ou
             pos = rec.genomic_pos(local)
             if pos < 1 or pos > len(seqs[chrom]): raise ValueError(f"{rec.trna_id} position {pos} outside FASTA")
             genomic = seqs[chrom][pos - 1]; rna = _rna(genomic, rec.strand)
-            if ss_base.upper().replace("T", "U") not in {rna, "N"}: mismatches += 1
+            if not rna_symbols_compatible(ss_base, rna): mismatches += 1
             compared += 1
             mate = rec.pairs.get(local); mate_pos = rec.genomic_pos(mate) if mate else None
             mate_genomic = seqs[chrom][mate_pos - 1] if mate_pos else ""
@@ -357,7 +358,7 @@ def build_trna_position_index(reference_key: str, fasta: str | Path, trnascan_ou
                          "paired_base_genomic": mate_genomic or ".", "paired_base_rna": mate_rna or ".",
                          "pair_bases_rna": f"{rna}-{mate_rna}" if mate else ".", "pair_type": ptype,
                          "pair_status": "paired" if mate else "unpaired",
-                         "pair_state": "WC" if ptype == "WC" else "non_WC" if mate else "NA",
+                         "pair_state": "NA" if ptype == "ambiguous" or not mate else "WC" if ptype == "WC" else "non_WC",
                          "base": genomic, "paired_base": mate_genomic or ".", "fasta_sha256": fasta_sha256})
     rate = mismatches / compared if compared else 0
     if rate > mismatch_rate_threshold:
@@ -393,10 +394,12 @@ def validate_trna_index(path: str | Path, reference_key: str) -> dict:
             for key in ("pos", "local_pos"):
                 if not row[key].isdigit() or int(row[key]) <= 0: raise ValueError(f"invalid {key} at line {line}")
             if row["strand"] not in {"+", "-"}: raise ValueError(f"invalid strand at line {line}")
-            for key in ("base_genomic", "base_rna"):
-                if row[key].upper() not in {"A","C","G","T","U","N"}: raise ValueError(f"invalid {key} at line {line}")
+            if row["base_genomic"].upper() not in IUPAC_DNA_BASES: raise ValueError(f"invalid base_genomic at line {line}")
+            if row["base_rna"].upper() not in IUPAC_RNA_BASES: raise ValueError(f"invalid base_rna at line {line}")
+            if row["paired_base_genomic"].upper() not in IUPAC_DNA_BASES | {"."}: raise ValueError(f"invalid paired_base_genomic at line {line}")
+            if row["paired_base_rna"].upper() not in IUPAC_RNA_BASES | {"."}: raise ValueError(f"invalid paired_base_rna at line {line}")
             if row["pair_status"] not in {"paired", "unpaired"}: raise ValueError(f"invalid pair_status at line {line}")
             if row["pair_state"] not in {"WC", "non_WC", "NA"}: raise ValueError(f"invalid pair_state at line {line}")
-            if row["pair_type"] not in {"WC", "GU_wobble", "non_WC", ".", "NA"}: raise ValueError(f"invalid pair_type at line {line}")
+            if row["pair_type"] not in {"WC", "GU_wobble", "non_WC", "ambiguous", ".", "NA"}: raise ValueError(f"invalid pair_type at line {line}")
         if not count: raise ValueError("index has no data rows")
     return {"n_rows": count}
