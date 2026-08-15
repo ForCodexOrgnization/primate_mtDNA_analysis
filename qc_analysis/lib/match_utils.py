@@ -3,6 +3,45 @@ from __future__ import annotations
 import csv, gzip, os, tempfile
 from pathlib import Path
 
+RESOLVED_DNA_BASES = frozenset("ACGT")
+IUPAC_DNA_BASES = frozenset("ACGTRYSWKMBDHVN")
+RESOLVED_RNA_BASES = frozenset("ACGU")
+IUPAC_RNA_BASES = frozenset("ACGURYSWKMBDHVN")
+DNA_IUPAC_COMPLEMENT = {
+ 'A':'T','T':'A','C':'G','G':'C','R':'Y','Y':'R','S':'S','W':'W',
+ 'K':'M','M':'K','B':'V','V':'B','D':'H','H':'D','N':'N',
+}
+RNA_IUPAC_STATES = {
+ 'A':frozenset('A'),'C':frozenset('C'),'G':frozenset('G'),'U':frozenset('U'),
+ 'R':frozenset('AG'),'Y':frozenset('CU'),'S':frozenset('CG'),'W':frozenset('AU'),
+ 'K':frozenset('GU'),'M':frozenset('AC'),'B':frozenset('CGU'),
+ 'D':frozenset('AGU'),'H':frozenset('ACU'),'V':frozenset('ACG'),
+ 'N':frozenset('ACGU'),
+}
+
+def _upper_symbol(base): return str(base or '').strip().upper()
+def is_resolved_dna_base(base): return _upper_symbol(base) in RESOLVED_DNA_BASES
+def is_iupac_dna_base(base): return _upper_symbol(base) in IUPAC_DNA_BASES
+def is_resolved_rna_base(base): return _upper_symbol(base).replace('T','U') in RESOLVED_RNA_BASES
+def is_iupac_rna_base(base): return _upper_symbol(base).replace('T','U') in IUPAC_RNA_BASES
+
+def normalize_rna_symbol(base):
+ """Return an RNA IUPAC symbol, or ``None`` for missing/invalid input."""
+ b=_upper_symbol(base).replace('T','U')
+ return b if b in IUPAC_RNA_BASES else None
+
+def orient_dna_base_to_rna(base, strand='+'):
+ """Convert one DNA IUPAC symbol to mature-RNA orientation."""
+ b=_upper_symbol(base)
+ if b not in IUPAC_DNA_BASES:return None
+ if strand=='-':b=DNA_IUPAC_COMPLEMENT[b]
+ return b.replace('T','U')
+
+def rna_symbols_compatible(left,right):
+ """Whether two valid RNA IUPAC symbols have at least one shared state."""
+ a,b=normalize_rna_symbol(left),normalize_rna_symbol(right)
+ return bool(a and b and RNA_IUPAC_STATES[a] & RNA_IUPAC_STATES[b])
+
 def scalar(v):
  v=v.strip()
  if not v or v.lower() in {'null','none','~'}: return None
@@ -65,22 +104,23 @@ def inject_headers(header, fields, prefix):
  return header+out
 
 def normalize_rna_base(base):
- """Return a single RNA base (DNA thymine is represented as uracil)."""
- b=str(base or '').strip().upper().replace('T','U')
- return b if b in {'A','C','G','U'} else None
+ """Return a fully resolved RNA base; ambiguity is deliberately unresolved."""
+ b=normalize_rna_symbol(base)
+ return b if b in RESOLVED_RNA_BASES else None
 
 def pair_type(base1,base2):
- a,b=normalize_rna_base(base1),normalize_rna_base(base2)
+ a,b=normalize_rna_symbol(base1),normalize_rna_symbol(base2)
  if not a or not b:return 'NA'
+ if a not in RESOLVED_RNA_BASES or b not in RESOLVED_RNA_BASES:return 'ambiguous'
  if (a,b) in {('A','U'),('U','A'),('G','C'),('C','G')}:return 'WC'
  if (a,b) in {('G','U'),('U','G')}:return 'GU_wobble'
  return 'non_WC'
 
 def pair_state(kind):
- return 'NA' if kind in {'',None,'.','NA'} else ('paired' if kind in {'WC','GU_wobble','non_WC'} else str(kind))
+ return 'NA' if kind in {'',None,'.','NA','ambiguous'} else ('paired' if kind in {'WC','GU_wobble','non_WC'} else str(kind))
 
 def pair_effect(ref_pair_type,alt_pair_type):
- if ref_pair_type in {'',None,'.','NA'} or alt_pair_type in {'',None,'.','NA'}:return 'NA'
+ if ref_pair_type in {'',None,'.','NA','ambiguous'} or alt_pair_type in {'',None,'.','NA','ambiguous'}:return 'NA'
  return 'unchanged' if ref_pair_type==alt_pair_type else f'{ref_pair_type}_to_{alt_pair_type}'
 
 def compare_values(a,b):

@@ -26,6 +26,25 @@ def test_negative_coordinates_and_rna_pairs(tmp_path):
 @pytest.mark.parametrize('a,b,kind',[('A','U','WC'),('G','U','GU_wobble'),('A','C','non_WC')])
 def test_pair_types(a,b,kind):assert trnascan_utils._pair_type(a,b)==kind
 
+def test_iupac_reference_build_preserves_symbols_and_ambiguous_pair(tmp_path):
+    out,ss=inputs(tmp_path,sequence='AGAU',structure='><><')
+    fasta=tmp_path/'iupac.fa'; fasta.write_text('>chrM\nMRWY\n')
+    dest=tmp_path/'iupac.tsv'
+    result=build_trna_position_index('R',fasta,out,ss,dest)
+    assert result['n_fasta_sequence_mismatch']==0
+    assert ''.join(row['base_genomic'] for row in result['rows'])=='MRWY'
+    assert result['rows'][0]['pair_status']=='paired'
+    assert result['rows'][0]['pair_type']=='ambiguous'
+    assert result['rows'][0]['pair_state']=='NA'
+    assert validate_trna_index(dest,'R')['n_rows']==4
+
+def test_negative_iupac_reference_orientation(tmp_path):
+    out,ss=inputs(tmp_path,negative=True,sequence='WRYK',structure='....')
+    fasta=tmp_path/'iupac.fa'; fasta.write_text('>chrM\nMRWY\n')
+    result=build_trna_position_index('R',fasta,out,ss,tmp_path/'iupac.tsv')
+    assert [row['base_genomic'] for row in result['rows']]==list('YWRM')
+    assert [row['base_rna'] for row in result['rows']]==list('RWYK')
+
 def test_malformed_and_no_trna(tmp_path):
     ss=tmp_path/'bad.ss';ss.write_text('nothing\n')
     with pytest.raises(ValueError):parse_trnascan_ss(ss)

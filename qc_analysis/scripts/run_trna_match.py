@@ -75,17 +75,15 @@ def map_for(directory,sample):
     return {}
 
 def oriented(base, record):
-    b=normalize_rna_base(base)
-    if not b: return base
-    return {'A':'U','U':'A','C':'G','G':'C'}[b] if record.get('strand') == '-' else b
+    return orient_dna_base_to_rna(base, record.get('strand','+')) or '.'
 
 def paired_rna(record):
     """Read a v2 RNA mate directly; require metadata for legacy aliases."""
     if not record: return '.'
-    if record.get('paired_base_rna') not in (None,'','.'): return normalize_rna_base(record['paired_base_rna'])
+    if record.get('paired_base_rna') not in (None,'','.'): return normalize_rna_symbol(record['paired_base_rna'])
     orientation=record.get('base_orientation','')
     if orientation in {'genomic','genomic_and_rna'}: return oriented(record.get('paired_base'),record)
-    if orientation in {'rna','transcript_rna'}: return normalize_rna_base(record.get('paired_base'))
+    if orientation in {'rna','transcript_rna'}: return normalize_rna_symbol(record.get('paired_base'))
     raise ValueError('Legacy tRNA index has paired_base only but no unambiguous base_orientation metadata')
 
 def read_mapping(path):
@@ -197,7 +195,12 @@ def main():
             spt=pair_type(oriented(salt,sr),paired_rna(sr)) if stem else '.'; hpt=pair_type(oriented(halt,hr),paired_rna(hr)) if stem else '.'
             if (sr and sr.get('strand')=='-') or (hr and hr.get('strand')=='-'): counts['negative_strand_records']+=1
             seffect=pair_effect(v['MTTRNA_S_PAIR_TYPE'],spt) if stem else '.'; heffect=pair_effect(v['MTTRNA_H_PAIR_TYPE'],hpt) if stem else '.'; effectmatch=compare_values(seffect,heffect) if stem else '.'
-            compatible={'WC','GU_wobble'}; compensated='yes' if stem and spt in compatible and hpt in compatible else 'no' if stem else '.'; strict='no'
+            compatible={'WC','GU_wobble'}
+            deterministic=stem and all(x not in {'ambiguous','NA','.'} for x in
+                                       (v['MTTRNA_S_PAIR_TYPE'],v['MTTRNA_H_PAIR_TYPE'],spt,hpt))
+            compensated=('yes' if spt in compatible and hpt in compatible else 'no') if deterministic else '.' if stem else '.'
+            if stem and not deterministic: effectmatch='.'
+            strict='no'
             if status=='OK' and v['MTTRNA_S_CLASS']=='loop' and v['MTTRNA_H_CLASS']=='loop': strict='yes' if v['MTTRNA_REGION_MATCH']=='yes' and v['MTTRNA_ELEMENT_MATCH']=='yes' and compare_values(v['MTTRNA_S_LOCAL'],v['MTTRNA_H_LOCAL'])=='yes' else 'no'
             elif stem:
                 checks=[v['MTTRNA_REGION_MATCH']=='yes',v['MTTRNA_ELEMENT_MATCH']=='yes',v['MTTRNA_PAIR_STATUS_MATCH']=='yes',posmatch=='yes',effectmatch=='yes']

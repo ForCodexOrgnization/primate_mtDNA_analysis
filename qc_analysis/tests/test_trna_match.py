@@ -108,6 +108,25 @@ def test_v2_paired_rna_is_not_complemented_twice():
     from qc_analysis.scripts.run_trna_match import paired_rna
     assert paired_rna({'strand':'-','paired_base_rna':'U','paired_base':'A','index_format_version':'2'}) == 'U'
 
+def test_ambiguous_stem_does_not_gain_deterministic_effect_or_strict_match(tmp_path):
+    ambiguous=row().replace('\tWC\tpaired\t','\tambiguous\tNA\t').replace('\tG\t+\t','\tR\t+\t')
+    config,inp,out=fixture(tmp_path,ambiguous,ambiguous.replace('species','chrM').replace('\tS\t','\tH\t'))
+    maps=tmp_path/'maps'; maps.mkdir(); (maps/'S1.coordinate_map.tsv').write_text(
+        'species_pos_original\thuman_pos_canonical\n20\t20\n')
+    result=run(config,inp,out); assert result.returncode==0,result.stderr
+    text=out.read_text()
+    assert 'MTTRNA_S_ALT_EFFECT=NA' in text
+    assert 'MTTRNA_ALLELE_EFFECT_MATCH=.' in text
+    assert 'MTTRNA_COMPENSATED=.' in text
+    assert 'MTTRNA_STRICT_MATCH=no' in text
+
+def test_ambiguous_loop_still_matches_by_structure_and_position(tmp_path):
+    loop=row().replace('\tstem\tacceptor\tWC\tpaired\t2\t20\tG\t',
+                       '\tloop\tanticodon_loop\tNA\tNA\t.\t.\tR\t')
+    config,inp,out=fixture(tmp_path,loop,loop.replace('species','chrM').replace('\tS\t','\tH\t'))
+    result=run(config,inp,out); assert result.returncode==0,result.stderr
+    assert 'MTTRNA_STRICT_MATCH=yes' in out.read_text()
+
 def test_sha_reference_key_resolves_exact_coordinate_fasta(tmp_path):
     digest='a'*64; key=f'mtref_{digest}'; exact=tmp_path/'Ref_chrM.fa'
     mapping=tmp_path/'sample_coordinate_reference_map.tsv'
