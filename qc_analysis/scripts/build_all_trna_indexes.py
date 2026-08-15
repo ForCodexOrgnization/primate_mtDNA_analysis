@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build one tRNAscan position index per unique mitochondrial reference."""
-import argparse, csv, sys
+import argparse, csv, os, sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
@@ -110,10 +110,21 @@ def write(path,rows,columns):
     with path.open("w",newline="") as h:
         w=csv.DictWriter(h,columns,delimiter="\t",extrasaction="ignore");w.writeheader();w.writerows(rows)
 
+def positive_integer(value, name):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be an integer >= 1, got {value!r}") from None
+    if parsed < 1:
+        raise ValueError(f"{name} must be >= 1, got {parsed}")
+    return parsed
+
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument("--config",default="config/qc_preprocessing.yaml");ap.add_argument("--workers",type=int,default=1)
+    ap=argparse.ArgumentParser();ap.add_argument("--config",default="config/qc_preprocessing.yaml");ap.add_argument("--workers",type=int)
     ap.add_argument("--overwrite",action="store_true");ap.add_argument("--reference-key");ap.add_argument("--task-manifest");a=ap.parse_args()
     cfg=read_simple_yaml(Path(a.config));sec=cfg["trna_match"];p,s=sec["paths"],sec["settings"]
+    workers=positive_integer(a.workers if a.workers is not None else s.get("index_build_workers",1), "index_build_workers")
+    trnascan_threads=positive_integer(s.get("trnascan_threads",1), "trnascan_threads")
     samples=table(p["sample_reference_map"]); minimum=int(s.get("min_mitochondrial_reference_length",14000)); maximum=int(s.get("max_mitochondrial_reference_length",19000))
     # The sample coordinate map is authoritative.  The old manifest remains an
     # optional source only for legacy configurations and is overridden below.
@@ -131,6 +142,18 @@ def main():
     for key in keys:
         if key not in fastas: tasks.append((key,None,str(template).format(reference_trna_index_dir=outdir,reference_key=key)))
         else: tasks.append((key,fastas[key],str(template).format(reference_trna_index_dir=outdir,reference_key=key)))
+    estimated_cpu=workers*trnascan_threads
+    print(f"[build_trna_indexes] n_unique_references={len(tasks)}", file=sys.stderr)
+    print(f"[build_trna_indexes] index_build_workers={workers}", file=sys.stderr)
+    print(f"[build_trna_indexes] trnascan_threads={trnascan_threads}", file=sys.stderr)
+    print(f"[build_trna_indexes] estimated_max_cpu_usage={estimated_cpu}", file=sys.stderr)
+    allocated=os.environ.get("SLURM_CPUS_PER_TASK")
+    if allocated:
+        try: allocated_cpus=positive_integer(allocated, "SLURM_CPUS_PER_TASK")
+        except ValueError as exc: print(f"WARNING: {exc}", file=sys.stderr)
+        else:
+            if estimated_cpu > allocated_cpus:
+                print(f"WARNING: estimated_max_cpu_usage={estimated_cpu} exceeds SLURM_CPUS_PER_TASK={allocated_cpus}", file=sys.stderr)
     if a.task_manifest:
         write(a.task_manifest,[{"task_id":i,"reference_key":k,"fasta":(f or {}).get("path", ""),
               "canonical_fasta":(f or {}).get("canonical_fasta",(f or {}).get("path", "")),
@@ -150,7 +173,7 @@ def main():
                      "sequence_length","validation_status")}
         if valid(output,key) and not a.overwrite:return {"reference_key":key,"fasta":fasta,"output_index":output,"status":"skipped","notes":"valid existing index",**provenance}
         ns=SimpleNamespace(reference_key=key,fasta=fasta,trnascan_out=None,trnascan_ss=None,run_trnascan=True,
-          trnascan_bin=s.get("trnascan_bin","tRNAscan-SE"),trnascan_mode=s.get("trnascan_mode","mito_mammal"),threads=s.get("trnascan_threads",1),
+          trnascan_bin=s.get("trnascan_bin","tRNAscan-SE"),trnascan_mode=s.get("trnascan_mode","mito_mammal"),threads=trnascan_threads,
           trnascan_extra_args=s.get("trnascan_extra_args","") or "",trnascan_prefix=str(scan/key),output=output,overwrite=True,summary=None,
           chrom_normalization=trna_chrom_normalization(key,s),
           target_sequence_id=fasta_info.get("target_sequence_id"),allow_ss_order_fallback=bool(s.get("allow_ss_order_fallback",False)),
@@ -158,7 +181,7 @@ def main():
         try:return {**build(ns),**provenance}
         except Exception as e:return {"reference_key":key,"fasta":fasta,"output_index":output,"status":"failed","notes":str(e),**provenance}
     results=[]
-    with ThreadPoolExecutor(max_workers=max(1,a.workers)) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures={pool.submit(one,t):t[0] for t in tasks}
         for future in as_completed(futures):results.append(future.result())
     results.sort(key=lambda r:r["reference_key"])

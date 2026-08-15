@@ -100,7 +100,7 @@ Build all unique references (shared references run once):
 
 ```bash
 python qc_analysis/scripts/build_all_trna_indexes.py \
-  --config config/qc_preprocessing.yaml --workers 4
+  --config config/qc_preprocessing.yaml --workers 8
 ```
 
 Run one sample:
