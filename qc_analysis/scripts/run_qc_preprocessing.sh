@@ -3,7 +3,7 @@
 #SBATCH --output=logs/qc_preprocessing/%x_%j.out
 #SBATCH --error=logs/qc_preprocessing/%x_%j.err
 #SBATCH --time=24:00:00
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 
 set -euo pipefail
@@ -129,12 +129,32 @@ export SAMPLE
 
 classify_step() { case "$1" in coordinate_liftover|codon_match|trna_match|rrna_match) echo sample;; mitos2_annotation) echo reference;; *) echo singleton;; esac; }
 build_array_expression() { local n="$1" kind="$2"; if [[ "$kind" == singleton || "$n" == 1 ]]; then echo 1-1; else echo "1-${n}%${ARRAY_CONCURRENCY}"; fi; }
+trna_setting() {
+ awk -v key="$1" '
+   function indent(s){match(s,/^[[:space:]]*/);return RLENGTH}
+   function trim(s){sub(/^[[:space:]]+/,"",s);sub(/[[:space:]]+$/, "",s);return s}
+   { line=$0; sub(/[[:space:]]*#.*/,"",line); level=indent(line); value=trim(line)
+     if(value=="trna_match:"){in_trna=1;trna_indent=level;next}
+     if(in_trna && level<=trna_indent && value!=""){in_trna=0}
+     if(in_trna && value=="settings:"){in_settings=1;settings_indent=level;next}
+     if(in_settings && level<=settings_indent && value!=""){in_settings=0}
+     if(in_settings && value ~ ("^" key ":[[:space:]]*")){sub("^[^:]+:[[:space:]]*","",value);print value;exit}
+   }' "$CONFIG"
+}
 resolve_step_resources() {
- local prefix=""; case "$1" in codon_match*) prefix=CODON_MATCH;; coordinate_liftover) prefix=LIFTOVER;; trna_match) prefix=TRNA_MATCH;; rrna_match) prefix=RRNA_MATCH;; mitos2*) prefix=MITOS2;; esac
+ local prefix=""; case "$1" in codon_match*) prefix=CODON_MATCH;; coordinate_liftover) prefix=LIFTOVER;; build_trna_indexes) prefix=TRNA_INDEX_BUILD;; trna_match) prefix=TRNA_MATCH;; rrna_match) prefix=RRNA_MATCH;; mitos2*) prefix=MITOS2;; esac
  local specific=""
  [[ -n "$prefix" ]] && { local vn="${prefix}_SLURM_TIME"; specific="${!vn:-}"; }; RES_TIME="${specific:-${SLURM_TIME:-24:00:00}}"
  specific=""; [[ -n "$prefix" ]] && { local vn="${prefix}_SLURM_MEM"; specific="${!vn:-}"; }; RES_MEM="${specific:-${SLURM_MEM:-16G}}"
  specific=""; [[ -n "$prefix" ]] && { local vn="${prefix}_SLURM_CPUS"; specific="${!vn:-}"; }; RES_CPUS="${specific:-${SLURM_CPUS:-4}}"
+ if [[ "$1" == build_trna_indexes && -z "$specific" && -z "${SLURM_CPUS:-}" ]]; then
+   local workers threads
+   workers="$(trna_setting index_build_workers)"; workers="${workers:-1}"
+   threads="$(trna_setting trnascan_threads)"; threads="${threads:-1}"
+   [[ "$workers" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: index_build_workers must be >= 1: $workers" >&2; exit 2; }
+   [[ "$threads" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: trnascan_threads must be >= 1: $threads" >&2; exit 2; }
+   RES_CPUS=$((workers * threads))
+ fi
 }
 resolve_array_item() {
  [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]] || { echo 'ERROR: SLURM_ARRAY_TASK_ID is required in an array task' >&2; exit 2; }
@@ -474,7 +494,10 @@ activate_trnascan_environment() {
 run_build_trna_indexes() {
   activate_trnascan_environment
   echo "[qc_preprocessing] Running build_trna_indexes with config: ${CONFIG}" >&2
-  "$BASE_PYTHON" "$TRNA_INDEX_SCRIPT" --config "$CONFIG" --workers "${SLURM_CPUS_PER_TASK:-4}"
+  local workers
+  workers="$(trna_setting index_build_workers)"; workers="${workers:-1}"
+  [[ "$workers" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: index_build_workers must be >= 1: $workers" >&2; exit 2; }
+  "$BASE_PYTHON" "$TRNA_INDEX_SCRIPT" --config "$CONFIG" --workers "$workers"
 }
 
 run_trna_match() {

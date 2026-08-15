@@ -429,7 +429,10 @@ trna_match:
     output_suffix: ".lifted.codon.trna.vcf"
     run_trnascan_if_missing: false
     trnascan_mode: mito_mammal
-    trnascan_threads: 4
+    # Prefer parallelizing these short mitochondrial references over assigning
+    # several tRNAscan threads to a single reference.
+    index_build_workers: 8
+    trnascan_threads: 1
     trnascan_extra_args: ""
     max_sequence_mismatch_rate: 0.0
     min_mitochondrial_reference_length: 14000
