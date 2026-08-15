@@ -31,7 +31,8 @@ def build(args):
             if target not in seqs: raise ValueError(f"FASTA record {target!r} not found")
             scan_fasta=str(prefix)+'.selected.fa'; Path(scan_fasta).parent.mkdir(parents=True,exist_ok=True)
             Path(scan_fasta).write_text(f'>{target}\n{seqs[target]}\n'); index_fasta=scan_fasta
-        made=run_trnascan(scan_fasta,prefix,args.trnascan_bin,args.trnascan_mode,args.threads,args.trnascan_extra_args)
+        made=run_trnascan(scan_fasta,prefix,args.trnascan_bin,args.trnascan_mode,args.threads,
+                          args.trnascan_extra_args,overwrite=args.overwrite)
         out,ss=str(made["out"]),str(made["ss"])
     if not out or not ss: raise ValueError("Provide --trnascan-out and --trnascan-ss, or --run-trnascan")
     result=build_trna_position_index(args.reference_key,index_fasta,out,ss,output,args.chrom_normalization,args.max_sequence_mismatch_rate,
