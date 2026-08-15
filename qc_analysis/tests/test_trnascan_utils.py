@@ -50,3 +50,56 @@ def test_topology_structural_inference_and_noncanonical_arm():
     shortened='>>..<<'
     assert infer_structural_elements(shortened)[1]=='acceptor_stem'
     assert all(infer_structural_elements('......').values())  # documented canonical fallback
+
+def _successful_trnascan(run_args, **kwargs):
+    for option in ('-o', '-f'):
+        Path(run_args[run_args.index(option) + 1]).write_text('new output\n')
+
+def test_run_trnascan_removes_exact_prefix_outputs_and_is_noninteractive(tmp_path, monkeypatch):
+    prefix=tmp_path/'reference'; other=tmp_path/'reference_extra.trnascan.out'
+    stale=[Path(str(prefix)+suffix) for suffix in
+           ('.trnascan.out','.trnascan.ss','.trnascan.stats','.trnascan.bed','.trnascan.fa')]
+    for path in stale:path.write_text('stale')
+    other.write_text('unrelated')
+    observed={}
+    def fake_run(command, **kwargs):
+        observed.update(command=command,kwargs=kwargs)
+        assert all(not path.exists() for path in stale)
+        _successful_trnascan(command, **kwargs)
+    monkeypatch.setattr(subprocess,'run',fake_run)
+
+    made=run_trnascan(tmp_path/'input.fa',prefix)
+
+    assert other.read_text()=='unrelated'
+    assert '--forceow' in observed['command']
+    assert 'input' not in observed['kwargs'] and 'stdin' not in observed['kwargs']
+    assert observed['kwargs']['check'] is True and observed['kwargs']['timeout']==3600
+    assert observed['kwargs']['stdout'].name==str(prefix)+'.stdout.log'
+    assert observed['kwargs']['stderr'].name==str(prefix)+'.stderr.log'
+    assert made['out'].read_text()=='new output\n'
+
+def test_run_trnascan_clean_directory_is_unchanged(tmp_path, monkeypatch):
+    prefix=tmp_path/'clean'
+    monkeypatch.setattr(subprocess,'run',_successful_trnascan)
+    result=run_trnascan(tmp_path/'input.fa',prefix)
+    assert result['out'].is_file() and result['ss'].is_file()
+
+def test_run_trnascan_without_overwrite_refuses_to_launch(tmp_path, monkeypatch):
+    prefix=tmp_path/'reference'; Path(str(prefix)+'.trnascan.out').write_text('stale')
+    called=False
+    def fake_run(*args,**kwargs):
+        nonlocal called;called=True
+    monkeypatch.setattr(subprocess,'run',fake_run)
+    with pytest.raises(FileExistsError,match='enable overwrite'):
+        run_trnascan(tmp_path/'input.fa',prefix,overwrite=False)
+    assert not called
+
+def test_run_trnascan_failure_is_captured_in_per_reference_log(tmp_path, monkeypatch):
+    prefix=tmp_path/'failed'
+    def fail(command,stdout,stderr,**kwargs):
+        stderr.write('diagnostic from tool\n');stderr.flush()
+        raise subprocess.CalledProcessError(7,command)
+    monkeypatch.setattr(subprocess,'run',fail)
+    with pytest.raises(RuntimeError,match=r'exit code 7.*failed\.stderr\.log'):
+        run_trnascan(tmp_path/'input.fa',prefix)
+    assert Path(str(prefix)+'.stderr.log').read_text()=='diagnostic from tool\n'

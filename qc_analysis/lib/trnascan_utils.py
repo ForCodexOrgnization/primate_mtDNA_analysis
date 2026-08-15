@@ -241,19 +241,49 @@ def trnascan_mode_args(mode: str) -> list[str]:
 
 def run_trnascan(fasta: str | Path, prefix: str | Path, trnascan_bin="tRNAscan-SE",
                  trnascan_mode="mito_mammal", trnascan_threads=1,
-                 trnascan_extra_args: str | Iterable[str] = "") -> dict[str, Path]:
+                 trnascan_extra_args: str | Iterable[str] = "", *, overwrite=True,
+                 timeout: float | None = 3600) -> dict[str, Path]:
+    """Run tRNAscan-SE without exposing its interactive overwrite prompt.
+
+    A run either removes only this prefix's known outputs or refuses to start.
+    Tool output is written to prefix-specific logs instead of the parent job's
+    stdout/stderr.  ``--forceow`` is also supplied as a fail-safe against an
+    output appearing between cleanup and process startup.
+    """
     prefix = Path(prefix); prefix.parent.mkdir(parents=True, exist_ok=True)
     outputs = {k: Path(str(prefix) + suffix) for k, suffix in
                {"out": ".trnascan.out", "ss": ".trnascan.ss", "stats": ".trnascan.stats",
                 "bed": ".trnascan.bed", "fasta": ".trnascan.fa"}.items()}
+    existing = [path for path in outputs.values() if path.exists()]
+    if existing and not overwrite:
+        raise FileExistsError(f"tRNAscan output exists (enable overwrite): {existing[0]}")
+    for path in existing:
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+        else:
+            raise IsADirectoryError(f"Refusing to replace tRNAscan output directory: {path}")
+    stdout_log = Path(str(prefix) + ".stdout.log")
+    stderr_log = Path(str(prefix) + ".stderr.log")
     extra = shlex.split(trnascan_extra_args) if isinstance(trnascan_extra_args, str) else list(trnascan_extra_args)
-    command = [str(trnascan_bin), *trnascan_mode_args(trnascan_mode), "--thread", str(trnascan_threads),
+    command = [str(trnascan_bin), *trnascan_mode_args(trnascan_mode), "--forceow", "--thread", str(trnascan_threads),
                "-o", str(outputs["out"]), "-f", str(outputs["ss"]), "-m", str(outputs["stats"]),
                "-b", str(outputs["bed"]), "-a", str(outputs["fasta"]), *extra, str(fasta)]
-    subprocess.run(command, check=True)
+    try:
+        with stdout_log.open("w") as stdout, stderr_log.open("w") as stderr:
+            subprocess.run(command, stdout=stdout, stderr=stderr, check=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"tRNAscan-SE timed out after {timeout} seconds; stderr log: {stderr_log}"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"tRNAscan-SE failed with exit code {exc.returncode}; stderr log: {stderr_log}"
+        ) from exc
     for key in ("out", "ss"):
         if not outputs[key].is_file() or outputs[key].stat().st_size == 0:
-            raise RuntimeError(f"tRNAscan-SE did not create a nonempty {outputs[key]}")
+            raise RuntimeError(
+                f"tRNAscan-SE did not create a nonempty {outputs[key]}; stderr log: {stderr_log}"
+            )
     return outputs
 
 
