@@ -123,6 +123,31 @@ def pair_effect(ref_pair_type,alt_pair_type):
  if ref_pair_type in {'',None,'.','NA','ambiguous'} or alt_pair_type in {'',None,'.','NA','ambiguous'}:return 'NA'
  return 'unchanged' if ref_pair_type==alt_pair_type else f'{ref_pair_type}_to_{alt_pair_type}'
 
+def rrna_pair_type(base1,base2):
+ """Return explicit RNA base-pair labels for rRNA structure annotation."""
+ a,b=normalize_rna_symbol(base1),normalize_rna_symbol(base2)
+ if not a or not b:return '.'
+ if a not in RESOLVED_RNA_BASES or b not in RESOLVED_RNA_BASES:return 'other'
+ label=f'{a}-{b}'
+ return label if label in {'A-U','U-A','G-C','C-G','G-U','U-G'} else 'other'
+
+def rrna_pair_state(kind,struct_class='stem'):
+ """Classify an explicit rRNA pair as canonical, wobble, noncanonical, or unknown."""
+ k=str(kind or '').strip()
+ c=str(struct_class or '').strip().lower()
+ if c=='loop':return 'unpaired'
+ if c=='unknown' or k in {'','.','NA','unknown'}:return 'unknown'
+ if k in {'A-U','U-A','G-C','C-G'}:return 'canonical'
+ if k in {'G-U','U-G'}:return 'wobble'
+ return 'noncanonical'
+
+def rrna_pair_effect(ref_pair_type,alt_pair_type):
+ """Describe how an alternate allele changes the human-reference pair category."""
+ ref_state=rrna_pair_state(ref_pair_type)
+ alt_state=rrna_pair_state(alt_pair_type)
+ if 'unknown' in {ref_state,alt_state}:return 'NA'
+ return 'unchanged' if ref_state==alt_state else f'{ref_state}_to_{alt_state}'
+
 def compare_values(a,b):
  if a in {'',None,'.','NA'} or b in {'',None,'.','NA'}:return '.'
  return 'yes' if str(a)==str(b) else 'no'

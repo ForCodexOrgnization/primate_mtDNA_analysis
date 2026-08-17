@@ -463,6 +463,9 @@ rrna_match:
     coordinate_map_dir: results/qc/coordinate_liftover/maps
     human_rrna_table: data/reference_tables/human_rrna_regions.tsv
     species_rrna_table: data/reference_tables/species_rrna_regions.tsv
+    human_rrna_structure_table: data/reference_tables/human_rrna_structure.tsv
+    species_rrna_structure_table: results/qc/mitos2_annotation/all_mitos2_reference_rrna_structure.tsv
+    sample_reference_map: data/reference_tables/sample_coordinate_reference_map.tsv
   settings:
     enabled: true
     input_vcf_pattern: "{sample}.lifted.codon.trna.vcf"
@@ -471,11 +474,10 @@ rrna_match:
     output_suffix: ".lifted.codon.trna.rrna.vcf"
     require_same_rrna_gene: true
     require_region_overlap: true
-    # Enable after supplying this human-reference-guided table. Missing table is
-    # a clear error while enabled; set false to retain interval-only annotation.
-    use_rrna_structure_table: false
-    human_rrna_structure_table: data/reference_tables/human_rrna_structure.tsv
-    species_rrna_structure_table: ""
+    # Enable after supplying independent human and reference-level rRNA
+    # structure tables. Missing tables are clear errors while enabled; set false
+    # to retain interval-only annotation.
+    use_rrna_structure_table: true
     require_pair_pos_match_for_high_conf_stem: true
     write_summary: true
     pass_only: false
@@ -508,6 +510,7 @@ mitos2_annotation:
     mitos2_parsed_dir: results/qc/mitos2_annotation/parsed
     mitos2_reference_tasks: results/qc/mitos2_annotation/mitos2_reference_tasks.tsv
     mitos2_reference_cds_table: results/qc/mitos2_annotation/all_mitos2_reference_position_codon_table.tsv
+    mitos2_reference_rrna_structure_table: results/qc/mitos2_annotation/all_mitos2_reference_rrna_structure.tsv
     mitos2_feature_table: results/qc/mitos2_annotation/all_mitos2_features.tsv
     mitos2_summary_table: results/qc/mitos2_annotation/mitos2_annotation_summary.tsv
     # Annotation-independent map, materialized while preparing reference tasks.

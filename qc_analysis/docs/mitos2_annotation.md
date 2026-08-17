@@ -22,7 +22,7 @@ runmitos --help >/dev/null
 
 `run_mitos2_annotation.py` activates that environment in a login shell, validates `runmitos`, and records that executable in `results/qc/mitos2_annotation/mitos2_annotation_summary.tsv`. The conda environment name is `mitos2`, the installed package name is `mitos`, and the CLI executable name is `runmitos`.
 
-The workflow runs one MITOS2 task per unique normalized sequence SHA256. Its primary input is the exact variant-calling FASTA, `references/variant_calling/Ref_chrM/{target_species}.fa`. Identical sequences shared by multiple species use one task and one biological `reference_key`; different sequences never collapse because of a shared species or accession. Accession remains optional provenance. MITOS2 supplies CDS, tRNA, and rRNA *intervals*; its tRNA/rRNA output does not provide secondary-structure stem/loop information and does not replace tRNAscan paired-site annotations or human-guided rRNA stem/loop annotation.
+The workflow runs one MITOS2 task per unique normalized sequence SHA256. Its primary input is the exact variant-calling FASTA, `references/variant_calling/Ref_chrM/{target_species}.fa`. Identical sequences shared by multiple species use one task and one biological `reference_key`; different sequences never collapse because of a shared species or accession. Accession remains optional provenance. MITOS2 supplies CDS, tRNA, and rRNA intervals, and the merge step now also attempts to extract rRNA secondary-structure rows from machine-readable MITOS2/Infernal text output when such output is present.
 
 Task preparation writes the annotation-independent `data/reference_tables/sample_coordinate_reference_map.tsv`, which maps every sample to the exact Ref_chrM used for variant calling regardless of MITOS2 status. The merge writes the production reference codon table and `codon_sample_reference_map.tsv` under `results/qc/mitos2_annotation/`; only references passing strict production QC enter those codon-specific outputs. Failed references remain explicit in the summary and remain eligible for the independent tRNAscan-SE workflow. There is no GenBank codon fallback. `build_primate_codon_table.py` is retained only to build an independent GenBank benchmark for the optional hash-matched comparison.
 
@@ -43,12 +43,33 @@ python qc_analysis/scripts/run_mitos2_annotation.py \
 ```
 
 This writes `results/qc/mitos2_annotation/all_mitos2_reference_position_codon_table.tsv`,
+`results/qc/mitos2_annotation/all_mitos2_reference_rrna_structure.tsv`,
 `results/qc/mitos2_annotation/codon_sample_reference_map.tsv`, and
 `results/qc/mitos2_annotation/mitos2_annotation_summary.tsv` (plus the compact
 feature diagnostic table). The merge streams one reference at a time and does
 not generate the legacy sample-expanded codon table. A completed
 Tarsius run contains approximately 13 CDS intervals and 11,000 coding-position
 rows.
+
+## rRNA structure table
+
+`build_mitos2_rrna_structure_table.py` is used by the merge path and can also be
+run directly. It scans each raw MITOS2 task directory for Stockholm/Infernal-like
+machine-readable structure records (`SS_cons` or per-sequence `SS`) and maps
+explicit pairs back to the exact coordinate reference FASTA. The MITOS2 command
+still uses `--noplots`; SVG plot geometry is not parsed for production
+annotations. If no machine-readable structure is present, rRNA interval rows are
+kept with `struct_class=unknown` and the summary records
+`rrna_structure_status=no_machine_readable_structure`.
+
+The rRNA table is reference-level and includes:
+`reference_key`, `reference_species`, `coordinate_reference_accession`,
+`coordinate_reference_fasta`, `coordinate_reference_sequence_sha256`,
+`rrna_gene`, `genomic_pos`, `local_pos`, `base`, `struct_class`,
+`paired_genomic_pos`, `paired_local_pos`, `paired_base`, `pair_type`,
+`pair_state`, `annotation_source`, and `structure_source`, plus optional model
+and strand diagnostics. rRNA structure extraction status is reported separately
+from CDS production QC and does not invalidate otherwise valid codon outputs.
 
 ## Slurm array workflow (recommended)
 

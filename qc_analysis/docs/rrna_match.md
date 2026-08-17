@@ -3,9 +3,41 @@
 
 It first performs interval-level rRNA gene matching and adds `MTRRNA_*` INFO annotations for source/human genes, local positions, lengths, fractions, fraction delta, strand, gene and region matches. Statuses are `OK`, `NO_SPECIES_RRNA`, `NO_HUMAN_RRNA`, `NO_SPECIES_OR_HUMAN_RRNA`, `GENE_MISMATCH`, and `MISSING_COORD`.
 
-When `use_rrna_structure_table` is enabled, the required human structure table (`rrna_gene`, `human_pos`, `local_pos`, `struct_class`) adds **human-reference-guided** loop/stem fields, paired human positions, and the effect of the lifted VCF ALT on the human pair. For stem positions, the script infers the source paired genomic position from the human paired local coordinate, lifts it through the per-sample coordinate map, and assigns `HIGH_CONF_STEM` only when that position agrees. A missing map yields `MODERATE_CONF_STEM` rather than a failure. This is not a prediction of species-specific rRNA secondary structure.
+When `use_rrna_structure_table` is enabled, the matcher reads two independent
+structure sources:
 
-If structural annotation is disabled, or the table does not contain the lifted human position, interval annotations remain available and structural fields are `.`/`NA`. Enabling it with a missing table fails clearly.
+* `human_rrna_structure_table`, keyed by `rrna_gene` and `human_pos`
+* `species_rrna_structure_table`, keyed by `reference_key`, `rrna_gene`, and
+  `genomic_pos`
+
+The species-side table is reference-level, not sample-level. Samples resolve to
+that table through `sample_reference_map`, which must identify the exact
+coordinate reference FASTA and sequence SHA256 used for variant calling. Species
+names are not used as structure identities.
+
+For each rRNA variant, the script annotates independent human and species
+classes (`MTRRNA_H_CLASS`, `MTRRNA_S_CLASS`) and paired-site fields
+(`MTRRNA_H_PAIR_POS`, `MTRRNA_S_PAIR_POS`, `MTRRNA_H_PAIR_TYPE`,
+`MTRRNA_S_PAIR_TYPE`, and pair states). `MTRRNA_STRUCTURE_MATCH` is one of
+`STEM_STEM`, `LOOP_LOOP`, `STEM_LOOP`, `LOOP_STEM`, or `UNKNOWN`.
+
+For stem-stem positions, `MTRRNA_PAIR_RELATION_MATCH` compares pairing
+relationships across genomes: the species position's independently annotated
+species partner is lifted through the existing coordinate map and compared with
+the independently annotated human partner. The old human-projected expected pair
+logic is not used. `MTRRNA_S_PAIR_EXPECTED_POS` remains as a deprecated
+compatibility INFO field and is no longer populated.
+
+`MTRRNA_MATCH_TIER` now reflects two-sided structure: `HIGH_CONF_STEM` requires
+`STEM_STEM` plus `MTRRNA_PAIR_RELATION_MATCH=yes`; `HIGH_CONF_LOOP` requires
+`LOOP_LOOP`; `STRUCTURE_DISCORDANT` covers `STEM_LOOP` and `LOOP_STEM`; and
+`STRUCTURE_UNKNOWN` is used when either side is missing or unresolved. A
+compensatory pair-type change such as human `G-C` versus species `A-U` remains
+`STEM_STEM` and is not structural discordance.
+
+If structural annotation is disabled, interval annotations remain available and
+structural fields are `.`/`NA`. Enabling it with a missing human or species
+structure table fails clearly.
 
 ```bash
 python qc_analysis/scripts/run_rrna_match.py --config config/qc_preprocessing.yaml --sample ERS14600320
