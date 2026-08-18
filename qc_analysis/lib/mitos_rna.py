@@ -38,7 +38,14 @@ def comparable_gene(gene, feature_type):
         return normalize_rrna_gene(gene)
     # Parenthesized anticodons are presentation details, but L1/L2 and S1/S2
     # remain part of the identity and therefore must not be collapsed.
-    return re.sub(r"\([^)]*\)$", "", str(gene or "").strip(), flags=re.I).lower()
+    comparable = re.sub(r"\([^)]*\)$", "", str(gene or "").strip(), flags=re.I)
+    if str(feature_type).lower() == "trna":
+        # MITOS2 adds copy numbers to duplicated tRNAs in result.gff, while
+        # the corresponding result.mitos names remain unsuffixed.  A number
+        # preceded by an underscore is copy metadata; isoacceptor numbers
+        # such as trnL1/trnL2 and trnS1/trnS2 are biological identity.
+        comparable = re.sub(r"_[0-9]+$", "", comparable)
+    return comparable.lower()
 
 
 def _structure_field(columns):
@@ -81,6 +88,7 @@ def parse_result_mitos(path):
         feature_type = "tRNA" if columns[1].strip().lower() == "trna" else "rRNA"
         gene_raw = columns[2].strip()
         records.append({
+            "seqid": columns[0].strip(),
             "feature_type": feature_type,
             "gene": normalize_rrna_gene(gene_raw) if feature_type == "rRNA" else gene_raw,
             "gene_raw": gene_raw,
@@ -97,8 +105,20 @@ def parse_result_mitos(path):
     return records
 
 
-def reconcile_result_mitos_record(record, gff_features):
+def normalized_result_mitos_interval(record, sequence_length=None):
+    """Return the one-based MITOS interval used by final GFF coordinates."""
+    start = int(record["mitos_start"]) + 1
+    end = int(record["mitos_end"]) + 1
+    if int(record["mitos_end"]) < int(record["mitos_start"]):
+        if sequence_length is None or int(sequence_length) <= 0:
+            raise ValueError("a positive coordinate reference length is required for a wrapped result.mitos interval")
+        end += int(sequence_length)
+    return start, end
+
+
+def reconcile_result_mitos_record(record, gff_features, sequence_length=None):
     """Match one MITOS record to the same final GFF RNA feature."""
+    normalized_start, normalized_end = normalized_result_mitos_interval(record, sequence_length)
     target_gene = comparable_gene(record.get("gene_raw"), record.get("feature_type"))
     candidates = [
         feature for feature in gff_features
@@ -108,8 +128,8 @@ def reconcile_result_mitos_record(record, gff_features):
     strand_candidates = [f for f in candidates if normalize_strand(f.get("strand")) == record.get("strand")]
     exact = [
         f for f in strand_candidates
-        if int(f["start"]) == record["normalized_start"]
-        and int(f["end"]) == record["normalized_end"]
+        if int(f["start"]) == normalized_start
+        and int(f["end"]) == normalized_end
     ]
     if len(exact) == 1:
         return exact[0], "matched_final_gff", ""
@@ -117,7 +137,7 @@ def reconcile_result_mitos_record(record, gff_features):
         return None, "ambiguous_final_gff_match", f"{len(exact)} identical final GFF matches"
     if candidates:
         observed = ",".join(f"{f.get('start')}-{f.get('end')}({normalize_strand(f.get('strand'))})" for f in candidates)
-        expected = f"{record['normalized_start']}-{record['normalized_end']}({record['strand']})"
+        expected = f"{normalized_start}-{normalized_end}({record['strand']})"
         return None, "result_mitos_gff_interval_mismatch", f"normalized result.mitos={expected}; final GFF={observed}"
     return None, "no_final_gff_feature_match", f"no final GFF match for {record.get('feature_type')} {record.get('gene_raw')}"
 

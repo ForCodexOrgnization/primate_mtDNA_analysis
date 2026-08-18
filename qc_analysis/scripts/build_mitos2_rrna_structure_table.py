@@ -474,7 +474,16 @@ def build_reference_rna_structure_rows(ref, features, fasta, raw_dir, feature_ty
     reconciled = []
     interval_mismatches = []
     for record in mitos_records:
-        match, status, note = reconcile_result_mitos_record(record, final_features)
+        matching_records = [seq for name, seq in records if name == record.get("seqid")]
+        if len(matching_records) == 1:
+            sequence_length = len(matching_records[0])
+        elif len(records) == 1:
+            sequence_length = len(records[0][1])
+        else:
+            raise ValueError(
+                f"No unique coordinate reference FASTA record matches result.mitos seqid {record.get('seqid')!r}"
+            )
+        match, status, note = reconcile_result_mitos_record(record, final_features, sequence_length)
         reconciled.append((record, match, status, note))
         if status == "result_mitos_gff_interval_mismatch":
             interval_mismatches.append(f"{record['gene_raw']}: {note}")

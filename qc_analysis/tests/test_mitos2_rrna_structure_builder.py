@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from qc_analysis.lib.mitos_rna import parse_result_mitos, per_base_assignments, reconcile_result_mitos_record
+from qc_analysis.lib.mitos_rna import (
+    comparable_gene,
+    parse_result_mitos,
+    per_base_assignments,
+    reconcile_result_mitos_record,
+)
 from qc_analysis.scripts.build_mitos2_rrna_structure_table import (
     build_reference_rrna_structure_rows,
     build_reference_trna_structure_rows,
@@ -137,6 +142,52 @@ def test_negative_strand_trna_uses_rna_five_prime_orientation(tmp_path):
     assert [row["genomic_pos"] for row in rows] == list(range(9, 0, -1))
     assert rows[0]["paired_genomic_pos"] == 1
     assert rows[-1]["paired_genomic_pos"] == 9
+
+
+def test_trna_copy_suffixes_reconcile_by_exact_interval(tmp_path):
+    fasta = tmp_path / "chrM.fa"; fasta.write_text(">chrM\n" + "A" * 17100 + "\n")
+    raw = tmp_path / "raw"; raw.mkdir()
+    (raw / "result.mitos").write_text(
+        mitos_line("chrM", "tRNA", "trnF", 0, 68, 1, "." * 69)
+        + mitos_line("chrM", "tRNA", "trnF", 17100, 17168, 1, "." * 69)
+    )
+    ref = {"reference_key": "copy-suffix", "coordinate_reference_fasta": str(fasta)}
+    features = [
+        {"feature_type": "tRNA", "gff_seqid": "chrM", "gene": "trnF_0", "gene_raw": "trnF_0", "start": "1", "end": "69", "strand": "+"},
+        {"feature_type": "tRNA", "gff_seqid": "chrM", "gene": "trnF_1", "gene_raw": "trnF_1", "start": "17101", "end": "17169", "strand": "+"},
+    ]
+
+    rows, status, note = build_reference_trna_structure_rows(ref, features, fasta, raw)
+
+    assert status == "parsed_result_mitos_structure", note
+    assert len(rows) == 138
+    assert {row["structure_source"] for row in rows} == {str(raw / "result.mitos")}
+    # Both final GFF copies remain present even though their extended
+    # coordinates map to the same modulo-reference genomic positions.
+    assert [row["genomic_pos"] for row in rows] == [*range(1, 70), *range(1, 70)]
+
+
+def test_wrapped_result_mitos_interval_uses_reference_length(tmp_path):
+    fasta = tmp_path / "chrM.fa"; fasta.write_text(">chrM\n" + "A" * 16752 + "\n")
+    raw = tmp_path / "raw"; raw.mkdir()
+    (raw / "result.mitos").write_text(
+        mitos_line("chrM", "tRNA", "trnF", 16751, 69, 1, "." * 71)
+    )
+    ref = {"reference_key": "origin-wrap", "coordinate_reference_fasta": str(fasta)}
+    features = [{
+        "feature_type": "tRNA", "gff_seqid": "chrM", "gene": "trnF", "gene_raw": "trnF",
+        "start": "16752", "end": "16822", "strand": "+",
+    }]
+
+    rows, status, note = build_reference_trna_structure_rows(ref, features, fasta, raw)
+
+    assert status == "parsed_result_mitos_structure", note
+    assert [row["genomic_pos"] for row in rows] == [16752, *range(1, 71)]
+
+
+def test_trna_isoacceptor_numbers_remain_distinct():
+    assert comparable_gene("trnL1", "tRNA") != comparable_gene("trnL2", "tRNA")
+    assert comparable_gene("trnS1", "tRNA") != comparable_gene("trnS2", "tRNA")
 
 
 def test_result_mitos_interval_mismatch_is_not_silently_shifted(tmp_path):
