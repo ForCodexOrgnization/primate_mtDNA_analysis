@@ -24,7 +24,11 @@ def write_common_inputs(d, human_rows, species_rows, partner_human_pos="10"):
     maps.mkdir()
 
     human_regions.write_text("chrom\tstart\tend\trrna_gene\tstrand\nchrM\t1\t20\tMT-RNR1\t+\n")
-    species_regions.write_text("chrom\tstart\tend\trrna_gene\tstrand\nspecies\t1\t20\tMT-RNR1\t+\n")
+    species_regions.write_text(
+        "reference_key\treference_species\tcoordinate_reference_sequence_sha256\tstart\tend\trrna_gene\tstrand\n"
+        "wrong_ref\tSpecies one\twrong_sha\t1\t20\tMT-RNR2\t+\n"
+        "ref1\tSpecies one\tsha1\t1\t20\tMT-RNR1\t+\n"
+    )
     human_structure.write_text(
         "rrna_gene\thuman_pos\tlocal_pos\tbase\tstruct_class\tstruct_element\t"
         "paired_human_pos\tpaired_local_pos\tpaired_base\tpair_type\tpair_state\n"

@@ -462,10 +462,10 @@ rrna_match:
     reports_dir: results/qc/rrna_match/reports
     coordinate_map_dir: results/qc/coordinate_liftover/maps
     human_rrna_table: data/reference_tables/human_rrna_regions.tsv
-    species_rrna_table: data/reference_tables/species_rrna_regions.tsv
+    species_rrna_table: results/qc/mitos2_annotation/all_mitos2_reference_rrna_regions.tsv
     human_rrna_structure_table: data/reference_tables/human_rrna_structure.tsv
     species_rrna_structure_table: results/qc/mitos2_annotation/all_mitos2_reference_rrna_structure.tsv
-    sample_reference_map: data/reference_tables/sample_coordinate_reference_map.tsv
+    sample_reference_map: results/qc/mitos2_annotation/sample_coordinate_reference_map.tsv
   settings:
     enabled: true
     input_vcf_pattern: "{sample}.lifted.codon.trna.vcf"
@@ -510,11 +510,15 @@ mitos2_annotation:
     mitos2_parsed_dir: results/qc/mitos2_annotation/parsed
     mitos2_reference_tasks: results/qc/mitos2_annotation/mitos2_reference_tasks.tsv
     mitos2_reference_cds_table: results/qc/mitos2_annotation/all_mitos2_reference_position_codon_table.tsv
+    mitos2_reference_trna_structure_table: results/qc/mitos2_annotation/all_mitos2_reference_trna_structure.tsv
+    mitos2_reference_rrna_region_table: results/qc/mitos2_annotation/all_mitos2_reference_rrna_regions.tsv
     mitos2_reference_rrna_structure_table: results/qc/mitos2_annotation/all_mitos2_reference_rrna_structure.tsv
     mitos2_feature_table: results/qc/mitos2_annotation/all_mitos2_features.tsv
     mitos2_summary_table: results/qc/mitos2_annotation/mitos2_annotation_summary.tsv
     # Annotation-independent map, materialized while preparing reference tasks.
     sample_coordinate_reference_map: data/reference_tables/sample_coordinate_reference_map.tsv
+    # Reference-aware map emitted by merge for downstream rRNA matching.
+    mitos2_sample_coordinate_reference_map: results/qc/mitos2_annotation/sample_coordinate_reference_map.tsv
     # Production-codon map; merge includes PASS_PRODUCTION references only.
     codon_sample_reference_map: results/qc/mitos2_annotation/codon_sample_reference_map.tsv
     genbank_mitos2_comparison_table: results/qc/codon_table_build/genbank_vs_mitos2_cds_comparison.tsv
@@ -536,7 +540,8 @@ mitos2_annotation:
     mitos2_command_mode: runmitos
     reuse_incomplete: false
     genetic_code: 2
-    # MITOS2 tRNA/rRNA results are interval annotations only.
+    # MITOS2 tRNA structure is comparison/QC only; production tRNA matching
+    # continues to use the independent tRNAscan-SE indexes above.
     accepted_feature_types: "CDS,gene,tRNA,rRNA"
 
 genbank_mitos2_comparison:

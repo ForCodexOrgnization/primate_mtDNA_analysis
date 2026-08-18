@@ -143,7 +143,9 @@ class MatchScriptSmokeTests(unittest.TestCase):
             d = Path(td); human = d / 'human.tsv'; species = d / 'species.tsv'; missing = d / 'missing.tsv'
             header = 'chrom\tstart\tend\trrna_gene\tstrand\n'
             human.write_text(header + 'chrM\t1\t100\tMT-RNR1\t+\n')
-            species.write_text(header + 'species\t1\t100\tMT-RNR1\t+\n')
+            species.write_text('reference_key\tstart\tend\trrna_gene\tstrand\nref1\t1\t100\tMT-RNR1\t+\n')
+            sample_map = d / 'sample_map.tsv'
+            sample_map.write_text('sample\treference_key\nS1\tref1\n')
             input_vcf = self.write_vcf(d, 'SRC_CHROM=species;SRC_POS=10;SRC_REF=A;SRC_ALT=C')
             def config(enabled):
                 path = d / f'rrna-{enabled}.yaml'
@@ -155,6 +157,7 @@ class MatchScriptSmokeTests(unittest.TestCase):
     output_dir: {d}
     reports_dir: {d / 'reports'}
     coordinate_map_dir: {d / 'maps'}
+    sample_reference_map: {sample_map}
     human_rrna_table: {human}
     species_rrna_table: {species}
   settings:

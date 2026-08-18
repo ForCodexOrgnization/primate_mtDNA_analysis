@@ -41,6 +41,14 @@ def normalize_rrna_gene(gene):
 norm=normalize_rrna_gene
 def load(path,species=False): return rows(path)
 
+def load_species_rrna_regions(path):
+ data=rows(path)
+ if not data: raise ValueError(f'MITOS2 reference rRNA region table {path} is empty')
+ required={'reference_key','rrna_gene','start','end','strand'}
+ missing=required-set(data[0])
+ if missing: raise ValueError(f'MITOS2 reference rRNA region table {path} is missing required columns: {", ".join(sorted(missing))}')
+ return data
+
 def first_value(row,names,default='.'):
  for name in names:
   value=row.get(name)
@@ -137,6 +145,21 @@ def hit(rs,pos,chrom='',sample=''):
    if int(r['start'])<=pos<=int(r['end']):return r
   except (ValueError,KeyError):pass
 
+def species_region_for(sample_ref,regions,pos,chrom=''):
+ """Find a source-coordinate rRNA only within the sample's exact reference."""
+ if not sample_ref or not pos:return None
+ reference_key=sample_ref.get('reference_key','')
+ if not reference_key:return None
+ expected_sha=sample_ref.get('coordinate_reference_sequence_sha256','') or ''
+ for region in regions:
+  if region.get('reference_key','') != reference_key:continue
+  observed_sha=region.get('coordinate_reference_sequence_sha256','') or ''
+  if expected_sha and observed_sha and expected_sha != observed_sha:continue
+  if chrom and region.get('chrom','') not in {'',chrom}:continue
+  try:
+   if int(region['start'])<=pos<=int(region['end']):return region
+  except (ValueError,KeyError):pass
+
 def local(r,point):
  if not r:return '.','.','.'
  n=int(r['end'])-int(r['start'])+1; v=point-int(r['start'])+1 if r.get('strand','+')!='-' else int(r['end'])-point+1
@@ -229,12 +252,12 @@ def apply_structure(structural,hst,sst,cmap,alt,status,gm):
  })
 
 def main():
- ap=argparse.ArgumentParser();ap.add_argument('--config',required=True);ap.add_argument('--sample');ap.add_argument('--input');ap.add_argument('--output');a=ap.parse_args();c=yaml(a.config);sec=c['rrna_match'];p,s=sec['paths'],sec['settings'];hs=load(p['human_rrna_table']);ss=load(p['species_rrna_table'])
+ ap=argparse.ArgumentParser();ap.add_argument('--config',required=True);ap.add_argument('--sample');ap.add_argument('--input');ap.add_argument('--output');a=ap.parse_args();c=yaml(a.config);sec=c['rrna_match'];p,s=sec['paths'],sec['settings'];hs=load(p['human_rrna_table']);ss=load_species_rrna_regions(p['species_rrna_table'])
  enabled=bool(s.get('use_rrna_structure_table',False)); hpath=p.get('human_rrna_structure_table',s.get('human_rrna_structure_table','')); spath=p.get('species_rrna_structure_table',s.get('species_rrna_structure_table',''))
  if enabled and (not hpath or not Path(hpath).exists()):raise SystemExit(f'rRNA structure annotation is enabled but human structure table is missing: {hpath or "<unset>"}')
  if enabled and (not spath or not Path(spath).exists()):raise SystemExit(f'rRNA structure annotation is enabled but species/reference structure table is missing: {spath or "<unset>"}')
  human_structure=load_rrna_structure_table(hpath) if enabled else {}; species_structure,reference_sha=load_species_rrna_structure_table(spath) if enabled else ({},{})
- sample_refs=load_sample_reference_map(p.get('sample_reference_map','')) if enabled else {}
+ sample_refs=load_sample_reference_map(p.get('sample_reference_map',''))
  samples=[a.sample] if a.sample else sample_names(c)
  if a.input:samples=[a.sample or Path(a.input).name.split('.')[0]]
  allrows=[]
@@ -245,7 +268,7 @@ def main():
   out=Path(a.output) if a.output else Path(p['output_dir'])/'vcf_rrna'/f"{sample}{s['output_suffix']}";out.parent.mkdir(parents=True,exist_ok=True);head=[];body=[];co=Counter();yes=0;sc=Counter();pc=Counter();tc=Counter();annotated=0;unknown=0
   for line in open_text(inp):
    if line.startswith('#'):head.append(line);continue
-   x=line.rstrip().split('\t');inf=info_parse(x[7]);sch,pos,_,_=source(inf);hp=human_pos(x,inf);sr=hit(ss,pos,sch,sample) if pos else None;hr=hit(hs,hp,x[0]) if hp else None
+   x=line.rstrip().split('\t');inf=info_parse(x[7]);sch,pos,_,_=source(inf);hp=human_pos(x,inf);sr=species_region_for(sample_ref,ss,pos,sch) if pos else None;hr=hit(hs,hp,x[0]) if hp else None
    status='MISSING_COORD' if not pos or not hp else 'NO_SPECIES_OR_HUMAN_RRNA' if not sr and not hr else 'NO_SPECIES_RRNA' if not sr else 'NO_HUMAN_RRNA' if not hr else 'GENE_MISMATCH' if norm(sr.get('rrna_gene'))!=norm(hr.get('rrna_gene')) else 'OK'
    sl,slen,sf=local(sr,pos) if sr else ('.','.','.');hl,hlen,hf=local(hr,hp) if hr else ('.','.','.');gm=bool(sr and hr and norm(sr.get('rrna_gene'))==norm(hr.get('rrna_gene')));strand=bool(sr and hr and sr.get('strand','+')==hr.get('strand','+'));region=gm and (not s.get('require_same_strand',False) or strand);yes+=region
    v={'MTRRNA_STATUS':status,'MTRRNA_S_GENE':norm(sr.get('rrna_gene')) if sr else '.','MTRRNA_H_GENE':norm(hr.get('rrna_gene')) if hr else '.','MTRRNA_GENE_MATCH':'yes' if gm else 'no','MTRRNA_S_LOCAL':sl,'MTRRNA_H_LOCAL':hl,'MTRRNA_S_LEN':slen,'MTRRNA_H_LEN':hlen,'MTRRNA_S_FRAC':sf,'MTRRNA_H_FRAC':hf,'MTRRNA_FRAC_DELTA':abs(sf-hf) if isinstance(sf,float) and isinstance(hf,float) else '.','MTRRNA_STRAND_MATCH':'yes' if strand else 'no','MTRRNA_REGION_MATCH':'yes' if region else 'no'}

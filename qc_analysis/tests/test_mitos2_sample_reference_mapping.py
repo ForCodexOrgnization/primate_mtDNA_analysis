@@ -95,3 +95,56 @@ def test_mapping_validation_collapses_exact_duplicates():
     module = load_module()
     row = {field: "value" for field in module.SAMPLE_REFERENCE_FIELDS}
     assert module.validate_sample_reference_rows([row, dict(row)], "map.tsv") == [row]
+
+
+def test_merge_writes_rna_outputs_even_when_cds_production_qc_fails(tmp_path):
+    module = load_module()
+    fasta = tmp_path / "ref.fa"
+    fasta.write_text(">chrM\nACGTACGTACGTACGTACGT\n")
+    raw_root = tmp_path / "raw"
+    raw = raw_root / "task1"
+    raw.mkdir(parents=True)
+    (raw / "result.gff").write_text(
+        "chrM\tmitfi\ttRNA\t1\t9\t1e-6\t+\t.\tName=trnL1\n"
+        "chrM\tmitfi\trRNA\t10\t18\t1e-5\t+\t.\tName=rrnS\n"
+    )
+    (raw / "result.mitos").write_text(
+        "chrM\ttRNA\ttrnL1\tmitfi\t0\t8\t1\t1e-6\t.\t.\t.\t(((...)))\t1\n"
+        "chrM\trRNA\trrnS\tmitfi\t9\t17\t1\t1e-5\t.\t.\t.\t(((...)))\t1\n"
+    )
+    ref = {
+        "task_key": "task1", "reference_key": "ref1", "reference_species": "Species one",
+        "coordinate_reference_accession": "ACC.1", "coordinate_reference_fasta": str(fasta),
+        "coordinate_reference_sequence_sha256": "intentionally-not-production-valid",
+        "mitos2_input_sequence_sha256": "intentionally-not-production-valid",
+        "mitos2_input_sequence_length": "20", "mitos2_input_fasta": str(fasta),
+    }
+    linked = [{
+        "sample": "S1", "species": "Species one", "coordinate_reference_fasta": str(fasta),
+        "coordinate_reference_accession": "ACC.1",
+        "coordinate_reference_sequence_sha256": "intentionally-not-production-valid",
+    }]
+    out = tmp_path / "out"
+    paths = {
+        "output_dir": str(out), "mitos2_raw_dir": str(raw_root),
+        "mitos2_reference_cds_table": str(out / "codons.tsv"),
+        "mitos2_reference_trna_structure_table": str(out / "trna.tsv"),
+        "mitos2_reference_rrna_region_table": str(out / "rrna_regions.tsv"),
+        "mitos2_reference_rrna_structure_table": str(out / "rrna_structure.tsv"),
+        "mitos2_feature_table": str(out / "features.tsv"),
+        "mitos2_summary_table": str(out / "summary.tsv"),
+        "codon_sample_reference_map": str(out / "codon_map.tsv"),
+        "mitos2_sample_coordinate_reference_map": str(out / "sample_coordinate_reference_map.tsv"),
+    }
+
+    module.merge(paths, {}, [(ref, linked)])
+
+    assert len(list(csv.DictReader((out / "trna.tsv").open(), delimiter="\t"))) == 9
+    assert len(list(csv.DictReader((out / "rrna_regions.tsv").open(), delimiter="\t"))) == 1
+    assert len(list(csv.DictReader((out / "rrna_structure.tsv").open(), delimiter="\t"))) == 9
+    assert len(list(csv.DictReader((out / "codons.tsv").open(), delimiter="\t"))) == 0
+    assert len(list(csv.DictReader((out / "sample_coordinate_reference_map.tsv").open(), delimiter="\t"))) == 1
+    summary = next(csv.DictReader((out / "summary.tsv").open(), delimiter="\t"))
+    assert summary["production_qc_status"] == "FAIL_PRODUCTION"
+    assert summary["trna_structure_status"] == "parsed_result_mitos_structure"
+    assert summary["rrna_structure_status"] == "parsed_result_mitos_structure"

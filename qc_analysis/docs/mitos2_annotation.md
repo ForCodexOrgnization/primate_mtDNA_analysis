@@ -22,7 +22,7 @@ runmitos --help >/dev/null
 
 `run_mitos2_annotation.py` activates that environment in a login shell, validates `runmitos`, and records that executable in `results/qc/mitos2_annotation/mitos2_annotation_summary.tsv`. The conda environment name is `mitos2`, the installed package name is `mitos`, and the CLI executable name is `runmitos`.
 
-The workflow runs one MITOS2 task per unique normalized sequence SHA256. Its primary input is the exact variant-calling FASTA, `references/variant_calling/Ref_chrM/{target_species}.fa`. Identical sequences shared by multiple species use one task and one biological `reference_key`; different sequences never collapse because of a shared species or accession. Accession remains optional provenance. MITOS2 supplies CDS, tRNA, and rRNA intervals, and the merge step now also attempts to extract rRNA secondary-structure rows from machine-readable MITOS2/Infernal text output when such output is present.
+The workflow runs one MITOS2 task per unique normalized sequence SHA256. Its primary input is the exact variant-calling FASTA, `references/variant_calling/Ref_chrM/{target_species}.fa`. Identical sequences shared by multiple species use one task and one biological `reference_key`; different sequences never collapse because of a shared species or accession. Accession remains optional provenance. MITOS2 supplies final CDS, tRNA, and rRNA intervals. CDS drives production codon matching. MITOS2 tRNA secondary structure is exported only for comparison/QC; production tRNA matching remains exclusively based on tRNAscan-SE and the existing reference position indexes.
 
 Task preparation writes the annotation-independent `data/reference_tables/sample_coordinate_reference_map.tsv`, which maps every sample to the exact Ref_chrM used for variant calling regardless of MITOS2 status. The merge writes the production reference codon table and `codon_sample_reference_map.tsv` under `results/qc/mitos2_annotation/`; only references passing strict production QC enter those codon-specific outputs. Failed references remain explicit in the summary and remain eligible for the independent tRNAscan-SE workflow. There is no GenBank codon fallback. `build_primate_codon_table.py` is retained only to build an independent GenBank benchmark for the optional hash-matched comparison.
 
@@ -43,6 +43,8 @@ python qc_analysis/scripts/run_mitos2_annotation.py \
 ```
 
 This writes `results/qc/mitos2_annotation/all_mitos2_reference_position_codon_table.tsv`,
+`results/qc/mitos2_annotation/all_mitos2_reference_trna_structure.tsv`,
+`results/qc/mitos2_annotation/all_mitos2_reference_rrna_regions.tsv`,
 `results/qc/mitos2_annotation/all_mitos2_reference_rrna_structure.tsv`,
 `results/qc/mitos2_annotation/codon_sample_reference_map.tsv`, and
 `results/qc/mitos2_annotation/mitos2_annotation_summary.tsv` (plus the compact
@@ -54,13 +56,23 @@ rows.
 ## rRNA structure table
 
 `build_mitos2_rrna_structure_table.py` is used by the merge path and can also be
-run directly. It scans each raw MITOS2 task directory for Stockholm/Infernal-like
-machine-readable structure records (`SS_cons` or per-sequence `SS`) and maps
-explicit pairs back to the exact coordinate reference FASTA. The MITOS2 command
-still uses `--noplots`; SVG plot geometry is not parsed for production
-annotations. If no machine-readable structure is present, rRNA interval rows are
-kept with `struct_class=unknown` and the summary records
-`rrna_structure_status=no_machine_readable_structure`.
+run directly. Production parsing reads final tRNA/rRNA records from
+`<raw-task-directory>/result.mitos`. This is MITOS's custom tabular format, not
+BED or GFF: core columns identify the feature, 0-based inclusive start/end,
+numeric strand, and score, while the RNA-specific tail contains dot-bracket
+structure. The parser explicitly normalizes MITOS start/end by `+1/+1` and only
+uses a structure if feature type, gene, strand, and the complete normalized
+interval equal exactly one final `result.gff` feature. A disagreement is reported
+as `result_mitos_gff_interval_mismatch`; coordinates are never silently shifted.
+
+Dot-bracket pairs are expanded reciprocally in RNA 5'-to-3' orientation. For a
+negative-strand feature this means local position 1 maps to the high genomic
+coordinate. All genomic bases and paired bases are read from the exact coordinate
+reference FASTA. Parentheses, square/curly brackets, and angle brackets are
+supported; dots are unpaired. Structure length must equal the final GFF feature
+length. The MITOS2 command still uses `--best --noplots`, and SVG geometry is not
+parsed for production annotations. Retained Stockholm parsing is legacy-only and
+cannot override a present final `result.mitos`.
 
 The rRNA table is reference-level and includes:
 `reference_key`, `reference_species`, `coordinate_reference_accession`,
@@ -70,6 +82,23 @@ The rRNA table is reference-level and includes:
 `pair_state`, `annotation_source`, and `structure_source`, plus optional model
 and strand diagnostics. rRNA structure extraction status is reported separately
 from CDS production QC and does not invalidate otherwise valid codon outputs.
+
+The merge also writes `all_mitos2_reference_rrna_regions.tsv`, one row per final
+MITOS2 GFF rRNA feature, and `all_mitos2_reference_trna_structure.tsv`. Distinct
+MITOS names such as `trnL1`/`trnL2` and `trnS1`/`trnS2` are preserved. RNA
+failures are reported independently in `mitos2_annotation_summary.tsv` and never
+remove an otherwise valid reference from the production codon table.
+
+## rRNA matching coordinate interface
+
+Primate rRNA lookup is reference-aware: a sample is resolved through
+`sample_coordinate_reference_map.tsv` to its `reference_key`, then looked up in
+the MITOS2 region and structure tables using the original/source variant
+coordinate. Human rRNA interval and structure annotation remain the curated
+tables and use the lifted human coordinate. Only after both sides are annotated
+independently is a primate pairing partner lifted to human coordinates for
+partner-relation comparison. Human local pairing coordinates are never projected
+back onto the primate sequence.
 
 ## Slurm array workflow (recommended)
 

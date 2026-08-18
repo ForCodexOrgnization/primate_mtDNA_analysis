@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build per-reference rRNA secondary-structure rows from MITOS2 raw output.
+"""Build reference-level RNA intervals and structures from final MITOS2 output.
 
-Production parsing uses machine-readable text structures only.  The parser
-currently supports Stockholm/Infernal-style files with ``SS_cons`` or per-record
-``SS`` annotations and deliberately does not parse SVG plot geometry.
+Production structures come from ``result.mitos`` and are reconciled against
+the final GFF before they are mapped to the exact coordinate FASTA.  SVG
+geometry is deliberately never parsed.
 """
 from __future__ import annotations
 
@@ -15,6 +15,13 @@ from qc_analysis.lib.match_utils import (
     IUPAC_DNA_BASES, IUPAC_RNA_BASES, orient_dna_base_to_rna, rrna_pair_state,
     rrna_pair_type, yaml,
 )
+from qc_analysis.lib.mitos_rna import (
+    assignment_to_bases,
+    normalize_rrna_gene as normalize_result_rrna_gene,
+    parse_result_mitos,
+    per_base_assignments,
+    reconcile_result_mitos_record,
+)
 
 RRNA_STRUCTURE_FIELDS = (
     "reference_key reference_species coordinate_reference_accession "
@@ -23,6 +30,20 @@ RRNA_STRUCTURE_FIELDS = (
     "paired_local_pos paired_base pair_type pair_state annotation_source "
     "structure_source struct_element model_name model_position strand "
     "confidence mitos2_raw_dir"
+).split()
+
+TRNA_STRUCTURE_FIELDS = (
+    "reference_key reference_species coordinate_reference_accession "
+    "coordinate_reference_fasta coordinate_reference_sequence_sha256 "
+    "trna_gene gene_raw genomic_pos local_pos base struct_class "
+    "paired_genomic_pos paired_local_pos paired_base pair_type pair_state "
+    "strand annotation_source structure_source confidence"
+).split()
+
+RRNA_REGION_FIELDS = (
+    "reference_key reference_species coordinate_reference_accession "
+    "coordinate_reference_fasta coordinate_reference_sequence_sha256 "
+    "rrna_gene start end strand length annotation_source source_file"
 ).split()
 
 PAIR_OPEN = {"<": ">", "(": ")", "[": "]", "{": "}"}
@@ -351,6 +372,13 @@ def base_row(ref, raw_dir, model, local_pos, assignment):
 
 
 def build_reference_rrna_structure_rows(ref, features, fasta, raw_dir):
+    """Build final rRNA rows, preferring validated ``result.mitos`` records."""
+    result_path = Path(raw_dir) / "result.mitos"
+    if result_path.is_file():
+        return build_reference_rna_structure_rows(ref, features, fasta, raw_dir, "rRNA")
+
+    # Explicitly legacy-only support for old retained Stockholm fixtures.  It
+    # is unreachable when a final result.mitos exists and can never override it.
     rrna_features = [f for f in features if f.get("feature_type") == "rRNA" or normalize_rrna_gene(f.get("gene")) in {"MT-RNR1", "MT-RNR2"}]
     if not rrna_features:
         rrna_features = parse_rrna_features_from_gff(raw_dir, ref)
@@ -391,13 +419,142 @@ def build_reference_rrna_structure_rows(ref, features, fasta, raw_dir):
 
     parsed_genes = [gene for gene, mapped in assignments.items() if mapped]
     if parsed_genes and len(parsed_genes) == len(models):
-        return rows, "parsed_machine_readable_structure", "Parsed Stockholm/Infernal secondary structure for all MITOS2 rRNA features."
+        return rows, "parsed_legacy_stockholm_structure", "Legacy fallback: parsed Stockholm/Infernal secondary structure for all MITOS2 rRNA features."
     if parsed_genes:
         missing = sorted(set(models) - set(parsed_genes))
-        return rows, "partial_machine_readable_structure", "Parsed Stockholm/Infernal secondary structure for " + ",".join(sorted(parsed_genes)) + "; missing " + ",".join(missing)
+        return rows, "partial_legacy_stockholm_structure", "Legacy fallback: parsed Stockholm/Infernal secondary structure for " + ",".join(sorted(parsed_genes)) + "; missing " + ",".join(missing)
     if candidates:
-        return rows, "no_matched_machine_readable_structure", "; ".join(parse_notes) or "Machine-readable structure files were present but did not match rRNA features."
-    return rows, "no_machine_readable_structure", "No Stockholm/Infernal SS_cons or per-sequence SS structure was found; SVG plots were not parsed."
+        return rows, "no_matched_legacy_stockholm_structure", "; ".join(parse_notes) or "Legacy Stockholm structure files were present but did not match rRNA features."
+    return rows, "no_result_mitos_rna_structure", "No final result.mitos RNA structure was found; SVG plots were not parsed."
+
+
+def _rna_model(feature, records):
+    model = feature_model(feature, records)
+    if feature.get("feature_type") == "tRNA":
+        model["gene"] = str(feature.get("gene_raw") or feature.get("gene") or "")
+    return model
+
+
+def _rna_base_row(ref, feature, model, local_pos, assignment, feature_type, confidence="."):
+    row = {
+        "reference_key": ref.get("reference_key", ""),
+        "reference_species": ref.get("reference_species", ""),
+        "coordinate_reference_accession": ref.get("coordinate_reference_accession", ""),
+        "coordinate_reference_fasta": ref.get("coordinate_reference_fasta", ""),
+        "coordinate_reference_sequence_sha256": ref.get("coordinate_reference_sequence_sha256", ""),
+        **assignment_to_bases(model, local_pos, assignment),
+        "annotation_source": "MITOS2",
+        "structure_source": assignment.get("structure_source", "."),
+        "confidence": confidence or ".",
+    }
+    if feature_type == "rRNA":
+        row.update({
+            "rrna_gene": normalize_result_rrna_gene(feature.get("gene_raw") or feature.get("gene")),
+            "struct_element": ".", "model_name": ".", "model_position": local_pos,
+            "mitos2_raw_dir": str(feature.get("raw_dir", "")),
+        })
+    else:
+        raw_gene = str(feature.get("mitos_gene_raw") or feature.get("gene_raw") or feature.get("gene") or "")
+        row.update({"trna_gene": re.sub(r"\([^)]*\)$", "", raw_gene), "gene_raw": raw_gene})
+    return row
+
+
+def build_reference_rna_structure_rows(ref, features, fasta, raw_dir, feature_type):
+    """Expand final MITOS RNA structures in RNA 5'->3' local orientation."""
+    wanted = feature_type.lower()
+    final_features = [f for f in features if str(f.get("feature_type", "")).lower() == wanted]
+    if feature_type == "rRNA" and not final_features:
+        final_features = parse_rrna_features_from_gff(raw_dir, ref)
+    noun = "rrna" if feature_type == "rRNA" else "trna"
+    if not final_features:
+        return [], f"no_mitos2_{noun}_features", f"No final MITOS2 {feature_type} GFF features were available."
+
+    records = read_fasta_records(fasta)
+    mitos_records = [r for r in parse_result_mitos(Path(raw_dir) / "result.mitos") if r["feature_type"] == feature_type]
+    reconciled = []
+    interval_mismatches = []
+    for record in mitos_records:
+        match, status, note = reconcile_result_mitos_record(record, final_features)
+        reconciled.append((record, match, status, note))
+        if status == "result_mitos_gff_interval_mismatch":
+            interval_mismatches.append(f"{record['gene_raw']}: {note}")
+
+    rows, notes = [], []
+    parsed_features = 0
+    length_mismatches = 0
+    for feature in final_features:
+        try:
+            model = _rna_model(feature, records)
+        except Exception as exc:
+            notes.append(f"{feature.get('gene_raw', feature.get('gene', feature_type))}: FASTA mapping failed: {exc}")
+            continue
+        matches = [(record, status) for record, match, status, _note in reconciled if match is feature]
+        assignment_map = {}
+        confidence = "."
+        mitos_gene_raw = ""
+        if len(matches) == 1 and matches[0][0].get("structure"):
+            record = matches[0][0]
+            mitos_gene_raw = record.get("gene_raw", "")
+            try:
+                assignment_map = per_base_assignments(
+                    record["structure"], len(model["genomic_positions"]), record["source_file"]
+                )
+                parsed_features += 1
+                confidence = record.get("score") or "."
+            except ValueError as exc:
+                if "structure length" in str(exc):
+                    length_mismatches += 1
+                notes.append(f"{record['gene_raw']}: {exc}")
+        elif len(matches) > 1:
+            notes.append(f"{feature.get('gene_raw')}: multiple result.mitos records match the final GFF feature")
+        else:
+            notes.append(f"{feature.get('gene_raw')}: no usable final result.mitos structure")
+        for local_pos in range(1, len(model["genomic_positions"]) + 1):
+            assignment = assignment_map.get(local_pos, {"struct_class": "unknown", "structure_source": "."})
+            feature_with_raw = {**feature, "raw_dir": str(raw_dir), "mitos_gene_raw": mitos_gene_raw}
+            rows.append(_rna_base_row(ref, feature_with_raw, model, local_pos, assignment, feature_type, confidence))
+
+    total = len(final_features)
+    if parsed_features == total:
+        status = "parsed_result_mitos_structure"
+        note = f"Parsed and GFF-validated final result.mitos structure for all {total} {feature_type} features."
+    elif parsed_features:
+        status = "partial_result_mitos_structure"
+        note = f"Parsed {parsed_features} of {total} final {feature_type} structures; " + "; ".join(notes)
+    elif interval_mismatches:
+        status = "result_mitos_gff_interval_mismatch"
+        note = "; ".join(interval_mismatches + notes)
+    elif length_mismatches:
+        status = "result_mitos_structure_length_mismatch"
+        note = "; ".join(notes)
+    else:
+        status = f"no_result_mitos_{noun}_structure"
+        note = "; ".join(notes) or f"No usable final result.mitos {feature_type} structure was found."
+    return rows, status, note
+
+
+def build_reference_trna_structure_rows(ref, features, fasta, raw_dir):
+    return build_reference_rna_structure_rows(ref, features, fasta, raw_dir, "tRNA")
+
+
+def build_reference_rrna_region_rows(ref, features):
+    rows = []
+    for feature in features:
+        if str(feature.get("feature_type", "")).lower() != "rrna":
+            continue
+        start, end = int(feature["start"]), int(feature["end"])
+        rows.append({
+            "reference_key": ref.get("reference_key", ""),
+            "reference_species": ref.get("reference_species", ""),
+            "coordinate_reference_accession": ref.get("coordinate_reference_accession", ""),
+            "coordinate_reference_fasta": ref.get("coordinate_reference_fasta", ""),
+            "coordinate_reference_sequence_sha256": ref.get("coordinate_reference_sequence_sha256", ""),
+            "rrna_gene": normalize_result_rrna_gene(feature.get("gene_raw") or feature.get("gene")),
+            "start": start, "end": end, "strand": feature.get("strand", "+"),
+            "length": end - start + 1, "annotation_source": "MITOS2",
+            "source_file": feature.get("source_file", ""),
+        })
+    return rows
 
 
 def write_tsv(path, fields, rows):
