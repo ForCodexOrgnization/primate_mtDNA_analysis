@@ -1,8 +1,30 @@
 import csv, importlib.util
 from pathlib import Path
+import pytest
 
 SCRIPT=Path(__file__).parents[1]/"scripts/build_primate_homo_background.py"
 spec=importlib.util.spec_from_file_location("background",SCRIPT);mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+
+def test_metadata_reads_headered_manifest_case_insensitively(tmp_path):
+    path=tmp_path/"samples.tsv"
+    path.write_text("# cohort metadata\n\nSAMPLE\tSpecies\tGenus\tFamily\tnote\nA\tPan_troglodytes\tPan\tHominidae\talpha\nB\tGorilla_gorilla\tGorilla\tHominidae\tbeta\n")
+    rows=mod.metadata(path)
+    assert set(rows)=={"A","B"}
+    assert rows["A"]=={"sample":"A","species":"Pan_troglodytes","genus":"Pan","family":"Hominidae","note":"alpha"}
+
+def test_metadata_reads_legacy_headerless_manifest(tmp_path):
+    path=tmp_path/"samples.tsv"
+    path.write_text("# sample and species\n\nA\tPan_troglodytes\textra\nB\tGorilla_gorilla\n")
+    rows=mod.metadata(path)
+    assert set(rows)=={"A","B"}
+    assert rows["A"]=={"sample":"A","species":"Pan_troglodytes"}
+    assert rows["B"]=={"sample":"B","species":"Gorilla_gorilla"}
+
+def test_metadata_rejects_duplicate_sample_ids(tmp_path):
+    path=tmp_path/"samples.tsv"
+    path.write_text("sample\tspecies\nA\tPan_troglodytes\nA\tGorilla_gorilla\n")
+    with pytest.raises(ValueError,match="Duplicate sample ID 'A'.*lines 2 and 3"):
+        mod.metadata(path)
 
 def test_existing_annotation_statuses_are_consolidated_without_new_matching_rules():
     assert mod.status({"MTCODON_STATUS":"PASS"})[:2]==("CDS","PASS")

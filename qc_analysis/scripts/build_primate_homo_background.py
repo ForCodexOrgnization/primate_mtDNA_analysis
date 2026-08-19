@@ -19,8 +19,30 @@ def number(v):
   x=float(v);return x if math.isfinite(x) else None
  except (TypeError,ValueError):return None
 def metadata(path):
- with path.open(newline='',encoding='utf-8') as h:
-  return {r['sample']:{k.lower():str(v or '') for k,v in r.items()} for r in csv.DictReader(h,delimiter='\t') if r.get('sample')}
+ with path.open(newline='',encoding='utf-8-sig') as h:
+  rows=[(line_number,row) for line_number,row in enumerate(csv.reader(h,delimiter='\t'),1)
+        if row and any(value.strip() for value in row) and not row[0].lstrip().startswith('#')]
+ if not rows:return {}
+ _first_line,first=rows[0];header=[value.strip().lower() for value in first]
+ headered=bool(set(header)&{'sample','species','species_fasta','genus','family'})
+ if headered and 'sample' not in header:
+  raise ValueError(f"Metadata file {path} has a header but no sample column")
+ if headered and len(set(header))!=len(header):
+  raise ValueError(f"Metadata file {path} has duplicate column names after case normalization")
+ data=rows[1:] if headered else rows;result={};sample_lines={}
+ for line_number,fields in data:
+  if headered:
+   row={name:(fields[index].strip() if index<len(fields) else '') for index,name in enumerate(header)}
+  else:
+   if len(fields)<2:
+    raise ValueError(f"Headerless metadata file {path} line {line_number} must contain at least sample and species columns")
+   row={'sample':fields[0].strip(),'species':fields[1].strip()}
+  sample=row.get('sample','').strip()
+  if not sample:continue
+  if sample in result:
+   raise ValueError(f"Duplicate sample ID {sample!r} in metadata file {path} at lines {sample_lines[sample]} and {line_number}")
+  result[sample]=row;sample_lines[sample]=line_number
+ return result
 def status(info):
  """Expose existing match decisions without changing their biological rules."""
  cs=str(info.get('MTCODON_STATUS',''))
