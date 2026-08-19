@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Strict terminal sample/variant filtering of the most downstream VCF."""
 from __future__ import annotations
-import argparse,csv,gzip,re,shutil,subprocess,sys,tempfile
+import argparse,csv,gzip,math,re,shutil,subprocess,sys,tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 SAMPLE_COLUMNS="sample species intraspecies_status human_contamination_status interspecies_status sample_level_qc_status final_sample_status final_sample_fail_reasons final_sample_warnings vcf_source".split()
-VARIANT_COLUMNS="sample source_chrom source_pos source_ref source_alt original_chrom original_pos original_ref original_alt human_chrom human_pos human_ref human_alt liftover_status human_contamination_status interspecies_status sample_variant_qc_status match_status final_variant_status final_variant_fail_reasons".split()
+VARIANT_COLUMNS=("sample species human_chrom human_pos human_ref human_alt source_chrom source_pos source_ref source_alt "
+ "AF DP vcf_filter variant_class call_class snv_type mt_median_coverage Percent_100 nuclear_median_coverage mtcn_median MAD "
+ "sample_level_qc_status sample_failed_criteria intraspecies_status human_contamination_status interspecies_status "
+ "region_type orthology_match_status orthology_fail_reason codon_match_status trna_match_status rrna_match_status "
+ "final_variant_status final_variant_fail_reasons original_chrom original_pos original_ref original_alt liftover_status sample_variant_qc_status match_status").split()
 def resolve(v):
  p=Path(str(v)).expanduser();return p if p.is_absolute() else ROOT/p
 def read_tsv(p):
@@ -21,6 +25,35 @@ def names(v):return [x.strip() for x in v.split(",")] if isinstance(v,str) else 
 def is_fail(v,configured):return v.strip().lower() in {str(x).strip().lower() for x in names(configured)}
 def sample_name(p):return p.name.split(".lifted",1)[0].split(".vcf",1)[0]
 def open_vcf(p):return gzip.open(p,"rt") if p.suffix==".gz" else p.open(encoding="utf-8")
+def parse_info(value):return {item.split("=",1)[0]:item.split("=",1)[1] if "=" in item else True for item in value.split(";") if item and item!="."}
+def number(value):
+ try:
+  result=float(value);return result if math.isfinite(result) else None
+ except (TypeError,ValueError):return None
+def variant_evidence(fields):
+ info=parse_info(fields[7]);format_names=fields[8].split(":") if len(fields)>8 else [];format_values=fields[9].split(":") if len(fields)>9 else [];sample=dict(zip(format_names,format_values))
+ af=number(sample.get("AF","").split(",")[0]);dp=number(sample.get("DP"))
+ if dp is None:dp=number(info.get("DP"))
+ if af is None and "," not in fields[4]:
+  ad=[number(value) for value in sample.get("AD","").split(",")]
+  if len(ad)==2 and None not in ad and sum(ad)>0:af=ad[1]/sum(ad)
+ return info,af,dp
+def variant_classes(ref,alt):
+ ref,alt=ref.upper(),alt.upper();simple="," not in alt
+ if simple and len(ref)==len(alt)==1:variant_class="SNV"
+ elif simple and len(ref)!=len(alt) and all(re.fullmatch(r"[ACGTN]+",allele) for allele in (ref,alt)):variant_class="INDEL"
+ else:variant_class="OTHER"
+ if variant_class=="SNV" and {ref,alt} in ({"A","G"},{"C","T"}):snv_type="SNV_transition"
+ elif variant_class=="SNV" and ref in "ACGT" and alt in "ACGT":snv_type="SNV_transversion"
+ elif variant_class=="INDEL":snv_type="indel"
+ else:snv_type="other"
+ return variant_class,snv_type
+def call_class(af):
+ if af is None:return "UNKNOWN"
+ if af>=.95:return "homoplasmic"
+ if af>=.10:return "heteroplasmic"
+ return "low_af"
+def info_value(info,*aliases):return next((str(info[name]) for name in aliases if info.get(name) not in (None,"",".")),"NOT_AVAILABLE")
 LEGACY_SUFFIXES=(".lifted.codon.trna.rrna.vcf",".lifted.codon.trna.vcf",".lifted.trna.vcf",".lifted.codon.vcf",".lifted.raw.vcf",".vcf")
 def source_specs(value):
  """Normalize named exact-pattern sources and the legacy directory list."""
@@ -102,7 +135,7 @@ def main():
  if out.exists() and a.overwrite:shutil.rmtree(out)
  for d in (out/"reports",out/"logs",out/"final_vcf",out/"final_cov",out/"final_mtcn"):d.mkdir(parents=True,exist_ok=True)
  fail_cfg=sec.get("sample_fail_status") or {};fail_defaults={"intraspecies":["high_confidence_contaminated"],"human":["FAIL"],"interspecies":["FAIL"],"sample_qc":["FAIL"]};vcf_sources=source_specs(sec.get("vcf_sources",["results/qc/rrna_match/vcf_rrna","results/qc/trna_match/vcf_trna","results/qc/codon_match/vcf_codon","results/qc/coordinate_liftover/vcf_lifted_raw"]))
- sample_rows=[];passing={};sample_qc_rows=indexed["sample_qc"]
+ sample_rows=[];sample_context={};passing={};sample_qc_rows=indexed["sample_qc"]
  for sample,row in sorted(collection.items()):
   statuses={n:pick(indexed[n].get(sample,{}),fields[n]) for n in defaults};reasons=[];warnings=[]
   for n,v in statuses.items():
@@ -118,14 +151,17 @@ def main():
   if not reasons and src is None:reasons.append("vcf:missing_downstream_source")
   status="FAIL" if reasons else "PASS"
   if status=="PASS":passing[sample]=src
-  sample_rows.append(dict(sample=sample,species=pick(row,["species","Species"],""),intraspecies_status=statuses["intraspecies"],human_contamination_status=statuses["human"],interspecies_status=statuses["interspecies"],sample_level_qc_status=statuses["sample_qc"],final_sample_status=status,final_sample_fail_reasons=";".join(reasons),final_sample_warnings=";".join(warnings),vcf_source=str(src or "")))
- variant_flags=defaultdict(list)
+  sample_row=dict(sample=sample,species=pick(row,["species","Species"],""),intraspecies_status=statuses["intraspecies"],human_contamination_status=statuses["human"],interspecies_status=statuses["interspecies"],sample_level_qc_status=statuses["sample_qc"],final_sample_status=status,final_sample_fail_reasons=";".join(reasons),final_sample_warnings=";".join(warnings),vcf_source=str(src or ""));sample_rows.append(sample_row);sample_context[sample]=sample_row
+ variant_flags=defaultdict(list);variant_annotations=defaultdict(dict)
  for source,spec in (sec.get("variant_reports") or {}).items():
   p=resolve(spec["path"] if isinstance(spec,dict) else spec)
   if not p.is_file():continue
   for r in read_tsv(p):
    if not isinstance(spec,dict):raise ValueError(f"variant report {source} must declare path and coordinate_system")
    k=report_variant_key(r,spec,source);st=pick(r,names(spec.get("status_columns",[]))+["qc_status","status","match_status"],"PASS")
+   for field in ("region_type","orthology_match_status","orthology_fail_reason"):
+    value=pick(r,[field],"")
+    if value:variant_annotations[k][field]=value
    if is_fail(st,spec.get("fail_status",["FAIL"]) if isinstance(spec,dict) else ["FAIL"]):variant_flags[k].append(source+":"+st)
  variant_rows=[];kept={}
  for sample,src in sorted(passing.items()):
@@ -134,7 +170,8 @@ def main():
    with open_vcf(src) as inp:
     for line in inp:
      if line.startswith("#"):target.write(line);continue
-     f=line.rstrip("\n").split("\t");k=(sample,f[0],f[1],f[3],f[4]);why=variant_flags.get(k,[]);st="FAIL" if why else "PASS";na="NOT_AVAILABLE";variant_rows.append(dict(sample=sample,source_chrom=na,source_pos=na,source_ref=na,source_alt=na,original_chrom=na,original_pos=na,original_ref=na,original_alt=na,human_chrom=f[0],human_pos=f[1],human_ref=f[3],human_alt=f[4],liftover_status="PASS",human_contamination_status="NOT_AVAILABLE",interspecies_status="NOT_AVAILABLE",sample_variant_qc_status="PASS" if not why else "FAIL",match_status="NOT_AVAILABLE",final_variant_status=st,final_variant_fail_reasons=";".join(why)))
+     f=line.rstrip("\n").split("\t");k=(sample,f[0],f[1],f[3],f[4]);why=variant_flags.get(k,[]);st="FAIL" if why else "PASS";info,af,dp=variant_evidence(f);variant_class,snv_type=variant_classes(f[3],f[4]);context=sample_context[sample];qc=sample_qc_rows.get(sample,{});annotation=variant_annotations.get(k,{});source_chrom=info_value(info,"SRC_CHROM","MTLIFT_ORIG_CHROM");source_pos=info_value(info,"SRC_POS","MTLIFT_ORIG_POS");source_ref=info_value(info,"SRC_REF","MTLIFT_ORIG_REF");source_alt=info_value(info,"SRC_ALT","MTLIFT_ORIG_ALT");orthology_status=annotation.get("orthology_match_status","NOT_AVAILABLE")
+     variant_rows.append(dict(sample=sample,species=context["species"],human_chrom=f[0],human_pos=f[1],human_ref=f[3],human_alt=f[4],source_chrom=source_chrom,source_pos=source_pos,source_ref=source_ref,source_alt=source_alt,AF=af if af is not None else "NA",DP=dp if dp is not None else "NA",vcf_filter=f[6],variant_class=variant_class,call_class=call_class(af),snv_type=snv_type,mt_median_coverage=pick(qc,["mt_median_coverage"]),Percent_100=pick(qc,["Percent_100"]),nuclear_median_coverage=pick(qc,["nuclear_median_coverage"]),mtcn_median=pick(qc,["mtcn_median"]),MAD=pick(qc,["MAD"]),sample_level_qc_status=context["sample_level_qc_status"],sample_failed_criteria=pick(qc,["failed_criteria"],""),intraspecies_status=context["intraspecies_status"],human_contamination_status=context["human_contamination_status"],interspecies_status=context["interspecies_status"],region_type=annotation.get("region_type","NOT_AVAILABLE"),orthology_match_status=orthology_status,orthology_fail_reason=annotation.get("orthology_fail_reason","NOT_AVAILABLE"),codon_match_status=info_value(info,"MTCODON_STATUS"),trna_match_status=info_value(info,"MTTRNA_STATUS"),rrna_match_status=info_value(info,"MTRRNA_STATUS"),final_variant_status=st,final_variant_fail_reasons=";".join(why),original_chrom=source_chrom,original_pos=source_pos,original_ref=source_ref,original_alt=source_alt,liftover_status="PASS",sample_variant_qc_status="PASS" if not why else "FAIL",match_status=orthology_status))
      if st=="PASS":target.write(line);n+=1
   dest=out/"final_vcf"/f"{sample}.final.vcf.gz";sorted_plain=None
   try:
