@@ -10,6 +10,7 @@ from qc_analysis.lib.simple_yaml import read_simple_yaml
 
 ORTHO_COLUMNS="sample species human_chrom human_pos human_ref human_alt source_chrom source_pos source_ref source_alt AF DP variant_class region_type orthology_match_status orthology_fail_reason".split()
 HOMO_COLUMNS="sample species genus family human_pos human_ref human_alt AF DP region_type orthology_match_status".split()
+DEFAULT_RRNA_MATCH_TIERS="HIGH_CONF_STEM,HIGH_CONF_LOOP"
 
 def resolve(v):
  p=Path(str(v)).expanduser();return p if p.is_absolute() else ROOT/p
@@ -43,8 +44,8 @@ def metadata(path):
    raise ValueError(f"Duplicate sample ID {sample!r} in metadata file {path} at lines {sample_lines[sample]} and {line_number}")
   result[sample]=row;sample_lines[sample]=line_number
  return result
-def status(info):
- """Expose existing match decisions without changing their biological rules."""
+def status(info,accepted_rrna_match_tiers):
+ """Consolidate existing annotations using the configured accepted rRNA tiers."""
  cs=str(info.get('MTCODON_STATUS',''))
  ts=str(info.get('MTTRNA_STATUS',''))
  rs=str(info.get('MTRRNA_STATUS',''))
@@ -57,8 +58,12 @@ def status(info):
   if 'AMBIGUOUS' in ts:return 'tRNA','AMBIGUOUS',ts
   return 'tRNA','FAIL',ts if ts!='OK' else 'STRICT_MATCH_NO'
  if rs and rs!='NO_SPECIES_OR_HUMAN_RRNA':
-  if rs=='OK' and info.get('MTRRNA_REGION_MATCH')=='yes':return 'rRNA','PASS',''
-  return 'rRNA','FAIL',rs if rs!='OK' else 'REGION_MATCH_NO'
+  if rs!='OK':return 'rRNA','FAIL',rs
+  if info.get('MTRRNA_REGION_MATCH')!='yes':return 'rRNA','FAIL','REGION_MATCH_NO'
+  tier=str(info.get('MTRRNA_MATCH_TIER','')).strip()
+  if tier in accepted_rrna_match_tiers:return 'rRNA','PASS',''
+  if tier in {'','.','NA','None'}:return 'rRNA','FAIL','RRNA_MATCH_TIER_MISSING'
+  return 'rRNA','FAIL','RRNA_'+tier
  return 'noncoding','NOT_APPLICABLE','NOT_APPLICABLE_NONCODING'
 def variants(path):
  op=gzip.open if path.suffix=='.gz' else open
@@ -85,6 +90,8 @@ def write(path,columns,rows):
 def main():
  ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('--config',required=True);a=ap.parse_args();cfg=read_simple_yaml(a.config);sec=cfg.get('primate_homo_background') or {}; paths=sec.get('paths') or {}; settings=sec.get('settings') or {}
  if sec.get('enabled',True) is False:return 0
+ accepted_rrna_match_tiers={value.strip() for value in str(settings.get('accepted_rrna_match_tiers',DEFAULT_RRNA_MATCH_TIERS)).split(',') if value.strip()}
+ if not accepted_rrna_match_tiers:raise ValueError('primate_homo_background.settings.accepted_rrna_match_tiers must contain at least one tier')
  indir=resolve(paths.get('input_vcf_dir','results/qc/rrna_match/vcf_rrna'));out=resolve(paths.get('output_dir','results/qc/primate_homo_background'));orthodir=resolve(paths.get('orthology_reports_dir','results/qc/orthology_match/reports'));meta=metadata(resolve(paths.get('sample_ref_file','config/sample_ref_file.tsv')))
  pattern=paths.get('input_vcf_pattern','{sample}.lifted.codon.trna.rrna.vcf'); homo=float(settings.get('homoplasmy_af_min',.95));dpmin=float(settings.get('dp_min',100));pass_only=settings.get('pass_only',True) is not False;snv_only=settings.get('snv_only',True) is not False;accepted=set(str(settings.get('accepted_orthology_statuses','PASS')).split(','))
  markers=marker_alleles(resolve(paths.get('human_marker_table','data/reference_tables/human_phylotree_rcrs_v17.1_snv.tsv'))); ortho=[];homos=[];eligible_by_species=defaultdict(set);processed_samples=set()
@@ -94,7 +101,7 @@ def main():
   if not path.is_file():continue
   processed_samples.add(sample);eligible_by_species[m.get('species','')].add(sample)
   for f,info,af,dp,_ in variants(path):
-   region,match,reason=status(info);srcpos=info.get('SRC_POS',info.get('MTLIFT_ORIG_POS',''));row=dict(sample=sample,species=m.get('species',''),human_chrom=f[0],human_pos=f[1],human_ref=f[3],human_alt=f[4],source_chrom=info.get('SRC_CHROM',info.get('MTLIFT_ORIG_CHROM','')),source_pos=srcpos,source_ref=info.get('SRC_REF',info.get('MTLIFT_ORIG_REF','')),source_alt=info.get('SRC_ALT',info.get('MTLIFT_ORIG_ALT','')),AF=af if af is not None else 'NA',DP=dp if dp is not None else 'NA',variant_class='SNV' if len(f[3])==len(f[4])==1 and ',' not in f[4] else 'OTHER',region_type=region,orthology_match_status=match,orthology_fail_reason=reason);ortho.append(row)
+   region,match,reason=status(info,accepted_rrna_match_tiers);srcpos=info.get('SRC_POS',info.get('MTLIFT_ORIG_POS',''));row=dict(sample=sample,species=m.get('species',''),human_chrom=f[0],human_pos=f[1],human_ref=f[3],human_alt=f[4],source_chrom=info.get('SRC_CHROM',info.get('MTLIFT_ORIG_CHROM','')),source_pos=srcpos,source_ref=info.get('SRC_REF',info.get('MTLIFT_ORIG_REF','')),source_alt=info.get('SRC_ALT',info.get('MTLIFT_ORIG_ALT','')),AF=af if af is not None else 'NA',DP=dp if dp is not None else 'NA',variant_class='SNV' if len(f[3])==len(f[4])==1 and ',' not in f[4] else 'OTHER',region_type=region,orthology_match_status=match,orthology_fail_reason=reason);ortho.append(row)
    valid=len(f[3])==len(f[4])==1 and f[3] in 'ACGT' and f[4] in 'ACGT' and ',' not in f[4]
    if (not snv_only or valid) and (not pass_only or f[6]=='PASS') and af is not None and af>=homo and dp is not None and dp>=dpmin and match in accepted:
     homos.append({k:row[k] for k in ('sample','species','human_pos','human_ref','human_alt','AF','DP','region_type','orthology_match_status')}|{'genus':m.get('genus',''),'family':m.get('family','')})
@@ -110,6 +117,6 @@ def main():
   for species in sorted({r['species'] for r in rs}):
    carriers=len({r['sample'] for r in rs if r['species']==species});n=len(eligible_by_species[species]);species_rows.append(dict(species=species,human_pos=pos,human_ref=ref,human_alt=alt,n_eligible_samples=n,n_homo_carriers=carriers,background_frequency=carriers/n if n else 'NA'))
  write(out/'species_marker_background.tsv','species human_pos human_ref human_alt n_eligible_samples n_homo_carriers background_frequency'.split(),species_rows)
- provenance={'homoplasmy_af_threshold':homo,'dp_threshold':dpmin,'vcf_filter_requirement':'PASS' if pass_only else 'ANY','snv_only':snv_only,'orthology_acceptance_criteria':sorted(accepted),'input_vcf_directory':str(indir),'human_marker_reference_version':settings.get('human_marker_reference_version','rcrs-v17.1'),'number_of_samples':len(processed_samples),'number_of_species':len({meta[s].get('species','') for s in processed_samples}),'number_of_distinct_homo_alleles':len(grouped)}
+ provenance={'homoplasmy_af_threshold':homo,'dp_threshold':dpmin,'vcf_filter_requirement':'PASS' if pass_only else 'ANY','snv_only':snv_only,'orthology_acceptance_criteria':sorted(accepted),'accepted_rrna_match_tiers':sorted(accepted_rrna_match_tiers),'input_vcf_directory':str(indir),'human_marker_reference_version':settings.get('human_marker_reference_version','rcrs-v17.1'),'number_of_samples':len(processed_samples),'number_of_species':len({meta[s].get('species','') for s in processed_samples}),'number_of_distinct_homo_alleles':len(grouped)}
  (out/'primate_homo_background_metadata.json').write_text(json.dumps(provenance,indent=2)+'\n');print(f'[primate_homo_background] orthology={len(ortho)} homo={len(homos)} alleles={len(grouped)}')
 if __name__=='__main__':main()

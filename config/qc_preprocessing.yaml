@@ -258,6 +258,8 @@ primate_homo_background:
     pass_only: true
     snv_only: true
     accepted_orthology_statuses: PASS
+    # rRNA structural tiers accepted as orthologous.
+    accepted_rrna_match_tiers: HIGH_CONF_STEM,HIGH_CONF_LOOP
     human_marker_reference_version: rcrs-v17.1
 
 # Human-marker screening is downstream of orthology annotation/background construction.
