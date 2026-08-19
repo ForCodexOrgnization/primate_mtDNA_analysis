@@ -157,6 +157,13 @@ def test_final_variant_report_exposes_vcf_sample_and_orthology_annotations(tmp_p
         "chrM\t102\t.\tT\tC\t.\tPASS\t.\tGT:DP:AF\t0/1:150:0.05\n"
         "chrM\t103\t.\tA\tAT\t.\tweak_evidence\tDP=44\tGT:AD\t0/1:10,90\n"
         "chrM\t104\t.\tG\tT\t.\t.\t.\tGT:DP\t0/1:100\n"
+        "chrM\t105\t.\tC\tT\t.\tPASS\t.\tGT:DP:AF\t0/1:100:0.5\n"
+        "chrM\t106\t.\tA\tC\t.\tPASS\t.\tGT:DP:AF\t0/1:100:0.5\n"
+        "chrM\t107\t.\tAT\tA\t.\tPASS\t.\tGT:DP:AF\t0/1:100:0.5\n"
+        "chrM\t108\t.\tA\tG,T\t.\tPASS\t.\tGT:DP:AF\t1/2:100:0.2,0.3\n"
+        "chrM\t109\t.\tN\tA\t.\tPASS\t.\tGT:DP:AF\t0/1:100:0.5\n"
+        "chrM\t110\t.\tA\t<DEL>\t.\tPASS\t.\tGT:DP:AF\t0/1:100:0.5\n"
+        "chrM\t111\t.\tA\tAT\t.\tPASS\t.\tGT:DP:AF\t0/1:100:0.5\n"
     )
     orthology=tmp_path/"orthology.tsv"
     orthology.write_text(
@@ -203,12 +210,19 @@ def test_final_variant_report_exposes_vcf_sample_and_orthology_annotations(tmp_p
     assert rows["100"]["final_variant_status"]=="PASS" and rows["100"]["final_variant_fail_reasons"]==""
     assert rows["101"]["final_variant_status"]=="FAIL" and rows["101"]["final_variant_fail_reasons"]=="vcf_filter:strand_bias"
     assert rows["102"]["final_variant_status"]=="FAIL" and rows["102"]["final_variant_fail_reasons"]=="orthology:FAIL"
-    assert rows["103"]["final_variant_status"]=="FAIL" and rows["103"]["final_variant_fail_reasons"]=="orthology:FAIL;vcf_filter:weak_evidence"
+    assert rows["103"]["final_variant_status"]=="FAIL" and rows["103"]["final_variant_fail_reasons"]=="orthology:FAIL;vcf_filter:weak_evidence;variant_class:INDEL"
     assert rows["104"]["final_variant_status"]=="FAIL" and rows["104"]["final_variant_fail_reasons"]=="vcf_filter:."
-    assert final_vcf_positions(out/"final_vcf/A.final.vcf.gz")==[100]
+    assert rows["105"]["final_variant_status"]=="PASS" and rows["105"]["snv_type"]=="SNV_transition"
+    assert rows["106"]["final_variant_status"]=="PASS" and rows["106"]["snv_type"]=="SNV_transversion"
+    assert rows["107"]["final_variant_status"]=="FAIL" and rows["107"]["final_variant_fail_reasons"]=="variant_class:INDEL"
+    assert rows["108"]["final_variant_status"]=="FAIL" and rows["108"]["final_variant_fail_reasons"]=="variant_class:OTHER"
+    assert rows["109"]["final_variant_status"]=="FAIL" and rows["109"]["final_variant_fail_reasons"]=="variant_class:SNV"
+    assert rows["110"]["final_variant_status"]=="FAIL" and rows["110"]["final_variant_fail_reasons"]=="variant_class:OTHER"
+    assert rows["111"]["final_variant_status"]=="FAIL" and rows["111"]["final_variant_fail_reasons"]=="variant_class:INDEL"
+    assert final_vcf_positions(out/"final_vcf/A.final.vcf.gz")==[100,105,106]
     with (out/"reports/final_filter_summary.tsv").open() as handle:
         summary={row["metric"]:row["value"] for row in csv.DictReader(handle,delimiter="\t")}
-    assert summary["n_variants_pass"]=="1" and summary["n_variants_fail"]=="4"
+    assert summary["n_variants_pass"]=="3" and summary["n_variants_fail"]=="9"
 
 def test_exact_vcf_resolution_does_not_confuse_sample_prefixes(tmp_path):
     write_vcf(tmp_path/"ABC10.lifted.rrna.vcf","ABC10",[(1,.1)])
