@@ -271,7 +271,7 @@ def main():
  try:loop_max_delta=float(s.get('high_conf_loop_max_frac_delta',0.05))
  except (TypeError,ValueError):raise SystemExit('high_conf_loop_max_frac_delta must be a number between 0 and 1')
  if not 0<=loop_max_delta<=1:raise SystemExit('high_conf_loop_max_frac_delta must be between 0 and 1 inclusive')
- require_same_element=bool(s.get('require_same_rrna_element',True))
+ require_same_element=bool(s.get('require_same_rrna_element',False))
  enabled=bool(s.get('use_rrna_structure_table',False)); hpath=p.get('human_rrna_structure_table',s.get('human_rrna_structure_table','')); spath=p.get('species_rrna_structure_table',s.get('species_rrna_structure_table',''))
  if enabled and (not hpath or not Path(hpath).exists()):raise SystemExit(f'rRNA structure annotation is enabled but human structure table is missing: {hpath or "<unset>"}')
  if enabled and (not spath or not Path(spath).exists()):raise SystemExit(f'rRNA structure annotation is enabled but species/reference structure table is missing: {spath or "<unset>"}')

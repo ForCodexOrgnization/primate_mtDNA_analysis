@@ -189,6 +189,38 @@ def test_match_tier_uses_element_and_loop_fraction_requirements(
     ) == expected
 
 
+@pytest.mark.parametrize(
+    "structure,pair_relation,delta,expected",
+    [
+        ("STEM_STEM", "yes", 0.99, "HIGH_CONF_STEM"),
+        ("STEM_STEM", "no", 0.01, "LOW_CONF"),
+        ("LOOP_LOOP", "NA", 0.02, "HIGH_CONF_LOOP"),
+        ("LOOP_LOOP", "NA", 0.08, "LOW_CONF"),
+        ("LOOP_LOOP", "NA", None, "LOW_CONF"),
+    ],
+)
+def test_default_tiers_do_not_require_unknown_elements(
+    structure, pair_relation, delta, expected
+):
+    assert match_tier(
+        "OK", True, structure, pair_relation, ".", delta, False, 0.05
+    ) == expected
+
+
+def test_unknown_elements_produce_high_conf_tiers_with_production_default():
+    stem = run_rrna_case(
+        ["MT-RNR1\t1\t1\tG\tstem\t.\t10\t10\tC\tG-C\tcanonical"],
+        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t1\t1\tA\tstem\t.\t11\t11\tT\tA-U\tcanonical\tMITOS2\ttoy.sto"],
+    )
+    loop = run_rrna_case(
+        ["MT-RNR1\t1\t1\tG\tloop\t.\t.\t.\t.\t.\tunpaired"],
+        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t1\t1\tA\tloop\t.\t.\t.\t.\t.\tunpaired\tMITOS2\ttoy.sto"],
+    )
+    assert stem["MTRRNA_ELEMENT_MATCH"] == loop["MTRRNA_ELEMENT_MATCH"] == "."
+    assert stem["MTRRNA_MATCH_TIER"] == "HIGH_CONF_STEM"
+    assert loop["MTRRNA_MATCH_TIER"] == "HIGH_CONF_LOOP"
+
+
 def test_element_match_trims_only_and_preserves_missing_values():
     assert element_match(" H1 ", "H1") == "yes"
     assert element_match("H1", "H2") == "no"

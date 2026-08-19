@@ -6,16 +6,16 @@ from pathlib import Path
 import pytest
 
 from qc_analysis.scripts.run_trna_match import (
-    index, normalize_chrom, normalize_trna_identity, oriented, resolve_coordinate_reference_fasta,
-    sample_reference_key,
+    canonical_trna_identity, index, normalize_chrom, normalize_trna_identity, oriented,
+    resolve_coordinate_reference_fasta, sample_reference_key, trna_identity_match,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-HEADER = ('chrom\tpos\ttrna_id\tlocal_pos\tstruct_class\tstruct_element\tpair_type\t'
+HEADER = ('chrom\tpos\ttrna_id\taa\tanticodon\tlocal_pos\tstruct_class\tstruct_element\tpair_type\t'
           'pair_state\tpaired_local_pos\tpaired_genomic_pos\tpaired_base\tstrand\tbase_orientation\n')
 
-def row(chrom='species', pos=10, ident='S', strand='+', paired='G'):
-    return f'{chrom}\t{pos}\t{ident}\t1\tstem\tacceptor\tWC\tpaired\t2\t20\t{paired}\t{strand}\tgenomic\n'
+def row(chrom='species', pos=10, ident='S', strand='+', paired='G', aa='Phe', anticodon='GAA'):
+    return f'{chrom}\t{pos}\t{ident}\t{aa}\t{anticodon}\t1\tstem\tacceptor\tWC\tpaired\t2\t20\t{paired}\t{strand}\tgenomic\n'
 
 def fixture(tmp_path, species_rows='', human_rows='', settings='', compressed=False):
     human=tmp_path/'human.tsv'; species=tmp_path/'S1.tsv'; human.write_text(HEADER+human_rows); species.write_text(HEADER+species_rows)
@@ -125,7 +125,7 @@ def test_ambiguous_stem_does_not_gain_deterministic_effect_or_strict_match(tmp_p
     assert 'MTTRNA_STRICT_MATCH=no' in text
 
 def test_unknown_identity_prevents_loop_strict_match(tmp_path):
-    loop=row().replace('\tstem\tacceptor\tWC\tpaired\t2\t20\tG\t',
+    loop=row(aa='Leu',anticodon='NNN').replace('\tstem\tacceptor\tWC\tpaired\t2\t20\tG\t',
                        '\tloop\tanticodon_loop\tNA\tNA\t.\t.\tR\t')
     config,inp,out=fixture(tmp_path,loop,loop.replace('species','chrM').replace('\tS\t','\tH\t'))
     result=run(config,inp,out); assert result.returncode==0,result.stderr
@@ -133,25 +133,28 @@ def test_unknown_identity_prevents_loop_strict_match(tmp_path):
     assert values['MTTRNA_ID_MATCH']=='.'
     assert values['MTTRNA_STRICT_MATCH']=='no'
 
-@pytest.mark.parametrize('species_id,human_id,expected',[
-    ('MT-TW','MT-TW','yes'), ('MT-TW','MT-TA','no'),
-    ('MT-TS1','MT-TS2','no'), ('MT-TL1','MT-TL2','no'),
-    (' Trp ','TRNW','yes'), ('unknown','MT-TW','.'),
+@pytest.mark.parametrize('species_aa,species_anticodon,human_aa,human_anticodon,expected',[
+    ('Trp','TCA','Trp','TCA','yes'), ('Trp','TCA','Ala','TGC','no'),
+    ('Ser','TGA','Ser','GCT','no'), ('Leu','TAA','Leu','TAG','no'),
+    ('Leu','NNN','Leu','TAA','.'),
 ])
-def test_loop_strict_match_requires_normalized_identity(tmp_path,species_id,human_id,expected):
-    loop=row(ident=species_id).replace('\tstem\tacceptor\tWC\tpaired\t2\t20\tG\t',
+def test_loop_strict_match_requires_biological_identity(
+    tmp_path,species_aa,species_anticodon,human_aa,human_anticodon,expected
+):
+    loop=row(ident='chrM.trna7',aa=species_aa,anticodon=species_anticodon).replace('\tstem\tacceptor\tWC\tpaired\t2\t20\tG\t',
         '\tloop\tanticodon_loop\tNA\tNA\t.\t.\tR\t')
-    human=loop.replace('species','chrM').replace(f'\t{species_id}\t',f'\t{human_id}\t')
+    human=row('chrM',ident='chrM.trna8',aa=human_aa,anticodon=human_anticodon).replace(
+        '\tstem\tacceptor\tWC\tpaired\t2\t20\tG\t','\tloop\tanticodon_loop\tNA\tNA\t.\t.\tR\t')
     config,inp,out=fixture(tmp_path,loop,human); result=run(config,inp,out)
     assert result.returncode==0,result.stderr
     values=annotations(out); assert values['MTTRNA_ID_MATCH']==expected
     assert values['MTTRNA_STRICT_MATCH']==('yes' if expected=='yes' else 'no')
 
-@pytest.mark.parametrize('species_id,human_id,expected',[
-    ('MT-TK','MT-TK','yes'), ('MT-TK','MT-TG','no'),
+@pytest.mark.parametrize('species_aa,human_aa,expected',[
+    ('Lys','Lys','yes'), ('Lys','Gly','no'),
 ])
-def test_stem_strict_match_requires_identity(tmp_path,species_id,human_id,expected):
-    config,inp,out=fixture(tmp_path,row(ident=species_id),row('chrM',ident=human_id))
+def test_stem_strict_match_requires_identity(tmp_path,species_aa,human_aa,expected):
+    config,inp,out=fixture(tmp_path,row(aa=species_aa),row('chrM',aa=human_aa))
     maps=tmp_path/'maps'; maps.mkdir(); (maps/'S1.coordinate_map.tsv').write_text(
         'species_pos_original\thuman_pos_canonical\n20\t20\n')
     result=run(config,inp,out); assert result.returncode==0,result.stderr
@@ -163,6 +166,37 @@ def test_identity_aliases_are_exact_and_isoacceptor_specific():
     assert normalize_trna_identity('Val') == normalize_trna_identity('MT-TV') == 'MT-TV'
     assert normalize_trna_identity('Leu') is None
     assert normalize_trna_identity('Ser') is None
+
+@pytest.mark.parametrize('aa,anticodon,expected',[
+    ('Phe','GAA','MT-TF'), ('Trp','TCA','MT-TW'), ('Lys','TTT','MT-TK'),
+    ('Leu','TAA','MT-TL1'), ('Leu','UAG','MT-TL2'),
+    ('Ser','UGA','MT-TS1'), ('Ser','GCU','MT-TS2'),
+    ('Leu','NNN',None), ('Ser','',None),
+])
+def test_canonical_identity_uses_aa_and_anticodon(aa,anticodon,expected):
+    assert canonical_trna_identity({'aa':aa,'anticodon':anticodon}) == expected
+
+def test_different_record_ids_can_match_same_biological_identity(tmp_path):
+    species=row(ident='chrM.trna7',aa='Trp',anticodon='TCA')
+    human=row('chrM',ident='chrM.trna8',aa='Trp',anticodon='TCA')
+    config,inp,out=fixture(tmp_path,species,human)
+    maps=tmp_path/'maps'; maps.mkdir(); (maps/'S1.coordinate_map.tsv').write_text(
+        'species_pos_original\thuman_pos_canonical\n20\t20\n')
+    result=run(config,inp,out); assert result.returncode==0,result.stderr
+    values=annotations(out)
+    assert values['MTTRNA_S_ID']=='chrM.trna7'
+    assert values['MTTRNA_H_ID']=='chrM.trna8'
+    assert values['MTTRNA_S_IDENTITY']==values['MTTRNA_H_IDENTITY']=='MT-TW'
+    assert values['MTTRNA_ID_MATCH']=='yes'
+    summary=(tmp_path/'reports/S1.trna_match_summary.tsv').read_text().splitlines()
+    counts=dict(zip(summary[0].split('\t'),summary[1].split('\t')))
+    assert counts['n_trna_id_match']=='1'
+    assert counts['n_trna_id_unknown']=='0'
+
+def test_identity_match_uses_resolved_identities():
+    assert trna_identity_match('MT-TF','MT-TF') == 'yes'
+    assert trna_identity_match('MT-TK','MT-TG') == 'no'
+    assert trna_identity_match(None,'MT-TL1') == '.'
 
 def test_sha_reference_key_resolves_exact_coordinate_fasta(tmp_path):
     digest='a'*64; key=f'mtref_{digest}'; exact=tmp_path/'Ref_chrM.fa'
