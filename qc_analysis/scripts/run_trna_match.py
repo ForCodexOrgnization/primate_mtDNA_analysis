@@ -12,10 +12,43 @@ from qc_analysis.lib.trnascan_utils import build_trna_position_index, run_trnasc
 
 REQUIRED = {'chrom','pos','trna_id','local_pos','struct_class','struct_element','pair_type',
             'paired_local_pos','paired_genomic_pos','paired_base','strand'}
-N=['STATUS','S_ID','H_ID','S_LOCAL','H_LOCAL','S_CLASS','H_CLASS','REGION_MATCH','S_ELEMENT','H_ELEMENT','ELEMENT_MATCH','S_PAIR_TYPE','H_PAIR_TYPE','PAIR_TYPE_MATCH','S_PAIR_STATUS','H_PAIR_STATUS','PAIR_STATUS_MATCH','S_PAIR_STATE','H_PAIR_STATE','PAIR_STATE_MATCH','S_PAIR_LOCAL','H_PAIR_LOCAL','PAIR_LOCAL_MATCH','S_PAIR_POS','H_PAIR_POS','S_PAIR_LIFTED_HPOS','PAIR_POS_MATCH','H_ALT_PAIR_TYPE','S_ALT_PAIR_TYPE','H_ALT_EFFECT','S_ALT_EFFECT','ALLELE_EFFECT_MATCH','COMPENSATED','STRICT_MATCH','S_COORD_SPACE','S_LOOKUP_CHROM','S_LOOKUP_POS']
+N=['STATUS','S_ID','H_ID','ID_MATCH','S_LOCAL','H_LOCAL','S_CLASS','H_CLASS','REGION_MATCH','S_ELEMENT','H_ELEMENT','ELEMENT_MATCH','S_PAIR_TYPE','H_PAIR_TYPE','PAIR_TYPE_MATCH','S_PAIR_STATUS','H_PAIR_STATUS','PAIR_STATUS_MATCH','S_PAIR_STATE','H_PAIR_STATE','PAIR_STATE_MATCH','S_PAIR_LOCAL','H_PAIR_LOCAL','PAIR_LOCAL_MATCH','S_PAIR_POS','H_PAIR_POS','S_PAIR_LIFTED_HPOS','PAIR_POS_MATCH','H_ALT_PAIR_TYPE','S_ALT_PAIR_TYPE','H_ALT_EFFECT','S_ALT_EFFECT','ALLELE_EFFECT_MATCH','COMPENSATED','STRICT_MATCH','S_COORD_SPACE','S_LOOKUP_CHROM','S_LOOKUP_POS']
 FIELDS=[('MTTRNA_'+n, 'Both compared ALT base pairs remain WC/GU-compatible; this does not imply a two-site compensatory mutation'
         if n == 'COMPENSATED' else 'tRNA structural match annotation') for n in N]
 FIELDS.append(('MTTRNA_REFERENCE_KEY','Reference-level tRNA index key'))
+
+# Exact, unambiguous aliases only.  In particular, bare Leu/Ser aliases are
+# intentionally absent because each has two mitochondrial isoacceptors.
+_TRNA_NAMES = {
+    'F': ('PHE', 'PHENYLALANINE'), 'V': ('VAL', 'VALINE'),
+    'L1': ('LEU1', 'LEUCINE1'), 'I': ('ILE', 'ISOLEUCINE'),
+    'Q': ('GLN', 'GLUTAMINE'), 'M': ('MET', 'METHIONINE'),
+    'W': ('TRP', 'TRYPTOPHAN'), 'A': ('ALA', 'ALANINE'),
+    'N': ('ASN', 'ASPARAGINE'), 'C': ('CYS', 'CYSTEINE'),
+    'Y': ('TYR', 'TYROSINE'), 'S1': ('SER1', 'SERINE1'),
+    'D': ('ASP', 'ASPARTATE', 'ASPARTICACID'), 'K': ('LYS', 'LYSINE'),
+    'G': ('GLY', 'GLYCINE'), 'R': ('ARG', 'ARGININE'),
+    'H': ('HIS', 'HISTIDINE'), 'S2': ('SER2', 'SERINE2'),
+    'L2': ('LEU2', 'LEUCINE2'), 'E': ('GLU', 'GLUTAMATE', 'GLUTAMICACID'),
+    'T': ('THR', 'THREONINE'), 'P': ('PRO', 'PROLINE'),
+}
+_TRNA_ALIASES = {}
+for _suffix, _names in _TRNA_NAMES.items():
+    _canonical = 'MT-T' + _suffix
+    for _alias in (_canonical, 'MTT' + _suffix, 'TRN' + _suffix, 'TRNA' + _suffix,
+                   *_names, *(f'TRNA{name}' for name in _names)):
+        _TRNA_ALIASES[''.join(ch for ch in _alias.upper() if ch.isalnum())] = _canonical
+
+def normalize_trna_identity(value):
+    """Return a canonical mitochondrial gene symbol for a known exact alias."""
+    token=''.join(ch for ch in str(value or '').strip().upper() if ch.isalnum())
+    return _TRNA_ALIASES.get(token)
+
+def trna_identity_match(species_id, human_id):
+    """Compare resolved tRNA identities using VCF-friendly yes/no/dot values."""
+    species=normalize_trna_identity(species_id); human=normalize_trna_identity(human_id)
+    if not species or not human: return '.'
+    return 'yes' if species == human else 'no'
 
 def normalize_chrom(chrom, mode):
     """Normalize a chromosome using none, strip_chr, add_chr, or mitochondrial_alias."""
@@ -182,6 +215,8 @@ def main():
                 value=record.get(col,'.')
                 if col=='pair_status' and value=='.' and record.get('pair_state') in {'paired','unpaired'}: value=record['pair_state']
                 v['MTTRNA_'+short]=value
+            v['MTTRNA_ID_MATCH']=trna_identity_match(v['MTTRNA_S_ID'],v['MTTRNA_H_ID'])
+            counts[{'yes':'trna_id_match','no':'trna_id_mismatch','.':'trna_id_unknown'}[v['MTTRNA_ID_MATCH']]] += 1
             for key,col in [('REGION_MATCH','struct_class'),('ELEMENT_MATCH','struct_element'),('PAIR_TYPE_MATCH','pair_type'),('PAIR_STATUS_MATCH','pair_status'),('PAIR_STATE_MATCH','pair_state'),('PAIR_LOCAL_MATCH','paired_local_pos')]:
                 def val(record):
                     if not record:return '.'
@@ -201,9 +236,9 @@ def main():
             compensated=('yes' if spt in compatible and hpt in compatible else 'no') if deterministic else '.' if stem else '.'
             if stem and not deterministic: effectmatch='.'
             strict='no'
-            if status=='OK' and v['MTTRNA_S_CLASS']=='loop' and v['MTTRNA_H_CLASS']=='loop': strict='yes' if v['MTTRNA_REGION_MATCH']=='yes' and v['MTTRNA_ELEMENT_MATCH']=='yes' and compare_values(v['MTTRNA_S_LOCAL'],v['MTTRNA_H_LOCAL'])=='yes' else 'no'
+            if status=='OK' and v['MTTRNA_S_CLASS']=='loop' and v['MTTRNA_H_CLASS']=='loop': strict='yes' if v['MTTRNA_ID_MATCH']=='yes' and v['MTTRNA_REGION_MATCH']=='yes' and v['MTTRNA_ELEMENT_MATCH']=='yes' and compare_values(v['MTTRNA_S_LOCAL'],v['MTTRNA_H_LOCAL'])=='yes' else 'no'
             elif stem:
-                checks=[v['MTTRNA_REGION_MATCH']=='yes',v['MTTRNA_ELEMENT_MATCH']=='yes',v['MTTRNA_PAIR_STATUS_MATCH']=='yes',posmatch=='yes',effectmatch=='yes']
+                checks=[v['MTTRNA_ID_MATCH']=='yes',v['MTTRNA_REGION_MATCH']=='yes',v['MTTRNA_ELEMENT_MATCH']=='yes',v['MTTRNA_PAIR_STATUS_MATCH']=='yes',posmatch=='yes',effectmatch=='yes']
                 if s.get('strict_stem_require_reference_pair_type_match',False): checks.append(v['MTTRNA_PAIR_TYPE_MATCH']=='yes')
                 if s.get('require_compensated_for_strict_stem',True): checks.append(compensated=='yes')
                 strict='yes' if all(checks) else 'no'
@@ -214,7 +249,7 @@ def main():
         row={'sample':sample,'reference_key':reference_key,'species_trna_index':str(spi),'input_vcf':str(inp),'output_vcf':str(out),'total_records':len(body),
              'n_overlapping_positions':si.n_overlapping_positions+hi.n_overlapping_positions,
              'n_multi_trna_positions':si.n_multi_trna_positions+hi.n_multi_trna_positions,
-             **{f'status_{q}':counts[q] for q in ['OK','NO_SPECIES_TRNA','NO_HUMAN_TRNA','NO_SPECIES_OR_HUMAN_TRNA','MISSING_SPECIES_COORD','AMBIGUOUS_SPECIES_TRNA','AMBIGUOUS_HUMAN_TRNA']},**{q:counts[q] for q in ['ambiguous_species_index_lookup','ambiguous_human_index_lookup','chromosome_mismatch','missing_coordinate_map','negative_strand_records']},'status':'completed'}
+             **{f'status_{q}':counts[q] for q in ['OK','NO_SPECIES_TRNA','NO_HUMAN_TRNA','NO_SPECIES_OR_HUMAN_TRNA','MISSING_SPECIES_COORD','AMBIGUOUS_SPECIES_TRNA','AMBIGUOUS_HUMAN_TRNA']},**{f'n_{q}':counts[q] for q in ['trna_id_match','trna_id_mismatch','trna_id_unknown']},**{q:counts[q] for q in ['ambiguous_species_index_lookup','ambiguous_human_index_lookup','chromosome_mismatch','missing_coordinate_map','negative_strand_records']},'status':'completed'}
         if s.get('write_summary',True): write_summary(Path(p['reports_dir'])/f'{sample}.trna_match_summary.tsv',row)
         allrows.append(row)
     if s.get('write_summary',True) and allrows and not a.sample and not a.input:

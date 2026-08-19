@@ -481,6 +481,11 @@ rrna_match:
     # to retain interval-only annotation.
     use_rrna_structure_table: true
     require_pair_pos_match_for_high_conf_stem: true
+    # Require human and species/reference structural elements to agree for
+    # both HIGH_CONF rRNA tiers.
+    require_same_rrna_element: true
+    # Maximum relative-position difference within the rRNA gene for loops.
+    high_conf_loop_max_frac_delta: 0.05
     write_summary: true
     pass_only: false
 environment:

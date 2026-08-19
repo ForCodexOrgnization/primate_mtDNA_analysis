@@ -3,7 +3,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from qc_analysis.lib.match_utils import info_parse
+from qc_analysis.scripts.run_rrna_match import element_match, match_tier
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +40,7 @@ def write_common_inputs(d, human_rows, species_rows, partner_human_pos="10"):
     species_structure.write_text(
         "reference_key\treference_species\tcoordinate_reference_accession\t"
         "coordinate_reference_fasta\tcoordinate_reference_sequence_sha256\t"
-        "rrna_gene\tgenomic_pos\tlocal_pos\tbase\tstruct_class\tpaired_genomic_pos\t"
+        "rrna_gene\tgenomic_pos\tlocal_pos\tbase\tstruct_class\tstruct_element\tpaired_genomic_pos\t"
         "paired_local_pos\tpaired_base\tpair_type\tpair_state\tannotation_source\tstructure_source\n"
         + "\n".join(species_rows) + "\n"
     )
@@ -105,7 +108,7 @@ def run_rrna_case(human_rows, species_rows, partner_human_pos="10"):
 def test_stem_stem_compensatory_pair_type_is_structurally_conserved():
     info = run_rrna_case(
         ["MT-RNR1\t1\t1\tG\tstem\tH1\t10\t10\tC\tG-C\tcanonical"],
-        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t1\t1\tA\tstem\t11\t11\tT\tA-U\tcanonical\tMITOS2\ttoy.sto"],
+        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t1\t1\tA\tstem\tH1\t11\t11\tT\tA-U\tcanonical\tMITOS2\ttoy.sto"],
     )
 
     assert info["MTRRNA_STRUCTURE_MATCH"] == "STEM_STEM"
@@ -119,7 +122,7 @@ def test_stem_stem_compensatory_pair_type_is_structurally_conserved():
 def test_stem_to_loop_is_discordant_without_projecting_human_structure():
     info = run_rrna_case(
         ["MT-RNR1\t1\t1\tG\tstem\tH1\t10\t10\tC\tG-C\tcanonical"],
-        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t1\t1\tA\tloop\t.\t.\t.\t.\tunpaired\tMITOS2\ttoy.sto"],
+        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t1\t1\tA\tloop\tH1\t.\t.\t.\t.\tunpaired\tMITOS2\ttoy.sto"],
     )
 
     assert info["MTRRNA_STRUCTURE_MATCH"] == "STEM_LOOP"
@@ -130,17 +133,18 @@ def test_stem_to_loop_is_discordant_without_projecting_human_structure():
 def test_loop_loop_is_high_conf_loop():
     info = run_rrna_case(
         ["MT-RNR1\t1\t1\tG\tloop\tH1\t.\t.\t.\t.\tunpaired"],
-        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t1\t1\tA\tloop\t.\t.\t.\t.\tunpaired\tMITOS2\ttoy.sto"],
+        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t1\t1\tA\tloop\tH1\t.\t.\t.\t.\tunpaired\tMITOS2\ttoy.sto"],
     )
 
     assert info["MTRRNA_STRUCTURE_MATCH"] == "LOOP_LOOP"
+    assert info["MTRRNA_ELEMENT_MATCH"] == "yes"
     assert info["MTRRNA_MATCH_TIER"] == "HIGH_CONF_LOOP"
 
 
 def test_missing_species_structure_is_unknown_not_human_projected():
     info = run_rrna_case(
         ["MT-RNR1\t1\t1\tG\tstem\tH1\t10\t10\tC\tG-C\tcanonical"],
-        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t2\t2\tA\tloop\t.\t.\t.\t.\tunpaired\tMITOS2\ttoy.sto"],
+        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t2\t2\tA\tloop\tH1\t.\t.\t.\t.\tunpaired\tMITOS2\ttoy.sto"],
     )
 
     assert info["MTRRNA_H_CLASS"] == "stem"
@@ -152,9 +156,41 @@ def test_missing_species_structure_is_unknown_not_human_projected():
 def test_wrong_species_partner_does_not_receive_high_conf_stem():
     info = run_rrna_case(
         ["MT-RNR1\t1\t1\tG\tstem\tH1\t10\t10\tC\tG-C\tcanonical"],
-        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t1\t1\tA\tstem\t12\t12\tT\tA-U\tcanonical\tMITOS2\ttoy.sto"],
+        ["ref1\tSpecies\tACC\t/ref.fa\tsha1\tMT-RNR1\t1\t1\tA\tstem\tH1\t12\t12\tT\tA-U\tcanonical\tMITOS2\ttoy.sto"],
     )
 
     assert info["MTRRNA_STRUCTURE_MATCH"] == "STEM_STEM"
     assert info["MTRRNA_PAIR_RELATION_MATCH"] == "no"
     assert info["MTRRNA_MATCH_TIER"] != "HIGH_CONF_STEM"
+
+
+@pytest.mark.parametrize(
+    "structure,pair_relation,elements,delta,require_element,expected",
+    [
+        ("LOOP_LOOP", "NA", "yes", 0.02, True, "HIGH_CONF_LOOP"),
+        ("LOOP_LOOP", "NA", "yes", 0.08, True, "LOW_CONF"),
+        ("LOOP_LOOP", "NA", "no", 0.01, True, "LOW_CONF"),
+        ("LOOP_LOOP", "NA", "no", 0.01, False, "HIGH_CONF_LOOP"),
+        ("LOOP_LOOP", "NA", "yes", None, True, "LOW_CONF"),
+        ("STEM_STEM", "yes", "yes", 0.99, True, "HIGH_CONF_STEM"),
+        ("STEM_STEM", "yes", "no", 0.01, True, "LOW_CONF"),
+        ("STEM_STEM", "yes", "no", 0.01, False, "HIGH_CONF_STEM"),
+        ("STEM_STEM", "no", "yes", 0.01, True, "LOW_CONF"),
+        ("STEM_LOOP", "NA", "yes", 0.01, True, "STRUCTURE_DISCORDANT"),
+        ("LOOP_STEM", "NA", "yes", 0.01, True, "STRUCTURE_DISCORDANT"),
+        ("UNKNOWN", "NA", "yes", 0.01, True, "STRUCTURE_UNKNOWN"),
+    ],
+)
+def test_match_tier_uses_element_and_loop_fraction_requirements(
+    structure, pair_relation, elements, delta, require_element, expected
+):
+    assert match_tier(
+        "OK", True, structure, pair_relation, elements, delta, require_element, 0.05
+    ) == expected
+
+
+def test_element_match_trims_only_and_preserves_missing_values():
+    assert element_match(" H1 ", "H1") == "yes"
+    assert element_match("H1", "H2") == "no"
+    assert element_match("h1", "H1") == "no"
+    assert element_match(".", "H1") == "."

@@ -10,7 +10,7 @@ from qc_analysis.lib.match_utils import *
 
 BASE=['STATUS','S_GENE','H_GENE','GENE_MATCH','S_LOCAL','H_LOCAL','S_LEN','H_LEN','S_FRAC','H_FRAC','FRAC_DELTA','STRAND_MATCH','REGION_MATCH']
 STRUCT=[
- 'H_CLASS','S_CLASS','H_ELEMENT','S_ELEMENT','H_PAIR_POS','S_PAIR_POS',
+ 'H_CLASS','S_CLASS','H_ELEMENT','S_ELEMENT','ELEMENT_MATCH','H_PAIR_POS','S_PAIR_POS',
  'H_PAIR_LOCAL','S_PAIR_LOCAL','H_PAIR_TYPE','S_PAIR_TYPE','H_PAIR_STATE',
  'S_PAIR_STATE','H_ALT_PAIR_TYPE','H_ALT_EFFECT','S_PAIR_LIFTED_HPOS',
  'STRUCTURE_MATCH','PAIR_RELATION_MATCH','LOCAL_MATCH','MATCH_TIER',
@@ -185,11 +185,20 @@ def structure_match(hclass,sclass):
  if h=='stem' and s=='loop':return 'STEM_LOOP'
  return 'LOOP_STEM'
 
-def match_tier(status,gm,smatch,pair_relation):
+def element_match(h_element,s_element):
+ h=str(h_element or '').strip();s=str(s_element or '').strip()
+ if h in MISSING or s in MISSING:return '.'
+ return 'yes' if h==s else 'no'
+
+def match_tier(status,gm,smatch,pair_relation,element_relation,frac_delta,
+               require_same_rrna_element,high_conf_loop_max_frac_delta):
  if smatch=='UNKNOWN':return 'STRUCTURE_UNKNOWN'
  if smatch in {'STEM_LOOP','LOOP_STEM'}:return 'STRUCTURE_DISCORDANT'
- if status=='OK' and gm and smatch=='STEM_STEM' and pair_relation=='yes':return 'HIGH_CONF_STEM'
- if status=='OK' and gm and smatch=='LOOP_LOOP':return 'HIGH_CONF_LOOP'
+ if status!='OK' or not gm:return 'LOW_CONF'
+ element_ok=not require_same_rrna_element or element_relation=='yes'
+ if smatch=='STEM_STEM' and pair_relation=='yes' and element_ok:return 'HIGH_CONF_STEM'
+ if (smatch=='LOOP_LOOP' and element_ok and frac_delta is not None
+     and frac_delta<=high_conf_loop_max_frac_delta):return 'HIGH_CONF_LOOP'
  return 'LOW_CONF'
 
 def sample_reference_valid(sample_ref,reference_sha,reference_key):
@@ -218,7 +227,8 @@ def empty_structural(enabled):
  })
  return result
 
-def apply_structure(structural,hst,sst,cmap,alt,status,gm):
+def apply_structure(structural,hst,sst,cmap,alt,status,gm,frac_delta,
+                    require_same_rrna_element,high_conf_loop_max_frac_delta):
  hclass=hst.get('struct_class','unknown') if hst else 'unknown'
  sclass=sst.get('struct_class','unknown') if sst else 'unknown'
  smatch=structure_match(hclass,sclass)
@@ -230,10 +240,13 @@ def apply_structure(structural,hst,sst,cmap,alt,status,gm):
   pair_relation='yes' if str(lifted)==str(hpair) else 'no'
  h_pair_type=hst.get('pair_type','.') if hst else '.'
  alt_pair_type=rrna_pair_type(alt,hst.get('paired_base')) if hst and hclass=='stem' else '.'
+ h_element=hst.get('struct_element','.') if hst else '.'
+ s_element=sst.get('struct_element','.') if sst else '.'
+ element_relation=element_match(h_element,s_element)
  structural.update({
   'MTRRNA_H_CLASS':hclass,'MTRRNA_S_CLASS':sclass,
-  'MTRRNA_H_ELEMENT':hst.get('struct_element','.') if hst else '.',
-  'MTRRNA_S_ELEMENT':sst.get('struct_element','.') if sst else '.',
+  'MTRRNA_H_ELEMENT':h_element,'MTRRNA_S_ELEMENT':s_element,
+  'MTRRNA_ELEMENT_MATCH':element_relation,
   'MTRRNA_H_PAIR_POS':hpair,'MTRRNA_S_PAIR_POS':spair,
   'MTRRNA_H_PAIR_LOCAL':hst.get('paired_local_pos','.') if hst else '.',
   'MTRRNA_S_PAIR_LOCAL':sst.get('paired_local_pos','.') if sst else '.',
@@ -248,11 +261,17 @@ def apply_structure(structural,hst,sst,cmap,alt,status,gm):
   'MTRRNA_PAIR_RELATION_MATCH':pair_relation,
   'MTRRNA_PAIR_POS_MATCH':pair_relation,
   'MTRRNA_S_PAIR_EXPECTED_POS':'.',
-  'MTRRNA_MATCH_TIER':match_tier(status,gm,smatch,pair_relation),
+  'MTRRNA_MATCH_TIER':match_tier(status,gm,smatch,pair_relation,element_relation,
+                                frac_delta,require_same_rrna_element,
+                                high_conf_loop_max_frac_delta),
  })
 
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('--config',required=True);ap.add_argument('--sample');ap.add_argument('--input');ap.add_argument('--output');a=ap.parse_args();c=yaml(a.config);sec=c['rrna_match'];p,s=sec['paths'],sec['settings'];hs=load(p['human_rrna_table']);ss=load_species_rrna_regions(p['species_rrna_table'])
+ try:loop_max_delta=float(s.get('high_conf_loop_max_frac_delta',0.05))
+ except (TypeError,ValueError):raise SystemExit('high_conf_loop_max_frac_delta must be a number between 0 and 1')
+ if not 0<=loop_max_delta<=1:raise SystemExit('high_conf_loop_max_frac_delta must be between 0 and 1 inclusive')
+ require_same_element=bool(s.get('require_same_rrna_element',True))
  enabled=bool(s.get('use_rrna_structure_table',False)); hpath=p.get('human_rrna_structure_table',s.get('human_rrna_structure_table','')); spath=p.get('species_rrna_structure_table',s.get('species_rrna_structure_table',''))
  if enabled and (not hpath or not Path(hpath).exists()):raise SystemExit(f'rRNA structure annotation is enabled but human structure table is missing: {hpath or "<unset>"}')
  if enabled and (not spath or not Path(spath).exists()):raise SystemExit(f'rRNA structure annotation is enabled but species/reference structure table is missing: {spath or "<unset>"}')
@@ -265,7 +284,7 @@ def main():
   choices=[(Path(p['input_vcf_dir'])/str(s['input_vcf_pattern']).format(sample=sample),True),(Path(p['fallback_codon_vcf_dir'])/str(s['fallback_codon_vcf_pattern']).format(sample=sample),False),(Path(p['fallback_raw_vcf_dir'])/str(s['fallback_raw_vcf_pattern']).format(sample=sample),False)];inp=Path(a.input) if a.input else next((x for x,_ in choices if x.exists()),None)
   if not inp:raise SystemExit(f'Missing rRNA input VCF for {sample}')
   cmap=map_for(p.get('coordinate_map_dir',''),sample);sample_ref=sample_refs.get(sample,{})
-  out=Path(a.output) if a.output else Path(p['output_dir'])/'vcf_rrna'/f"{sample}{s['output_suffix']}";out.parent.mkdir(parents=True,exist_ok=True);head=[];body=[];co=Counter();yes=0;sc=Counter();pc=Counter();tc=Counter();annotated=0;unknown=0
+  out=Path(a.output) if a.output else Path(p['output_dir'])/'vcf_rrna'/f"{sample}{s['output_suffix']}";out.parent.mkdir(parents=True,exist_ok=True);head=[];body=[];co=Counter();yes=0;sc=Counter();pc=Counter();tc=Counter();ec=Counter();lc=Counter();annotated=0;unknown=0
   for line in open_text(inp):
    if line.startswith('#'):head.append(line);continue
    x=line.rstrip().split('\t');inf=info_parse(x[7]);sch,pos,_,_=source(inf);hp=human_pos(x,inf);sr=species_region_for(sample_ref,ss,pos,sch) if pos else None;hr=hit(hs,hp,x[0]) if hp else None
@@ -276,16 +295,24 @@ def main():
    if enabled:
     hst=human_structure.get((norm(hr.get('rrna_gene')) if hr else '',hp)) if hp else None
     sst=species_structure_for(sample_ref,reference_sha,species_structure,sr,pos)
-    apply_structure(structural,hst,sst,cmap,x[4],status,gm)
+    apply_structure(structural,hst,sst,cmap,x[4],status,gm,
+                    v['MTRRNA_FRAC_DELTA'] if isinstance(v['MTRRNA_FRAC_DELTA'],float) else None,
+                    require_same_element,loop_max_delta)
     smatch=structural['MTRRNA_STRUCTURE_MATCH'];tier=structural['MTRRNA_MATCH_TIER'];relation=structural['MTRRNA_PAIR_RELATION_MATCH']
     sc[smatch]+=1;tc[tier]+=1
+    ec[structural['MTRRNA_ELEMENT_MATCH']]+=1
+    if smatch=='LOOP_LOOP':
+     delta=v['MTRRNA_FRAC_DELTA']
+     if not isinstance(delta,float):lc['missing']+=1
+     elif delta<=loop_max_delta:lc['within']+=1
+     else:lc['outside']+=1
     if relation=='yes':pc['yes']+=1
     elif relation=='no':pc['no']+=1
     if smatch=='UNKNOWN':unknown+=1
     else:annotated+=1
    v.update(structural);inf.update(v);x[7]=info_format(inf);body.append('\t'.join(x)+'\n');co[status]+=1
   with out.open('w') as f:f.writelines(inject_headers(head,FIELDS,'MTRRNA'));f.writelines(body)
-  row={'sample':sample,'input_vcf':str(inp),'output_vcf':str(out),'total_records':len(body),**{f'status_{q}':co[q] for q in ['OK','NO_SPECIES_RRNA','NO_HUMAN_RRNA','NO_SPECIES_OR_HUMAN_RRNA','GENE_MISMATCH','MISSING_COORD']},'rrna_region_match_yes':yes,'rrna_region_match_no':len(body)-yes,'rrna_structure_annotated':annotated,'rrna_structure_unknown':unknown,'n_stem_stem':sc['STEM_STEM'],'n_loop_loop':sc['LOOP_LOOP'],'n_stem_loop':sc['STEM_LOOP'],'n_loop_stem':sc['LOOP_STEM'],'n_pair_relation_match':pc['yes'],'n_pair_relation_mismatch':pc['no'],'n_high_conf_stem':tc['HIGH_CONF_STEM'],'n_high_conf_loop':tc['HIGH_CONF_LOOP'],'n_structure_discordant':tc['STRUCTURE_DISCORDANT'],'n_structure_unknown':tc['STRUCTURE_UNKNOWN'],'status':'completed'};write_summary(Path(p['reports_dir'])/f'{sample}.rrna_match_summary.tsv',row);allrows.append(row)
+  row={'sample':sample,'input_vcf':str(inp),'output_vcf':str(out),'total_records':len(body),**{f'status_{q}':co[q] for q in ['OK','NO_SPECIES_RRNA','NO_HUMAN_RRNA','NO_SPECIES_OR_HUMAN_RRNA','GENE_MISMATCH','MISSING_COORD']},'rrna_region_match_yes':yes,'rrna_region_match_no':len(body)-yes,'rrna_structure_annotated':annotated,'rrna_structure_unknown':unknown,'n_stem_stem':sc['STEM_STEM'],'n_loop_loop':sc['LOOP_LOOP'],'n_stem_loop':sc['STEM_LOOP'],'n_loop_stem':sc['LOOP_STEM'],'n_pair_relation_match':pc['yes'],'n_pair_relation_mismatch':pc['no'],'n_rrna_element_match':ec['yes'],'n_rrna_element_mismatch':ec['no'],'n_rrna_element_unknown':ec['.'],'n_loop_loop_within_frac_threshold':lc['within'],'n_loop_loop_outside_frac_threshold':lc['outside'],'n_loop_loop_missing_frac_delta':lc['missing'],'n_high_conf_stem':tc['HIGH_CONF_STEM'],'n_high_conf_loop':tc['HIGH_CONF_LOOP'],'n_structure_discordant':tc['STRUCTURE_DISCORDANT'],'n_structure_unknown':tc['STRUCTURE_UNKNOWN'],'status':'completed'};write_summary(Path(p['reports_dir'])/f'{sample}.rrna_match_summary.tsv',row);allrows.append(row)
  if allrows and not a.sample and not a.input:
   q=Path(p['reports_dir'])/'all_samples.rrna_match_summary.tsv';q.parent.mkdir(parents=True,exist_ok=True)
   with q.open('w',newline='') as f:w=csv.DictWriter(f,fieldnames=list(allrows[0]),delimiter='\t');w.writeheader();w.writerows(allrows)
