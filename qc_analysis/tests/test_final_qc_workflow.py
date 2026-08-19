@@ -153,15 +153,17 @@ def test_final_variant_report_exposes_vcf_sample_and_orthology_annotations(tmp_p
     vcf.write_text(
         "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tA\n"
         "chrM\t100\t.\tA\tG\t.\tPASS\tDP=999;MTLIFT_ORIG_CHROM=species;MTLIFT_ORIG_POS=10;MTLIFT_ORIG_REF=C;MTLIFT_ORIG_ALT=T;MTCODON_STATUS=PASS;MTTRNA_STATUS=NO_SPECIES_OR_HUMAN_TRNA;MTRRNA_STATUS=OK\tGT:DP:AF:AD\t0/1:321:0.96:50,50\n"
-        "chrM\t101\t.\tC\tA\t.\tq10\tSRC_CHROM=species;SRC_POS=11;SRC_REF=G;SRC_ALT=T\tGT:DP:AF\t0/1:200:0.50\n"
+        "chrM\t101\t.\tC\tA\t.\tstrand_bias\tSRC_CHROM=species;SRC_POS=11;SRC_REF=G;SRC_ALT=T\tGT:DP:AF\t0/1:200:0.50\n"
         "chrM\t102\t.\tT\tC\t.\tPASS\t.\tGT:DP:AF\t0/1:150:0.05\n"
-        "chrM\t103\t.\tA\tAT\t.\tPASS\tDP=44\tGT:AD\t0/1:10,90\n"
+        "chrM\t103\t.\tA\tAT\t.\tweak_evidence\tDP=44\tGT:AD\t0/1:10,90\n"
+        "chrM\t104\t.\tG\tT\t.\t.\t.\tGT:DP\t0/1:100\n"
     )
     orthology=tmp_path/"orthology.tsv"
     orthology.write_text(
         "sample\thuman_chrom\thuman_pos\thuman_ref\thuman_alt\tregion_type\torthology_match_status\torthology_fail_reason\n"
         "A\tchrM\t100\tA\tG\tCDS\tPASS\t\n"
-        "A\tchrM\t101\tC\tA\ttRNA\tFAIL\tMISMATCH\n"
+        "A\tchrM\t102\tT\tC\ttRNA\tFAIL\tMISMATCH\n"
+        "A\tchrM\t103\tA\tAT\trRNA\tFAIL\tMISMATCH\n"
     )
     out=tmp_path/"final";cfg=tmp_path/"qc.yaml"
     cfg.write_text(f"""final_filter:
@@ -190,7 +192,7 @@ def test_final_variant_report_exposes_vcf_sample_and_orthology_annotations(tmp_p
     assert rows["100"]["snv_type"]=="SNV_transition"
     assert rows["101"]["snv_type"]=="SNV_transversion"
     assert rows["103"]["variant_class"]=="INDEL" and rows["103"]["snv_type"]=="indel"
-    assert rows["101"]["vcf_filter"]=="q10"
+    assert rows["101"]["vcf_filter"]=="strand_bias"
     assert [rows["100"][field] for field in ("mt_median_coverage","Percent_100","nuclear_median_coverage","mtcn_median","MAD")]==["500","99.5","30","72","0.1"]
     assert rows["100"]["species"]=="Pan_troglodytes" and rows["100"]["intraspecies_status"]=="no_strong_evidence"
     assert rows["100"]["human_contamination_status"]==rows["100"]["interspecies_status"]=="NOT_AVAILABLE"
@@ -198,8 +200,15 @@ def test_final_variant_report_exposes_vcf_sample_and_orthology_annotations(tmp_p
     assert [rows["101"][field] for field in ("source_chrom","source_pos","source_ref","source_alt")]==["species","11","G","T"]
     assert [rows["100"][field] for field in ("codon_match_status","trna_match_status","rrna_match_status")]==["PASS","NO_SPECIES_OR_HUMAN_TRNA","OK"]
     assert [rows["100"][field] for field in ("region_type","orthology_match_status","orthology_fail_reason")]==["CDS","PASS","NOT_AVAILABLE"]
-    assert rows["101"]["final_variant_status"]=="FAIL" and rows["101"]["final_variant_fail_reasons"]=="orthology:FAIL"
-    assert final_vcf_positions(out/"final_vcf/A.final.vcf.gz")==[100,102,103]
+    assert rows["100"]["final_variant_status"]=="PASS" and rows["100"]["final_variant_fail_reasons"]==""
+    assert rows["101"]["final_variant_status"]=="FAIL" and rows["101"]["final_variant_fail_reasons"]=="vcf_filter:strand_bias"
+    assert rows["102"]["final_variant_status"]=="FAIL" and rows["102"]["final_variant_fail_reasons"]=="orthology:FAIL"
+    assert rows["103"]["final_variant_status"]=="FAIL" and rows["103"]["final_variant_fail_reasons"]=="orthology:FAIL;vcf_filter:weak_evidence"
+    assert rows["104"]["final_variant_status"]=="FAIL" and rows["104"]["final_variant_fail_reasons"]=="vcf_filter:."
+    assert final_vcf_positions(out/"final_vcf/A.final.vcf.gz")==[100]
+    with (out/"reports/final_filter_summary.tsv").open() as handle:
+        summary={row["metric"]:row["value"] for row in csv.DictReader(handle,delimiter="\t")}
+    assert summary["n_variants_pass"]=="1" and summary["n_variants_fail"]=="4"
 
 def test_exact_vcf_resolution_does_not_confuse_sample_prefixes(tmp_path):
     write_vcf(tmp_path/"ABC10.lifted.rrna.vcf","ABC10",[(1,.1)])
