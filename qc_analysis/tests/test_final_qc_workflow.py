@@ -5,7 +5,7 @@ ROOT=Path(__file__).parents[2]
 INTRA=ROOT/"qc_analysis/scripts/run_intraspecies_contamination.py"
 FINAL=ROOT/"qc_analysis/scripts/run_final_filter.py"
 sys.path.insert(0,str(ROOT))
-from qc_analysis.scripts.run_final_filter import find_vcf
+from qc_analysis.scripts.run_final_filter import find_vcf, sort_plain_vcf
 
 def write_vcf(path, sample, records):
     text="##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t"+sample+"\n"
@@ -45,13 +45,13 @@ def test_final_filter_excludes_failed_sample_and_failed_variant(tmp_path):
     (collected/"reports/variant_calling_collection_summary.tsv").write_text("sample\tspecies\nA\tsp\nB\tsp\n")
     intra=tmp_path/"intra.tsv";intra.write_text("sample\tcontamination_status\nA\tno_strong_evidence\nB\thigh_confidence_contaminated\n")
     sample_qc=tmp_path/"sample_qc.tsv";sample_qc.write_text("sample\tqc_status\tfailed_criteria\nA\tPASS\t\nB\tPASS\t\n")
-    downstream=tmp_path/"rrna";downstream.mkdir();write_vcf(downstream/"A.lifted.rrna.vcf","A",[(1,.1),(2,.2)]);write_vcf(downstream/"B.lifted.rrna.vcf","B",[(1,.1)])
+    downstream=tmp_path/"rrna";downstream.mkdir();write_vcf(downstream/"A.lifted.codon.trna.rrna.vcf","A",[(1,.1),(2,.2)]);write_vcf(downstream/"B.lifted.codon.trna.rrna.vcf","B",[(1,.1)])
     flags=tmp_path/"flags.tsv";flags.write_text("sample\tCHROM\tPOS\tREF\tALT\tqc_status\nA\tchrM\t2\tA\tG\tFAIL\n")
     out=tmp_path/"final";cfg=tmp_path/"qc.yaml";cfg.write_text(f"""final_filter:
   enabled: true
   collected_dir: {collected}
   output_dir: {out}
-    sample_reports:
+  sample_reports:
     intraspecies:
       path: {intra}
     sample_qc:
@@ -71,6 +71,68 @@ def test_final_filter_excludes_failed_sample_and_failed_variant(tmp_path):
     with (out/"reports/final_variant_qc.tsv").open() as h: variants=list(csv.DictReader(h,delimiter="\t"))
     assert variants[0]["human_chrom"]=="chrM"
     assert variants[0]["source_chrom"]==variants[0]["original_chrom"]=="NOT_AVAILABLE"
+
+def final_filter_fixture(tmp_path, records, filtered_positions=()):
+    collected=tmp_path/"collected";(collected/"reports").mkdir(parents=True)
+    (collected/"reports/variant_calling_collection_summary.tsv").write_text("sample\tspecies\nA\tsp\n")
+    intra=tmp_path/"intra.tsv";intra.write_text("sample\tcontamination_status\nA\tno_strong_evidence\n")
+    sample_qc=tmp_path/"sample_qc.tsv";sample_qc.write_text("sample\tqc_status\nA\tPASS\n")
+    downstream=tmp_path/"rrna";downstream.mkdir();write_vcf(downstream/"A.lifted.codon.trna.rrna.vcf","A",records)
+    flags=tmp_path/"flags.tsv"
+    flags.write_text(
+        "sample\tCHROM\tPOS\tREF\tALT\tqc_status\n"
+        + "".join(f"A\tchrM\t{pos}\tA\tG\tFAIL\n" for pos in filtered_positions)
+    )
+    out=tmp_path/"final";cfg=tmp_path/"qc.yaml"
+    cfg.write_text(f"""final_filter:
+  collected_dir: {collected}
+  output_dir: {out}
+  sample_reports:
+    intraspecies:
+      path: {intra}
+    sample_qc:
+      path: {sample_qc}
+  vcf_sources: {downstream}
+  variant_reports:
+    variant_qc:
+      path: {flags}
+      coordinate_system: human
+""")
+    run=subprocess.run([sys.executable,str(FINAL),"--config",str(cfg)],text=True,capture_output=True)
+    assert run.returncode==0,run.stderr
+    return out
+
+def final_vcf_positions(path):
+    with gzip.open(path,"rt") as handle:
+        return [int(line.split("\t")[1]) for line in handle if not line.startswith("#")]
+
+def test_final_vcf_is_coordinate_sorted_before_indexing(tmp_path):
+    if not ((shutil.which("bgzip") and shutil.which("tabix")) or __import__("importlib").util.find_spec("pysam")):
+        pytest.skip("pysam or bgzip/tabix is required for production VCF output")
+    out=final_filter_fixture(tmp_path,[(16465,.1),(74,.2),(150,.3)])
+    final=out/"final_vcf/A.final.vcf.gz"
+    assert final_vcf_positions(final)==[74,150,16465]
+    assert final.is_file()
+    assert Path(str(final)+".tbi").is_file()
+
+def test_final_vcf_sorting_occurs_after_variant_filtering(tmp_path):
+    if not ((shutil.which("bgzip") and shutil.which("tabix")) or __import__("importlib").util.find_spec("pysam")):
+        pytest.skip("pysam or bgzip/tabix is required for production VCF output")
+    out=final_filter_fixture(tmp_path,[(16465,.1),(74,.2),(150,.3)],filtered_positions=(150,))
+    assert final_vcf_positions(out/"final_vcf/A.final.vcf.gz")==[74,16465]
+    with (out/"reports/final_variant_qc.tsv").open() as handle:
+        rows=list(csv.DictReader(handle,delimiter="\t"))
+    assert [row["human_pos"] for row in rows]==["16465","74","150"]
+    assert [row["final_variant_status"] for row in rows]==["PASS","PASS","FAIL"]
+
+def test_sort_plain_vcf_sorts_positions_numerically(tmp_path):
+    source=tmp_path/"input.vcf";output=tmp_path/"sorted.vcf"
+    write_vcf(source,"A",[(1000,.1),(100,.1),(9,.1),(74,.1)])
+    original_headers=[line for line in source.read_text().splitlines(keepends=True) if line.startswith("#")]
+    sort_plain_vcf(source,output)
+    lines=output.read_text().splitlines(keepends=True)
+    assert [line for line in lines if line.startswith("#")]==original_headers
+    assert [int(line.split("\t")[1]) for line in lines if not line.startswith("#")]==[9,74,100,1000]
 
 def test_exact_vcf_resolution_does_not_confuse_sample_prefixes(tmp_path):
     write_vcf(tmp_path/"ABC10.lifted.rrna.vcf","ABC10",[(1,.1)])

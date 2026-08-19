@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Strict terminal sample/variant filtering of the most downstream VCF."""
 from __future__ import annotations
-import argparse,csv,gzip,shutil,subprocess,sys,tempfile
+import argparse,csv,gzip,re,shutil,subprocess,sys,tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -57,6 +57,29 @@ def bgzip_and_index(plain,dest):
  if not bgzip or not tabix:raise RuntimeError("BGZF/index output requires pysam or both bgzip and tabix")
  with dest.open("wb") as h:subprocess.run([bgzip,"-c",str(plain)],stdout=h,check=True)
  subprocess.run([tabix,"-f","-p","vcf",str(dest)],check=True)
+def sort_plain_vcf(input_vcf:Path,output_vcf:Path)->None:
+ """Write a coordinate-sorted VCF while preserving header lines verbatim."""
+ contig_order={};headers=[];records=[]
+ with input_vcf.open("r",encoding="utf-8",newline="") as source:
+  for line_number,line in enumerate(source,1):
+   if line.startswith("#"):
+    headers.append(line)
+    match=re.match(r"^##contig=<ID=([^,>]+)",line)
+    if match:
+     contig=match.group(1).strip().strip('"')
+     if contig not in contig_order:contig_order[contig]=len(contig_order)
+    continue
+   fields=line.rstrip("\r\n").split("\t")
+   if len(fields)<5:raise ValueError(f"invalid VCF data line {line_number} in {input_vcf}")
+   try:pos=int(fields[1])
+   except ValueError as exc:raise ValueError(f"non-integer VCF POS on line {line_number} in {input_vcf}: {fields[1]!r}") from exc
+   chrom,ref,alt=fields[0],fields[3],fields[4]
+   contig_key=(0,contig_order[chrom]) if chrom in contig_order else (1,chrom)
+   records.append(((contig_key,pos,ref,alt,line),line))
+ records.sort(key=lambda item:item[0])
+ with output_vcf.open("w",encoding="utf-8",newline="") as target:
+  target.writelines(headers)
+  target.writelines(line for _key,line in records)
 def main():
  ap=argparse.ArgumentParser(description=__doc__);ap.add_argument("--config",type=Path,required=True);ap.add_argument("--overwrite",action="store_true");a=ap.parse_args();sec=read_simple_yaml(a.config).get("final_filter") or {}
  if sec.get("enabled",True) is False:print("[final_filter] disabled; skipping.");return 0
@@ -113,9 +136,14 @@ def main():
      if line.startswith("#"):target.write(line);continue
      f=line.rstrip("\n").split("\t");k=(sample,f[0],f[1],f[3],f[4]);why=variant_flags.get(k,[]);st="FAIL" if why else "PASS";na="NOT_AVAILABLE";variant_rows.append(dict(sample=sample,source_chrom=na,source_pos=na,source_ref=na,source_alt=na,original_chrom=na,original_pos=na,original_ref=na,original_alt=na,human_chrom=f[0],human_pos=f[1],human_ref=f[3],human_alt=f[4],liftover_status="PASS",human_contamination_status="NOT_AVAILABLE",interspecies_status="NOT_AVAILABLE",sample_variant_qc_status="PASS" if not why else "FAIL",match_status="NOT_AVAILABLE",final_variant_status=st,final_variant_fail_reasons=";".join(why)))
      if st=="PASS":target.write(line);n+=1
-  dest=out/"final_vcf"/f"{sample}.final.vcf.gz"
-  try:bgzip_and_index(plain,dest)
-  finally:plain.unlink(missing_ok=True)
+  dest=out/"final_vcf"/f"{sample}.final.vcf.gz";sorted_plain=None
+  try:
+   with tempfile.NamedTemporaryFile("w",suffix=".sorted.vcf",delete=False,dir=out) as sorted_target:sorted_plain=Path(sorted_target.name)
+   sort_plain_vcf(plain,sorted_plain)
+   bgzip_and_index(sorted_plain,dest)
+  finally:
+   plain.unlink(missing_ok=True)
+   if sorted_plain is not None:sorted_plain.unlink(missing_ok=True)
   kept[sample]=n
   for kind in ("cov","mtcn"):
    for source in sorted((collected/f"collected_{kind}").glob(sample+".*")):shutil.copy2(source,out/f"final_{kind}"/source.name)
