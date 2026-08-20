@@ -172,10 +172,10 @@ def test_wrong_species_partner_does_not_receive_high_conf_stem():
 @pytest.mark.parametrize(
     "structure,pair_relation,elements,delta,require_element,expected",
     [
-        ("LOOP_LOOP", "NA", "yes", 0.002, True, "HIGH_CONF_LOOP"),
+        ("LOOP_LOOP", "NA", "yes", 0.00175, True, "HIGH_CONF_LOOP"),
         ("LOOP_LOOP", "NA", "yes", 0.003, True, "LOW_CONF"),
-        ("LOOP_LOOP", "NA", "no", 0.002, True, "LOW_CONF"),
-        ("LOOP_LOOP", "NA", "no", 0.002, False, "HIGH_CONF_LOOP"),
+        ("LOOP_LOOP", "NA", "no", 0.00175, True, "LOW_CONF"),
+        ("LOOP_LOOP", "NA", "no", 0.00175, False, "HIGH_CONF_LOOP"),
         ("LOOP_LOOP", "NA", "yes", None, True, "LOW_CONF"),
         ("STEM_STEM", "yes", "yes", 0.99, True, "HIGH_CONF_STEM"),
         ("STEM_STEM", "yes", "no", 0.01, True, "LOW_CONF"),
@@ -200,7 +200,7 @@ def test_match_tier_uses_element_and_loop_fraction_requirements(
     [
         ("STEM_STEM", "yes", 0.99, "HIGH_CONF_STEM"),
         ("STEM_STEM", "no", 0.01, "LOW_CONF"),
-        ("LOOP_LOOP", "NA", 0.002, "HIGH_CONF_LOOP"),
+        ("LOOP_LOOP", "NA", 0.00175, "HIGH_CONF_LOOP"),
         ("LOOP_LOOP", "NA", 0.003, "LOW_CONF"),
         ("LOOP_LOOP", "NA", None, "LOW_CONF"),
     ],
@@ -217,15 +217,14 @@ def test_default_tiers_do_not_require_unknown_elements(
 @pytest.mark.parametrize(
     "delta,expected",
     [
-        (0.002, "HIGH_CONF_LOOP"),
-        (0.0020001, "LOW_CONF"),
-        (0.0025, "LOW_CONF"),
-        (0.003, "LOW_CONF"),
+        (0.0015, "HIGH_CONF_LOOP"),
+        (0.00175, "HIGH_CONF_LOOP"),
+        (0.0018, "LOW_CONF"),
         (None, "LOW_CONF"),
     ],
 )
 def test_loop_loop_uses_production_fraction_threshold(delta, expected):
-    assert PRODUCTION_LOOP_THRESHOLD == 0.002
+    assert PRODUCTION_LOOP_THRESHOLD == 0.00175
     assert match_tier(
         "OK", True, "LOOP_LOOP", "NA", "yes", delta, False,
         PRODUCTION_LOOP_THRESHOLD,
@@ -234,7 +233,7 @@ def test_loop_loop_uses_production_fraction_threshold(delta, expected):
 
 def test_loop_fraction_threshold_does_not_apply_to_high_conf_stem():
     assert match_tier(
-        'OK',True,'STEM_STEM','yes','.',0.99,False,0.002
+        'OK',True,'STEM_STEM','yes','.',0.99,False,PRODUCTION_LOOP_THRESHOLD
     ) == 'HIGH_CONF_STEM'
 
 

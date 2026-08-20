@@ -13,4 +13,4 @@ def test_production_trna_and_rrna_orthology_settings():
     assert trna['require_compensated_for_strict_stem'] is False
     assert trna['strict_stem_require_reference_pair_type_match'] is False
     assert rrna['require_same_rrna_element'] is False
-    assert rrna['high_conf_loop_max_frac_delta'] == 0.002
+    assert rrna['high_conf_loop_max_frac_delta'] == 0.00175

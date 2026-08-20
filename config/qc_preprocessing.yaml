@@ -485,7 +485,7 @@ rrna_match:
     # Keep this optional until both tables can support element matching.
     require_same_rrna_element: false
     # Maximum relative-position difference within the rRNA gene for loops.
-    high_conf_loop_max_frac_delta: 0.002
+    high_conf_loop_max_frac_delta: 0.00175
     write_summary: true
     pass_only: false
 environment:
