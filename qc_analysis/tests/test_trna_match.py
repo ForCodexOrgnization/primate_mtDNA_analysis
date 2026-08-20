@@ -161,6 +161,33 @@ def test_stem_strict_match_requires_identity(tmp_path,species_aa,human_aa,expect
     values=annotations(out); assert values['MTTRNA_ID_MATCH']==expected
     assert values['MTTRNA_STRICT_MATCH']==('yes' if expected=='yes' else 'no')
 
+@pytest.mark.parametrize('require_compensated,expected',[
+    (False,'yes'), (True,'no'),
+])
+def test_stem_strict_match_compensated_requirement_is_configurable(
+    tmp_path,require_compensated,expected
+):
+    setting=str(require_compensated).lower()
+    config,inp,out=fixture(
+        tmp_path,row(aa='Lys'),row('chrM',aa='Lys'),
+        settings=f'    require_compensated_for_strict_stem: {setting}\n',
+    )
+    inp.write_text(inp.read_text().replace(
+        '\tA\tT\t.\tPASS\tSRC_CHROM=species;SRC_POS=10;SRC_ALT=T',
+        '\tA\tG\t.\tPASS\tSRC_CHROM=species;SRC_POS=10;SRC_ALT=G',
+    ))
+    maps=tmp_path/'maps';maps.mkdir();(maps/'S1.coordinate_map.tsv').write_text(
+        'species_pos_original\thuman_pos_canonical\n20\t20\n')
+    result=run(config,inp,out);assert result.returncode==0,result.stderr
+    values=annotations(out)
+    for field in (
+        'MTTRNA_ID_MATCH','MTTRNA_REGION_MATCH','MTTRNA_ELEMENT_MATCH',
+        'MTTRNA_PAIR_STATUS_MATCH','MTTRNA_PAIR_POS_MATCH','MTTRNA_ALLELE_EFFECT_MATCH',
+    ):
+        assert values[field]=='yes'
+    assert values['MTTRNA_COMPENSATED']=='no'
+    assert values['MTTRNA_STRICT_MATCH']==expected
+
 def test_identity_aliases_are_exact_and_isoacceptor_specific():
     assert normalize_trna_identity('Phe') == normalize_trna_identity('TRNF') == 'MT-TF'
     assert normalize_trna_identity('Val') == normalize_trna_identity('MT-TV') == 'MT-TV'

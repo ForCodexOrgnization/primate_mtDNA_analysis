@@ -451,7 +451,7 @@ trna_match:
     run_trna_gene_qc: false
     write_summary: true
     pass_only: false
-    require_compensated_for_strict_stem: true
+    require_compensated_for_strict_stem: false
     # Version-2 default preserves the existing strict rule; opt in to also
     # require equality of the reference pair types.
     strict_stem_require_reference_pair_type_match: false
@@ -485,7 +485,7 @@ rrna_match:
     # Keep this optional until both tables can support element matching.
     require_same_rrna_element: false
     # Maximum relative-position difference within the rRNA gene for loops.
-    high_conf_loop_max_frac_delta: 0.0025
+    high_conf_loop_max_frac_delta: 0.002
     write_summary: true
     pass_only: false
 environment:

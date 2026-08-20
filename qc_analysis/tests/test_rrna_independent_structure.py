@@ -218,17 +218,24 @@ def test_default_tiers_do_not_require_unknown_elements(
     "delta,expected",
     [
         (0.002, "HIGH_CONF_LOOP"),
-        (0.0025, "HIGH_CONF_LOOP"),
+        (0.0020001, "LOW_CONF"),
+        (0.0025, "LOW_CONF"),
         (0.003, "LOW_CONF"),
         (None, "LOW_CONF"),
     ],
 )
 def test_loop_loop_uses_production_fraction_threshold(delta, expected):
-    assert PRODUCTION_LOOP_THRESHOLD == 0.0025
+    assert PRODUCTION_LOOP_THRESHOLD == 0.002
     assert match_tier(
         "OK", True, "LOOP_LOOP", "NA", "yes", delta, False,
         PRODUCTION_LOOP_THRESHOLD,
     ) == expected
+
+
+def test_loop_fraction_threshold_does_not_apply_to_high_conf_stem():
+    assert match_tier(
+        'OK',True,'STEM_STEM','yes','.',0.99,False,0.002
+    ) == 'HIGH_CONF_STEM'
 
 
 def test_unknown_elements_produce_high_conf_tiers_with_production_default():
