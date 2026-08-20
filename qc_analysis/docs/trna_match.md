@@ -109,6 +109,19 @@ Run one sample:
 python qc_analysis/scripts/run_trna_match.py --config config/qc_preprocessing.yaml --sample SAMPLE
 ```
 
+After a Slurm-array `trna_match`, merge the per-sample summaries and inspect
+the deterministic cohort summary:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  trna_match_merge config/qc_preprocessing.yaml
+
+less results/qc/trna_match/reports/all_samples.trna_match_summary.tsv
+```
+
+With `--submit trna_match`, this singleton merge is submitted automatically
+with an `afterok` dependency unless `AUTO_SUBMIT_MERGE=false`.
+
 Prepare the unique-reference Slurm manifest and submit its array:
 
 ```bash

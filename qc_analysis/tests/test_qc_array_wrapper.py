@@ -18,7 +18,7 @@ WRAPPER=ROOT/'qc_analysis/scripts/run_qc_preprocessing.sh'
     ('compare_genbank_mitos2','results/qc/genbank_mitos2_comparison'),
     ('codon_match_validate','results/qc/codon_match'), ('codon_match','results/qc/codon_match'),
     ('codon_match_merge','results/qc/codon_match'), ('build_trna_indexes','results/qc/trna_match'),
-    ('trna_match','results/qc/trna_match'),
+    ('trna_match','results/qc/trna_match'), ('trna_match_merge','results/qc/trna_match'),
     ('rrna_match','results/qc/rrna_match'), ('intraspecies_contamination','results/qc/intraspecies_contamination'),
     ('sample_variant_filtering','results/qc/sample_variant_filtering'),
 ])
@@ -288,10 +288,49 @@ trna_match:
 ''')
     result=run('--dry-run-submit','trna_match',str(cfg),env={'AUTO_SUBMIT_MERGE':'false'})
     assert result.returncode == 0,result.stderr
+    assert 'qc_preprocessing_trna_match_merge' not in result.stdout
     task=next((tmp_path/'out/job_arrays').glob('trna_match.*.tasks.txt'))
     assert task.read_text() == 'S1\n'  # S2 is unmapped; mapped S3 has no input VCF.
     absent=run('--dry-run-submit','--sample','S2','trna_match',str(cfg),env={'AUTO_SUBMIT_MERGE':'false'})
     assert absent.returncode != 0 and 'no eligible tasks' in absent.stderr
+
+
+def test_trna_submit_adds_afterok_singleton_merge(tmp_path):
+    mapped=tmp_path/'trna-map.tsv';mapped.write_text('sample\treference_key\nS1\tref1\n')
+    inputs=tmp_path/'inputs';inputs.mkdir();(inputs/'S1.vcf').write_text('input\n')
+    output=tmp_path/'out';reports=output/'reports'
+    cfg=tmp_path/'trna.yaml';cfg.write_text(f'''trna_match:
+  paths:
+    sample_reference_map: {mapped}
+    input_vcf_dir: {inputs}
+    fallback_input_vcf_dir: {inputs}
+    output_dir: {output}
+    reports_dir: {reports}
+  settings:
+    input_vcf_pattern: "{{sample}}.vcf"
+    fallback_input_vcf_pattern: "{{sample}}.vcf"
+    output_suffix: .out.vcf
+''')
+    result=run('--dry-run-submit','trna_match',str(cfg))
+    assert result.returncode == 0,result.stderr
+    lines=[line for line in result.stdout.splitlines() if line.startswith('DRY RUN:')]
+    assert len(lines) == 2
+    assert 'qc_preprocessing_trna_match_merge' in lines[1]
+    assert '--dependency=afterok:dry_trna_match' in lines[1]
+
+
+def test_wrapper_runs_explicit_trna_merge_from_config(tmp_path):
+    reports=tmp_path/'reports';reports.mkdir()
+    (reports/'S1.trna_match_summary.tsv').write_text('sample\tvalue\nS1\t1\n')
+    cfg=tmp_path/'trna.yaml';cfg.write_text(
+        f'trna_match:\n  paths:\n    reports_dir: {reports}\n')
+    result=run('trna_match_merge',str(cfg),env={'BIOPYTHON_USE_MODULE':'0'})
+    assert result.returncode == 0,result.stderr
+    assert (reports/'all_samples.trna_match_summary.tsv').read_text() == 'sample\tvalue\nS1\t1\n'
+    submitted=run('--dry-run-submit','trna_match_merge',str(cfg))
+    assert submitted.returncode == 0,submitted.stderr
+    assert '--job-name=qc_preprocessing_trna_match_merge' in submitted.stdout
+    assert '--array=1-1' in submitted.stdout
 
 
 def test_explicit_metadata_and_global_log_overrides_and_immutable_worker_path(tmp_path):
