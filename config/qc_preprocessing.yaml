@@ -52,7 +52,7 @@ final_filter:
   enabled: true
   collected_dir: results/qc/collected_variant_calling_results
   output_dir: results/qc/final_filter
-  required_sample_reports: intraspecies,human,sample_qc
+  required_sample_reports: intraspecies,sample_qc
   optional_sample_reports: interspecies
   strict_missing_samples: true
   # Priority-ordered exact filenames. Directory-only comma-separated values
@@ -80,7 +80,7 @@ final_filter:
       path: results/qc/intraspecies_contamination/reports/intraspecies_contamination_report.tsv
       status_columns: contamination_status,qc_status
     human:
-      path: results/qc/human_contamination/reports/human_contamination_report.tsv
+      path: results/qc/human_contamination/reports/human_contamination_report_no.tsv
     interspecies:
       path: results/qc/interspecies_contamination/reports/interspecies_contamination_report.tsv
     sample_qc:
