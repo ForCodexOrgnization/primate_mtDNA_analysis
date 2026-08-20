@@ -5,11 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from qc_analysis.lib.match_utils import info_parse
+from qc_analysis.lib.match_utils import info_parse, yaml
 from qc_analysis.scripts.run_rrna_match import element_match, match_tier
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PRODUCTION_LOOP_THRESHOLD = float(
+    yaml(ROOT / "config/qc_preprocessing.yaml")["rrna_match"]["settings"][
+        "high_conf_loop_max_frac_delta"
+    ]
+)
 
 
 def record_info(path):
@@ -167,10 +172,10 @@ def test_wrong_species_partner_does_not_receive_high_conf_stem():
 @pytest.mark.parametrize(
     "structure,pair_relation,elements,delta,require_element,expected",
     [
-        ("LOOP_LOOP", "NA", "yes", 0.02, True, "HIGH_CONF_LOOP"),
-        ("LOOP_LOOP", "NA", "yes", 0.08, True, "LOW_CONF"),
-        ("LOOP_LOOP", "NA", "no", 0.01, True, "LOW_CONF"),
-        ("LOOP_LOOP", "NA", "no", 0.01, False, "HIGH_CONF_LOOP"),
+        ("LOOP_LOOP", "NA", "yes", 0.002, True, "HIGH_CONF_LOOP"),
+        ("LOOP_LOOP", "NA", "yes", 0.003, True, "LOW_CONF"),
+        ("LOOP_LOOP", "NA", "no", 0.002, True, "LOW_CONF"),
+        ("LOOP_LOOP", "NA", "no", 0.002, False, "HIGH_CONF_LOOP"),
         ("LOOP_LOOP", "NA", "yes", None, True, "LOW_CONF"),
         ("STEM_STEM", "yes", "yes", 0.99, True, "HIGH_CONF_STEM"),
         ("STEM_STEM", "yes", "no", 0.01, True, "LOW_CONF"),
@@ -185,7 +190,8 @@ def test_match_tier_uses_element_and_loop_fraction_requirements(
     structure, pair_relation, elements, delta, require_element, expected
 ):
     assert match_tier(
-        "OK", True, structure, pair_relation, elements, delta, require_element, 0.05
+        "OK", True, structure, pair_relation, elements, delta, require_element,
+        PRODUCTION_LOOP_THRESHOLD,
     ) == expected
 
 
@@ -194,8 +200,8 @@ def test_match_tier_uses_element_and_loop_fraction_requirements(
     [
         ("STEM_STEM", "yes", 0.99, "HIGH_CONF_STEM"),
         ("STEM_STEM", "no", 0.01, "LOW_CONF"),
-        ("LOOP_LOOP", "NA", 0.02, "HIGH_CONF_LOOP"),
-        ("LOOP_LOOP", "NA", 0.08, "LOW_CONF"),
+        ("LOOP_LOOP", "NA", 0.002, "HIGH_CONF_LOOP"),
+        ("LOOP_LOOP", "NA", 0.003, "LOW_CONF"),
         ("LOOP_LOOP", "NA", None, "LOW_CONF"),
     ],
 )
@@ -203,7 +209,25 @@ def test_default_tiers_do_not_require_unknown_elements(
     structure, pair_relation, delta, expected
 ):
     assert match_tier(
-        "OK", True, structure, pair_relation, ".", delta, False, 0.05
+        "OK", True, structure, pair_relation, ".", delta, False,
+        PRODUCTION_LOOP_THRESHOLD,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    "delta,expected",
+    [
+        (0.002, "HIGH_CONF_LOOP"),
+        (0.0025, "HIGH_CONF_LOOP"),
+        (0.003, "LOW_CONF"),
+        (None, "LOW_CONF"),
+    ],
+)
+def test_loop_loop_uses_production_fraction_threshold(delta, expected):
+    assert PRODUCTION_LOOP_THRESHOLD == 0.0025
+    assert match_tier(
+        "OK", True, "LOOP_LOOP", "NA", "yes", delta, False,
+        PRODUCTION_LOOP_THRESHOLD,
     ) == expected
 
 
