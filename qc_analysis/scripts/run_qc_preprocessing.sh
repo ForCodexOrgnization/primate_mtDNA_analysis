@@ -34,6 +34,7 @@ Steps:
   trna_match_merge                 Atomically merge per-sample tRNA summaries.
   trna_gene_qc                     Compare lifted source and human tRNA genes.
   rrna_match                       Annotate VCFs with rRNA matching.
+  rrna_match_merge                 Atomically merge per-sample rRNA summaries.
   final_filter                     Combine QC reports and materialize final filtered files.
   all                              Run all preprocessing and downstream annotation steps.
 
@@ -49,7 +50,7 @@ Environment overrides:
   CODON_TABLE_DOWNLOAD_WORKERS     Positive concurrent Entrez download count (rate limited).
   SAMPLE                           Optional sample name for sample-level steps.
   SLURM_ARRAY_CONCURRENCY          Maximum concurrent array tasks (default: 20).
-  AUTO_SUBMIT_MERGE                Submit codon/tRNA/MITOS2 merge afterok (default: true).
+  AUTO_SUBMIT_MERGE                Submit codon/tRNA/rRNA/MITOS2 merge afterok (default: true).
   SKIP_COMPLETED / FORCE_RERUN     Resume controls (defaults: true / false).
   SLURM_PARTITION                  Optional partition/queue for --submit.
   SLURM_TIME                       Walltime for --submit (default: 24:00:00).
@@ -75,6 +76,7 @@ Examples:
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match_validate config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh trna_match_merge config/qc_preprocessing.yaml
+  bash qc_analysis/scripts/run_qc_preprocessing.sh rrna_match_merge config/qc_preprocessing.yaml
   SLURM_ARRAY_CONCURRENCY=40 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit --sample SAMPLE_NAME codon_match config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --dry-run-submit codon_match config/qc_preprocessing.yaml
@@ -124,7 +126,7 @@ done
 [[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
 STEP="$1"; CONFIG="${2:-config/qc_preprocessing.yaml}"
 case "$STEP" in
- collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|intraspecies_contamination|sample_variant_filtering|final_filter|all) ;;
+ collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|rrna_match_merge|intraspecies_contamination|sample_variant_filtering|final_filter|all) ;;
  -h|--help|help) usage; exit 0;; *) echo "ERROR: unknown step: $STEP" >&2; exit 2;; esac
 [[ -s "$CONFIG" ]] || { echo "ERROR: missing or empty config file: $CONFIG" >&2; exit 1; }
 export SAMPLE
@@ -144,7 +146,7 @@ trna_setting() {
    }' "$CONFIG"
 }
 resolve_step_resources() {
- local prefix=""; case "$1" in codon_match*) prefix=CODON_MATCH;; coordinate_liftover) prefix=LIFTOVER;; build_trna_indexes) prefix=TRNA_INDEX_BUILD;; trna_match*) prefix=TRNA_MATCH;; rrna_match) prefix=RRNA_MATCH;; mitos2*) prefix=MITOS2;; esac
+ local prefix=""; case "$1" in codon_match*) prefix=CODON_MATCH;; coordinate_liftover) prefix=LIFTOVER;; build_trna_indexes) prefix=TRNA_INDEX_BUILD;; trna_match*) prefix=TRNA_MATCH;; rrna_match*) prefix=RRNA_MATCH;; mitos2*) prefix=MITOS2;; esac
  local specific=""
  [[ -n "$prefix" ]] && { local vn="${prefix}_SLURM_TIME"; specific="${!vn:-}"; }; RES_TIME="${specific:-${SLURM_TIME:-24:00:00}}"
  specific=""; [[ -n "$prefix" ]] && { local vn="${prefix}_SLURM_MEM"; specific="${!vn:-}"; }; RES_MEM="${specific:-${SLURM_MEM:-16G}}"
@@ -207,7 +209,7 @@ submit_array() {
  printf 'step\tjob_id\ttask_file\tmanifest\tlog_dir\tarray\tsubmitted_at\n%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$step" "$LAST_JOB_ID" "$TASK_FILE" "${MANIFEST:-}" "$logs" "$array" "$submitted_at" >"$submission"
 }
 submit_workflow() {
- local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination sample_variant_filtering discover_global_anchor coordinate_liftover mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match build_primate_homo_background human_contamination final_filter)
+ local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination sample_variant_filtering discover_global_anchor coordinate_liftover mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background human_contamination final_filter)
  for s in "${steps[@]}"; do
    # Automatic merges are explicit graph nodes here, never also submitted by producers.
    TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
@@ -221,7 +223,7 @@ if [[ "$SUBMIT_TO_SLURM" == 1 ]]; then
  [[ -z "${SLURM_JOB_ID:-}" ]] || { echo 'ERROR: cannot submit from a Slurm job' >&2;exit 2; }
  if [[ "$STEP" == all ]];then submit_workflow
  else submit_array "$STEP"; producer="$LAST_JOB_ID"
-   if [[ "${AUTO_SUBMIT_MERGE:-true}" == true ]];then case "$STEP" in codon_match) TASK_FILE=""; submit_array codon_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; trna_match) TASK_FILE=""; submit_array trna_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; mitos2_annotation) TASK_FILE=""; submit_array mitos2_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; esac;fi
+   if [[ "${AUTO_SUBMIT_MERGE:-true}" == true ]];then case "$STEP" in codon_match) TASK_FILE=""; submit_array codon_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; trna_match) TASK_FILE=""; submit_array trna_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; rrna_match) TASK_FILE=""; submit_array rrna_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; mitos2_annotation) TASK_FILE=""; submit_array mitos2_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; esac;fi
  fi
  exit 0
 fi
@@ -239,6 +241,7 @@ TRNA_SCRIPT="qc_analysis/scripts/run_trna_match.py"
 TRNA_MERGE_SCRIPT="qc_analysis/scripts/merge_trna_match_summaries.py"
 TRNA_INDEX_SCRIPT="qc_analysis/scripts/build_all_trna_indexes.py"
 RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
+RRNA_MERGE_SCRIPT="qc_analysis/scripts/merge_rrna_match_summaries.py"
 INTRASPECIES_SCRIPT="qc_analysis/scripts/run_intraspecies_contamination.py"
 FINAL_FILTER_SCRIPT="qc_analysis/scripts/run_final_filter.py"
 SAMPLE_FILTER_SCRIPT="qc_analysis/scripts/run_sample_variant_filtering.py"
@@ -597,6 +600,7 @@ case "$STEP" in
   trna_match_merge) "$BASE_PYTHON" "$TRNA_MERGE_SCRIPT" --config "$CONFIG" ;;
   trna_gene_qc) echo 'Run run_trna_gene_liftover_qc.py with source index, human index, and coordinate map for each sample.' ;;
   rrna_match) run_annotation rrna_match "$RRNA_SCRIPT" ;;
+  rrna_match_merge) "$BASE_PYTHON" "$RRNA_MERGE_SCRIPT" --config "$CONFIG" ;;
   intraspecies_contamination) "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG" ;;
   sample_variant_filtering) "$BASE_PYTHON" "$SAMPLE_FILTER_SCRIPT" --config "$CONFIG" ;;
   final_filter) "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG" ;;
@@ -614,6 +618,7 @@ case "$STEP" in
     run_trna_match
     "$BASE_PYTHON" "$TRNA_MERGE_SCRIPT" --config "$CONFIG"
     run_annotation rrna_match "$RRNA_SCRIPT"
+    "$BASE_PYTHON" "$RRNA_MERGE_SCRIPT" --config "$CONFIG"
     "$BASE_PYTHON" "$PRIMATE_BACKGROUND_SCRIPT" --config "$CONFIG"
     "$BASE_PYTHON" "$HUMAN_CONTAMINATION_SCRIPT" --config "$CONFIG"
     "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG"

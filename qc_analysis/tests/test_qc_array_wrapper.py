@@ -19,7 +19,8 @@ WRAPPER=ROOT/'qc_analysis/scripts/run_qc_preprocessing.sh'
     ('codon_match_validate','results/qc/codon_match'), ('codon_match','results/qc/codon_match'),
     ('codon_match_merge','results/qc/codon_match'), ('build_trna_indexes','results/qc/trna_match'),
     ('trna_match','results/qc/trna_match'), ('trna_match_merge','results/qc/trna_match'),
-    ('rrna_match','results/qc/rrna_match'), ('intraspecies_contamination','results/qc/intraspecies_contamination'),
+    ('rrna_match','results/qc/rrna_match'), ('rrna_match_merge','results/qc/rrna_match'),
+    ('intraspecies_contamination','results/qc/intraspecies_contamination'),
     ('sample_variant_filtering','results/qc/sample_variant_filtering'),
 ])
 def test_documented_step_metadata_defaults(step, expected):
@@ -330,6 +331,51 @@ def test_wrapper_runs_explicit_trna_merge_from_config(tmp_path):
     submitted=run('--dry-run-submit','trna_match_merge',str(cfg))
     assert submitted.returncode == 0,submitted.stderr
     assert '--job-name=qc_preprocessing_trna_match_merge' in submitted.stdout
+    assert '--array=1-1' in submitted.stdout
+
+
+def test_rrna_submit_adds_afterok_merge_and_honors_disable(tmp_path):
+    samples=tmp_path/'samples.tsv';samples.write_text('sample\nS1\n')
+    inputs=tmp_path/'inputs';inputs.mkdir();(inputs/'S1.vcf').write_text('input\n')
+    output=tmp_path/'rrna';reports=output/'reports'
+    cfg=tmp_path/'rrna.yaml';cfg.write_text(f'''coordinate_liftover:
+  paths:
+    sample_ref_file: {samples}
+rrna_match:
+  paths:
+    input_vcf_dir: {inputs}
+    fallback_codon_vcf_dir: {inputs}
+    fallback_raw_vcf_dir: {inputs}
+    output_dir: {output}
+    reports_dir: {reports}
+  settings:
+    input_vcf_pattern: "{{sample}}.vcf"
+    fallback_codon_vcf_pattern: "{{sample}}.vcf"
+    fallback_raw_vcf_pattern: "{{sample}}.vcf"
+    output_suffix: .out.vcf
+''')
+    result=run('--dry-run-submit','rrna_match',str(cfg))
+    assert result.returncode == 0,result.stderr
+    lines=[line for line in result.stdout.splitlines() if line.startswith('DRY RUN:')]
+    assert len(lines) == 2
+    assert 'qc_preprocessing_rrna_match_merge' in lines[1]
+    assert '--dependency=afterok:dry_rrna_match' in lines[1]
+    disabled=run('--dry-run-submit','rrna_match',str(cfg),env={'AUTO_SUBMIT_MERGE':'false'})
+    assert disabled.returncode == 0,disabled.stderr
+    assert 'qc_preprocessing_rrna_match_merge' not in disabled.stdout
+
+
+def test_wrapper_runs_and_submits_explicit_rrna_merge(tmp_path):
+    reports=tmp_path/'reports';reports.mkdir()
+    (reports/'S1.rrna_match_summary.tsv').write_text('sample\tvalue\nS1\t1\n')
+    cfg=tmp_path/'rrna.yaml';cfg.write_text(
+        f'rrna_match:\n  paths:\n    reports_dir: {reports}\n')
+    result=run('rrna_match_merge',str(cfg),env={'BIOPYTHON_USE_MODULE':'0'})
+    assert result.returncode == 0,result.stderr
+    assert (reports/'all_samples.rrna_match_summary.tsv').read_text() == 'sample\tvalue\nS1\t1\n'
+    submitted=run('--dry-run-submit','rrna_match_merge',str(cfg))
+    assert submitted.returncode == 0,submitted.stderr
+    assert '--job-name=qc_preprocessing_rrna_match_merge' in submitted.stdout
     assert '--array=1-1' in submitted.stdout
 
 

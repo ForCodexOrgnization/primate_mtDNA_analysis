@@ -30,7 +30,7 @@ outputs without submission. A submitted worker always receives that immutable
 timestamped task-file path; `<step>.current.tsv` is only a convenience pointer
 and is never read by running jobs.
 
-Codon, tRNA, and MITOS2 producer arrays automatically submit their singleton merge
+Codon, tRNA, rRNA, and MITOS2 producer arrays automatically submit their singleton merge
 with `afterok` unless `AUTO_SUBMIT_MERGE=false`. `--submit all` creates the
 ordered dependency graph printed by the wrapper rather than one monolithic
 job. Logs resolve in this order: `SLURM_LOG_DIR`, configured `paths.log_dir`,
@@ -66,6 +66,7 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match_validate c
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match config/qc_preprocessing.yaml
 # Explicitly merge per-sample tRNA summaries (automatic after array success by default)
 bash qc_analysis/scripts/run_qc_preprocessing.sh trna_match_merge config/qc_preprocessing.yaml
+bash qc_analysis/scripts/run_qc_preprocessing.sh rrna_match_merge config/qc_preprocessing.yaml
 # Override concurrency
 SLURM_ARRAY_CONCURRENCY=40 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit codon_match config/qc_preprocessing.yaml
 # Exactly one sample (array 1-1)

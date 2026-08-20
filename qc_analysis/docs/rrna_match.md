@@ -42,3 +42,16 @@ structure table fails clearly.
 ```bash
 python qc_analysis/scripts/run_rrna_match.py --config config/qc_preprocessing.yaml --sample ERS14600320
 ```
+
+After a Slurm-array `rrna_match`, merge the one-row per-sample summaries and
+inspect the deterministic cohort summary:
+
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh \
+  rrna_match_merge config/qc_preprocessing.yaml
+
+less results/qc/rrna_match/reports/all_samples.rrna_match_summary.tsv
+```
+
+With `--submit rrna_match`, the singleton merge is submitted automatically
+with an `afterok` dependency unless `AUTO_SUBMIT_MERGE=false`.

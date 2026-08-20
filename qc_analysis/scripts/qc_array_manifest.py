@@ -8,7 +8,7 @@ from qc_analysis.lib.simple_yaml import read_simple_yaml
 SAMPLE_STEPS = {"coordinate_liftover", "codon_match", "trna_match", "rrna_match"}
 GLOBAL_STEPS = {"collect_variant_calling_results", "discover_global_anchor", "build_primate_codon_table",
  "compare_genbank_mitos2", "mitos2_prepare_tasks", "mitos2_merge", "codon_match_validate",
- "codon_match_merge", "build_trna_indexes", "trna_match_merge", "trna_gene_qc", "build_primate_homo_background",
+ "codon_match_merge", "build_trna_indexes", "trna_match_merge", "trna_gene_qc", "rrna_match_merge", "build_primate_homo_background",
  "intraspecies_contamination", "sample_variant_filtering", "human_contamination", "final_filter"}
 
 STEP_SECTIONS = {
@@ -21,7 +21,7 @@ STEP_SECTIONS = {
     "compare_genbank_mitos2": "genbank_mitos2_comparison",
     "codon_match_validate": "codon_match", "codon_match": "codon_match", "codon_match_merge": "codon_match",
     "build_trna_indexes": "trna_match", "trna_match": "trna_match",
-    "trna_match_merge": "trna_match", "rrna_match": "rrna_match",
+    "trna_match_merge": "trna_match", "rrna_match": "rrna_match", "rrna_match_merge": "rrna_match",
     "intraspecies_contamination": "intraspecies_contamination",
     "sample_variant_filtering": "sample_variant_filtering",
     "final_filter": "final_filter",
@@ -37,7 +37,8 @@ FALLBACK_OUTPUTS = {
     "codon_match_validate": "results/qc/codon_match", "codon_match": "results/qc/codon_match",
     "codon_match_merge": "results/qc/codon_match", "build_trna_indexes": "results/qc/trna_match",
     "trna_match": "results/qc/trna_match", "trna_match_merge": "results/qc/trna_match",
-    "rrna_match": "results/qc/rrna_match", "intraspecies_contamination": "results/qc/intraspecies_contamination",
+    "rrna_match": "results/qc/rrna_match", "rrna_match_merge": "results/qc/rrna_match",
+    "intraspecies_contamination": "results/qc/intraspecies_contamination",
     "sample_variant_filtering": "results/qc/sample_variant_filtering",
     "final_filter": "results/qc/final_filter",
 }
