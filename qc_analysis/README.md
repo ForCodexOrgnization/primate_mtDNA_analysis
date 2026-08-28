@@ -38,6 +38,7 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 | 2 | `intraspecies_contamination` | 在原始物种坐标上生成样本级种内污染报告（不修改 VCF） | 最终样本判定 |
 | 3 | `discover_global_anchor` | 对参考线粒体序列做全局比对并生成经过验证的 anchor 表 | 坐标转换 anchor |
 | 4 | `coordinate_liftover` | 将每个样本的原始物种坐标转换到人 chrM 坐标 | 后续 VCF 注释 |
+| 4a | `interspecies_contamination` | lifted 人坐标的 cohort 跨物种污染报告 | `final_filter` 输入；不修改 VCF |
 | 5 | `mitos2_prepare_tasks` | 生成每个目标参考序列一条记录的 MITOS2 任务表 | 仅 `--submit all` 中的显式节点 |
 | 6 | `mitos2_annotation` | 按参考序列运行 MITOS2 | MITOS2 合并结果 |
 | 7 | `mitos2_merge` | 合并并严格质控 MITOS2 结果，生成生产密码子表和样本映射 | `codon_match_validate` |
@@ -114,6 +115,9 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh --submit intraspecies_contamina
 
 `coordinate_liftover`、`codon_match`、`trna_match` 和 `rrna_match` 是按样本拆分的 array；
 `mitos2_annotation` 按参考序列拆分。默认最多同时运行 20 个 array task：
+
+`interspecies_contamination` 必须观察整个 cohort，因此是 singleton job 而不是
+sample array。规则和输出见 [`docs/interspecies_contamination.md`](docs/interspecies_contamination.md)。
 
 ```bash
 # 修改整个提交的 array 并发上限
@@ -281,11 +285,11 @@ The post-liftover dependency order is:
 
 ```
 coordinate_liftover
+  -> interspecies_contamination
   -> MITOS2/reference preparation
   -> codon_match -> trna_match -> rrna_match
   -> build_primate_homo_background
   -> human_contamination
-  -> interspecies contamination report (when configured)
   -> final_filter
 ```
 

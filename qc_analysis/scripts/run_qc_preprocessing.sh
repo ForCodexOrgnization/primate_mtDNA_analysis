@@ -20,6 +20,7 @@ Steps:
   sample_variant_filtering         Write the five-criterion biological sample QC report.
   discover_global_anchor           Discover reference-level global MSA anchors only.
   coordinate_liftover              Run coordinate liftover only.
+  interspecies_contamination       Report cross-species contamination in lifted alleles.
   build_primate_homo_background   Consolidate orthology QC and build temporary homoplasmic background.
   human_contamination              Screen annotated human-coordinate alleles with primate background correction.
   build_primate_codon_table        Build the optional independent GenBank benchmark (not production).
@@ -126,7 +127,7 @@ done
 [[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
 STEP="$1"; CONFIG="${2:-config/qc_preprocessing.yaml}"
 case "$STEP" in
- collect_variant_calling_results|discover_global_anchor|coordinate_liftover|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|rrna_match_merge|intraspecies_contamination|sample_variant_filtering|final_filter|all) ;;
+ collect_variant_calling_results|discover_global_anchor|coordinate_liftover|interspecies_contamination|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|rrna_match_merge|intraspecies_contamination|sample_variant_filtering|final_filter|all) ;;
  -h|--help|help) usage; exit 0;; *) echo "ERROR: unknown step: $STEP" >&2; exit 2;; esac
 [[ -s "$CONFIG" ]] || { echo "ERROR: missing or empty config file: $CONFIG" >&2; exit 1; }
 export SAMPLE
@@ -209,7 +210,7 @@ submit_array() {
  printf 'step\tjob_id\ttask_file\tmanifest\tlog_dir\tarray\tsubmitted_at\n%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$step" "$LAST_JOB_ID" "$TASK_FILE" "${MANIFEST:-}" "$logs" "$array" "$submitted_at" >"$submission"
 }
 submit_workflow() {
- local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination sample_variant_filtering discover_global_anchor coordinate_liftover mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background human_contamination final_filter)
+ local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination sample_variant_filtering discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background human_contamination final_filter)
  for s in "${steps[@]}"; do
    # Automatic merges are explicit graph nodes here, never also submitted by producers.
    TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
@@ -233,6 +234,7 @@ fi
 BASE_PYTHON="${PYTHON:-python3}"
 COLLECT_SCRIPT="qc_analysis/scripts/collect_variant_calling_results.py"
 LIFTOVER_SCRIPT="qc_analysis/scripts/run_coordinate_liftover.py"
+INTERSPECIES_SCRIPT="qc_analysis/scripts/run_interspecies_contamination.py"
 CODON_SCRIPT="qc_analysis/scripts/run_codon_match.py"
 CODON_TABLE_SCRIPT="qc_analysis/scripts/build_primate_codon_table.py"
 MITOS2_SCRIPT="qc_analysis/scripts/run_mitos2_annotation.py"
@@ -585,6 +587,7 @@ case "$STEP" in
   coordinate_liftover)
     run_coordinate_liftover
     ;;
+  interspecies_contamination) "$BASE_PYTHON" "$INTERSPECIES_SCRIPT" --config "$CONFIG" ;;
   human_contamination) "$BASE_PYTHON" "$HUMAN_CONTAMINATION_SCRIPT" --config "$CONFIG" ;;
   build_primate_homo_background) "$BASE_PYTHON" "$PRIMATE_BACKGROUND_SCRIPT" --config "$CONFIG" ;;
   mitos2_prepare_tasks) run_mitos2_annotation --prepare-tasks ;;
@@ -610,6 +613,7 @@ case "$STEP" in
     "$BASE_PYTHON" "$SAMPLE_FILTER_SCRIPT" --config "$CONFIG"
     run_discover_global_anchor
     run_coordinate_liftover
+    "$BASE_PYTHON" "$INTERSPECIES_SCRIPT" --config "$CONFIG"
     run_mitos2_annotation
     "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --validate-inputs
     run_annotation codon_match "$CODON_SCRIPT"
