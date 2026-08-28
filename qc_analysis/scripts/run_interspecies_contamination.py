@@ -17,7 +17,8 @@ from qc_analysis.lib.simple_yaml import read_simple_yaml
 
 FIELDS = ("sample species interspecies_status classification reason recipient_species_n "
           "n_lowA n_lowA_after_species_background best_source_species best_source_sample "
-          "overlap_count overlap_fraction matched_low_vaf_median vaf_coherence "
+          "overlap_count overlap_fraction best_source_sample_overlap best_source_sample_fraction "
+          "best_source_species_overlap best_source_species_fraction matched_low_vaf_median vaf_coherence "
           "source_species_count source_sample_count").split()
 
 
@@ -36,12 +37,21 @@ def number(value: str) -> float | None:
 
 def read_metadata(path: Path, sample_col: str, species_col: str) -> dict[str, str]:
     with path.open(newline="", encoding="utf-8") as handle:
-        rows = csv.DictReader(handle, delimiter="\t")
-        if not rows.fieldnames or sample_col not in rows.fieldnames or species_col not in rows.fieldnames:
-            raise ValueError(f"metadata must contain {sample_col!r} and {species_col!r}: {path}")
+        rows = csv.reader(handle, delimiter="\t")
+        first = next(rows, None)
+        if first is None:
+            return {}
+        headered = sample_col in first and species_col in first
+        if headered:
+            sample_index, species_index = first.index(sample_col), first.index(species_col)
+        else:
+            sample_index, species_index = 0, 1
+            rows = iter([first, *rows])
         result = {}
         for row in rows:
-            sample, species = row[sample_col].strip(), row[species_col].strip()
+            if len(row) <= max(sample_index, species_index):
+                raise ValueError(f"metadata row must contain sample and species columns: {path}")
+            sample, species = row[sample_index].strip(), row[species_index].strip()
             if sample and species:
                 if sample in result and result[sample] != species:
                     raise ValueError(f"conflicting species for sample {sample}")
@@ -109,7 +119,7 @@ def main() -> int:
     output = output_dir / "reports/interspecies_contamination_report.tsv"
     if output.exists() and not args.overwrite:
         raise FileExistsError(f"output exists (use --overwrite): {output}")
-    vcfs = discover(vcf_dir, str(settings.get("input_vcf_pattern", "{sample}.lifted.raw.vcf")))
+    vcfs = discover(vcf_dir, str(paths.get("input_vcf_pattern", "{sample}.lifted.raw.vcf")))
     if not vcfs:
         raise ValueError(f"no post-liftover VCFs found in {vcf_dir}")
     metadata = read_metadata(metadata_path, str(paths.get("metadata_sample_column", "sample")),
@@ -120,6 +130,9 @@ def main() -> int:
     dp_min = float(settings.get("dp_min", 100)); low_min = float(settings.get("low_vaf_min", .01))
     low_max = float(settings.get("low_vaf_max", .20)); high_min = float(settings.get("high_vaf_min", .99))
     min_overlap = int(settings.get("min_overlap", 3)); min_fraction = float(settings.get("min_overlap_fraction", .5))
+    min_informative = int(settings.get("min_informative_low_variants", 5))
+    min_sample_overlap = int(settings.get("min_source_sample_overlap", 3))
+    min_sample_fraction = float(settings.get("min_source_sample_fraction", .5))
     tolerance = float(settings.get("vaf_coherence_tolerance", .03)); min_coherence = float(settings.get("min_vaf_coherence", .7))
     calls = {sample: alleles(path, dp_min) for sample, path in vcfs.items()}
     species_samples = defaultdict(set)
@@ -148,13 +161,18 @@ def main() -> int:
         eligible_samples = [s for s in by_sample if metadata[s] == best_species]
         ranked_samples = sorted(eligible_samples, key=lambda x: (-len(by_sample[x]), x))
         best_sample = ranked_samples[0] if ranked_samples else ""
+        sample_overlap = len(by_sample.get(best_sample, {}))
+        sample_fraction = sample_overlap / denominator if denominator else 0.0
         values = list(by_species.get(best_species, {}).values())
         median = statistics.median(values) if values else None
         coherence = sum(abs(v - median) <= tolerance for v in values) / len(values) if values else 0.0
         tied_species = len(ranked_species) > 1 and len(by_species[ranked_species[0]]) == len(by_species[ranked_species[1]])
         strong = overlap >= min_overlap and fraction >= min_fraction
+        sample_supported = sample_overlap >= min_sample_overlap and sample_fraction >= min_sample_fraction
         if not retained:
             status, classification, reason = "PASS", "NO_INFORMATIVE_LOW_VAF", "no low-VAF alleles remain after recipient-species background removal"
+        elif len(retained) < min_informative:
+            status, classification, reason = "WARN", "INSUFFICIENT_INFORMATIVE_LOW_VAF", "too few low-VAF alleles remain after recipient-species background removal"
         elif not strong:
             status, classification, reason = "PASS", "NO_CROSS_SPECIES_SIGNAL", "cross-species overlap is below configured thresholds"
         elif len(species_samples[species]) == 1:
@@ -163,6 +181,8 @@ def main() -> int:
             status, classification, reason = "WARN", "AMBIGUOUS_SOURCE_SPECIES", "multiple source species have equal best overlap"
         elif coherence < min_coherence:
             status, classification, reason = "WARN", "VAF_INCOHERENT", "matched low-VAF alleles do not meet coherence threshold"
+        elif not sample_supported:
+            status, classification, reason = "WARN", "INSUFFICIENT_SOURCE_SAMPLE_SUPPORT", "species-level signal is not sufficiently supported by one source sample"
         else:
             status, classification, reason = "FAIL", "INTERSPECIES_CONTAMINATION", "coherent low-VAF alleles match a different-species homoplasmic source"
         report.append(dict(sample=recipient, species=species, interspecies_status=status,
@@ -171,6 +191,8 @@ def main() -> int:
                            n_lowA_after_species_background=len(retained), best_source_species=best_species,
                            best_source_sample=best_sample, overlap_count=overlap,
                            overlap_fraction=f"{fraction:.6f}", matched_low_vaf_median="NA" if median is None else f"{median:.6f}",
+                           best_source_sample_overlap=sample_overlap, best_source_sample_fraction=f"{sample_fraction:.6f}",
+                           best_source_species_overlap=overlap, best_source_species_fraction=f"{fraction:.6f}",
                            vaf_coherence=f"{coherence:.6f}", source_species_count=len(by_species),
                            source_sample_count=len(by_sample)))
     output.parent.mkdir(parents=True, exist_ok=True)
