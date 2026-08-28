@@ -241,6 +241,24 @@ coordinate_liftover:
   #     cov: /path/to/sample.coverage.tsv
   samples_by_name: {}
 
+# Cohort-level, report-only screening of canonical post-liftover alleles.
+interspecies_contamination:
+  enabled: true
+  paths:
+    input_vcf_dir: results/qc/coordinate_liftover/vcf_lifted_raw
+    input_vcf_pattern: "{sample}.lifted.raw.vcf"
+    sample_ref_file: config/sample_ref_file.tsv
+    output_dir: results/qc/interspecies_contamination
+  settings:
+    dp_min: 100
+    low_vaf_min: 0.01
+    low_vaf_max: 0.20
+    high_vaf_min: 0.99
+    min_overlap: 3
+    min_overlap_fraction: 0.50
+    vaf_coherence_tolerance: 0.03
+    min_vaf_coherence: 0.70
+
 # Non-destructive consolidation of existing codon/tRNA/rRNA annotations. This
 # step does not consume Human or inter-species contamination reports.
 primate_homo_background:
