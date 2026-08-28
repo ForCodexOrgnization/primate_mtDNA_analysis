@@ -19,11 +19,14 @@ implementation queries an allele-to-high-VAF-samples inverted index and aggregat
 matches by source species and source sample; it performs neither all-pairs sample
 intersections nor phylogenetic-tree analysis.
 
-The report includes the best source, overlap count and fraction (denominator: the
-low-VAF set after background removal), median matched recipient VAF, and the
-fraction within the configured tolerance of that median. A coherent, unambiguous
-signal meeting overlap thresholds is `FAIL`. Incoherent, ambiguous, and singleton
-recipient-species signals are `WARN`; other samples are `PASS`.
+The report includes best-source-species and best-source-sample overlap counts and
+fractions (denominator: the low-VAF set after background removal), median matched
+recipient VAF, and the fraction within the configured tolerance of that median.
+A coherent, unambiguous signal with at least five informative recipient alleles
+must meet both species-level and individual-source-sample thresholds to be
+`FAIL`. Fewer than five informative alleles, a species-union-only signal,
+incoherent or ambiguous evidence, and singleton recipient species are `WARN`;
+other samples are `PASS`.
 `interspecies_status` is always exactly `PASS`, `WARN`, or `FAIL`, while
 `classification` and `reason` provide detail.
 

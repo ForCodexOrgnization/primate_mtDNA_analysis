@@ -256,6 +256,9 @@ interspecies_contamination:
     high_vaf_min: 0.99
     min_overlap: 3
     min_overlap_fraction: 0.50
+    min_informative_low_variants: 5
+    min_source_sample_overlap: 3
+    min_source_sample_fraction: 0.50
     vaf_coherence_tolerance: 0.03
     min_vaf_coherence: 0.70
 
