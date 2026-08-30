@@ -81,6 +81,27 @@ def table_samples(path):
     col=next((header.index(x) for x in ('sample','sample_id','name') if x in header),0)
     return [r[col].strip() for r in rows[start:] if len(r)>col and r[col].strip()]
 
+def sample_species_rows(path):
+    """Read sample/species metadata in either headered or legacy two-column form."""
+    path=Path(path)
+    if not path.is_file(): return []
+    with path.open(newline='') as f: rows=[r for r in csv.reader(f,delimiter='\t') if any(x.strip() for x in r)]
+    if not rows:return []
+    header=[x.strip() for x in rows[0]]; lower=[x.lower() for x in header]
+    sample_aliases=('sample','sample_id','name'); species_aliases=('target_species','species')
+    sample_col=next((lower.index(x) for x in sample_aliases if x in lower),None)
+    species_col=next((lower.index(x) for x in species_aliases if x in lower),None)
+    if sample_col is not None and species_col is not None:
+        start=1
+    else:
+        sample_col,species_col,start=0,1,0
+    result=[]
+    for row in rows[start:]:
+        if len(row)<=max(sample_col,species_col): continue
+        sample=row[sample_col].strip(); species=row[species_col].strip()
+        if sample and species: result.append({'sample':sample,'species':species})
+    return result
+
 def species_key(value): return re.sub(r'_+','_',re.sub(r'\s+','_',str(value or '').lower())).strip('_')
 
 def resolved_reference_inventory(cfg):
@@ -111,9 +132,9 @@ def sample_inventory(cfg):
 def resolved_static_samples(cfg):
     mitos_paths=(cfg.get('mitos2_annotation',{}).get('paths',{}) or {})
     sample_file=mitos_paths.get('sample_ref_file') or cfg.get('coordinate_liftover',{}).get('paths',{}).get('sample_ref_file','')
-    rows=table_rows(sample_file); _,resolved_targets,_=resolved_reference_inventory(cfg); samples=[]
+    rows=sample_species_rows(sample_file); _,resolved_targets,_=resolved_reference_inventory(cfg); samples=[]
     for row in rows:
-        sample=(row.get('sample') or row.get('sample_id') or row.get('name') or '').strip(); target=(row.get('target_species') or row.get('species') or '').strip()
+        sample=(row.get('sample') or '').strip(); target=(row.get('species') or '').strip()
         if sample and species_key(target) in resolved_targets: samples.append(sample)
     return samples
 
