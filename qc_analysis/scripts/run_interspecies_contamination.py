@@ -117,8 +117,8 @@ def main() -> int:
     metadata_path = resolve(paths.get("sample_ref_file", "config/sample_ref_file.tsv"))
     output_dir = resolve(paths.get("output_dir", "results/qc/interspecies_contamination"))
     output = output_dir / "reports/interspecies_contamination_report.tsv"
-    if output.exists() and not args.overwrite:
-        raise FileExistsError(f"output exists (use --overwrite): {output}")
+    if output.exists():
+        print(f"[interspecies_contamination] replacing existing report: {output}", file=sys.stderr)
     vcfs = discover(vcf_dir, str(paths.get("input_vcf_pattern", "{sample}.lifted.raw.vcf")))
     if not vcfs:
         raise ValueError(f"no post-liftover VCFs found in {vcf_dir}")
@@ -136,7 +136,7 @@ def main() -> int:
     tolerance = float(settings.get("vaf_coherence_tolerance", .03)); min_coherence = float(settings.get("min_vaf_coherence", .7))
     calls = {sample: alleles(path, dp_min) for sample, path in vcfs.items()}
     species_samples = defaultdict(set)
-    high_index = defaultdict(list)  # allele inverted index: never all-vs-all intersections
+    high_index = defaultdict(list)
     for sample, rows in calls.items():
         species_samples[metadata[sample]].add(sample)
         for allele, af in rows:
