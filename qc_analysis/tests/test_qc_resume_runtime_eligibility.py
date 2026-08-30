@@ -20,7 +20,7 @@ def parse_values(stdout: str) -> dict[str, str]:
     return values
 
 
-def test_completed_liftover_is_detected_without_mt_codon_tag(tmp_path):
+def test_completed_liftover_is_revalidated_without_mt_codon_tag(tmp_path):
     samples = tmp_path / "samples.tsv"
     samples.write_text("sample\tspecies\nS1\tSpecies_one\n")
     out = tmp_path / "liftover"
@@ -45,9 +45,10 @@ def test_completed_liftover_is_detected_without_mt_codon_tag(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     values = parse_values(result.stdout)
-    assert values["COUNT"] == "0"
-    assert values["STATE"] == "complete_noop"
-    assert Path(values["TASK_FILE"]).read_text() == ""
+    assert values["COUNT"] == "1"
+    assert values["STATE"] == "scheduled"
+    assert Path(values["TASK_FILE"]).read_text() == "S1\n"
+    assert "runtime_revalidate" in Path(values["MANIFEST"]).read_text()
 
 
 def test_missing_sample_candidates_are_not_silently_treated_as_complete(tmp_path):
@@ -107,19 +108,36 @@ def write_runtime_config(tmp_path: Path, mapping_rows: str) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     mapping = tmp_path / "codon_map.tsv"
     mapping.write_text("sample\treference_key\n" + mapping_rows)
-    inputs = tmp_path / "lifted"
-    inputs.mkdir(exist_ok=True)
+    liftover = tmp_path / "liftover"
+    inputs = liftover / "vcf_lifted_raw"
+    inputs.mkdir(parents=True, exist_ok=True)
     (inputs / "S1.lifted.raw.vcf").write_text(
         "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
     )
+    reports = liftover / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    (reports / "S1.coordinate_liftover_qc.tsv").write_text("sample\tS1\nstatus\tcompleted\n")
+    collection = tmp_path / "collection"
+    (collection / "reports").mkdir(parents=True, exist_ok=True)
+    (collection / "reports/variant_calling_collection_summary.tsv").write_text(
+        "sample\tstatus\nS1\tOK\n"
+    )
     config = tmp_path / "runtime.yaml"
     config.write_text(
+        "collect_variant_calling:\n"
+        f"  outdir: {collection}\n"
+        "coordinate_liftover:\n"
+        "  paths:\n"
+        f"    output_dir: {liftover}\n"
         "codon_match:\n"
         "  paths:\n"
         f"    sample_reference_map: {mapping}\n"
         f"    input_vcf_dir: {inputs}\n"
+        f"    output_dir: {tmp_path / 'codon'}\n"
+        f"    reports_dir: {tmp_path / 'codon/reports'}\n"
         "  settings:\n"
         "    input_vcf_pattern: \"{sample}.lifted.raw.vcf\"\n"
+        "    output_suffix: \".lifted.codon.vcf\"\n"
     )
     return config
 
@@ -158,3 +176,21 @@ def test_array_worker_runtime_exclusion_is_successful_skip(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "runtime_status=skipped" in result.stderr
     assert "sample_not_in_pass_production_codon_map" in result.stderr
+
+
+def test_runtime_exclusion_removes_stale_codon_outputs(tmp_path):
+    config = write_runtime_config(tmp_path, "OTHER\tmtref_def\n")
+    stale_vcf = tmp_path / "codon/vcf_codon/S1.lifted.codon.vcf"
+    stale_summary = tmp_path / "codon/reports/S1.codon_match_summary.tsv"
+    stale_vcf.parent.mkdir(parents=True, exist_ok=True)
+    stale_summary.parent.mkdir(parents=True, exist_ok=True)
+    stale_vcf.write_text("stale\n")
+    stale_summary.write_text("sample\tstatus\nS1\tcompleted\n")
+    result = subprocess.run(
+        [sys.executable, str(ELIGIBILITY), "codon_match", "S1", str(config)],
+        cwd=ROOT, text=True, capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ELIGIBLE=0" in result.stdout
+    assert not stale_vcf.exists()
+    assert not stale_summary.exists()
