@@ -74,6 +74,25 @@ def collection_ok_samples(cfg: dict) -> set[str]:
     return result
 
 
+def liftover_ok_samples(cfg: dict) -> set[str]:
+    section = cfg.get("coordinate_liftover") or {}
+    paths = section.get("paths") or {}
+    reports = resolve(paths.get("output_dir", "results/qc/coordinate_liftover")) / "reports"
+    result = set()
+    if not reports.is_dir():
+        return result
+    for report in reports.glob("*.coordinate_liftover_qc.tsv"):
+        status = ""
+        with report.open(newline="", encoding="utf-8") as handle:
+            for row in csv.reader(handle, delimiter="\t"):
+                if len(row) >= 2 and row[0].strip() == "status":
+                    status = row[1].strip()
+                    break
+        if status == "completed":
+            result.add(report.name.removesuffix(".coordinate_liftover_qc.tsv"))
+    return result
+
+
 def discover(directory: Path, pattern: str) -> dict[str, Path]:
     if "{sample}" not in pattern:
         raise ValueError("input_vcf_pattern must contain {sample}")
@@ -138,13 +157,15 @@ def main() -> int:
     metadata = read_metadata(metadata_path, str(paths.get("metadata_sample_column", "sample")),
                              str(paths.get("metadata_species_column", "species")))
     current_ok = collection_ok_samples(cfg)
+    liftover_ok = liftover_ok_samples(cfg)
+    current_samples = set(metadata) & current_ok & liftover_ok
     discovered = discover(vcf_dir, str(paths.get("input_vcf_pattern", "{sample}.lifted.raw.vcf")))
-    ignored = sorted(set(discovered) - (set(metadata) & current_ok))
+    ignored = sorted(set(discovered) - current_samples)
     if ignored:
         print("[interspecies_contamination] ignoring stale/non-current lifted VCFs: " + ", ".join(ignored[:20]), file=sys.stderr)
-    vcfs = {sample:path for sample,path in discovered.items() if sample in metadata and sample in current_ok}
+    vcfs = {sample:path for sample,path in discovered.items() if sample in current_samples}
     if not vcfs:
-        raise ValueError(f"no current collection-OK post-liftover VCFs found in {vcf_dir}")
+        raise ValueError(f"no current collection-OK, liftover-completed VCFs found in {vcf_dir}")
     dp_min = float(settings.get("dp_min", 100)); low_min = float(settings.get("low_vaf_min", .01))
     low_max = float(settings.get("low_vaf_max", .20)); high_min = float(settings.get("high_vaf_min", .99))
     min_overlap = int(settings.get("min_overlap", 3)); min_fraction = float(settings.get("min_overlap_fraction", .5))
