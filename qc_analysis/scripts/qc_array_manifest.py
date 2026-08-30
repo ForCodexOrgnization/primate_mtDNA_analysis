@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build immutable, race-safe task manifests for QC Slurm arrays."""
-import argparse, csv, datetime, os, sys
+import argparse, csv, datetime, os, re, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
@@ -86,36 +86,15 @@ def table_samples(path):
     col=next((header.index(x) for x in ('sample','sample_id','name') if x in header),0)
     return [r[col].strip() for r in rows[start:] if len(r)>col and r[col].strip()]
 
-def configured_sample_source(step,cfg):
-    """Return the best available sample list without requiring downstream products."""
-    if step=='coordinate_liftover':
-        return cfg[step]['paths']['sample_ref_file']
-    configured=(cfg.get(step,{}).get('paths',{}) or {}).get('sample_reference_map','')
-    if configured and Path(configured).is_file():
-        return configured
-    mitos_paths=(cfg.get('mitos2_annotation',{}).get('paths',{}) or {})
-    coordinate_map=mitos_paths.get('sample_coordinate_reference_map','')
-    if coordinate_map and Path(coordinate_map).is_file():
-        return coordinate_map
-    if step=='rrna_match':
-        resolved_map=mitos_paths.get('mitos2_sample_coordinate_reference_map','')
-        if resolved_map and Path(resolved_map).is_file():
-            return resolved_map
-    return mitos_paths.get('sample_ref_file') or cfg.get('coordinate_liftover',{}).get('paths',{}).get('sample_ref_file','')
+def species_key(value):
+    return re.sub(r'_+','_',re.sub(r'\s+','_',str(value or '').lower())).strip('_')
 
-def mitos2_reference_candidates(cfg):
-    """Return real MITOS2 task/reference keys; never substitute sample IDs."""
+def resolved_reference_inventory(cfg):
+    """Return clean-start MITOS2 reference workers and target species with usable FASTAs."""
     sec=cfg.get('mitos2_annotation') or {}; paths=sec.get('paths') or {}
-    task=Path(paths.get('mitos2_reference_tasks',''))
-    if task.is_file():
-        with task.open(newline='') as f:
-            rows=list(csv.DictReader(f,delimiter='\t'))
-        return ['task:'+r['task_id'] for r in rows if r.get('task_id') and r.get('status')!='completed']
-
     manifest=table_rows(paths.get('reference_manifest',''))
     fasta_dir=Path(paths.get('final_chrM_fasta_dir', paths.get('fasta_dir','references/variant_calling/Ref_chrM')))
-    references=set()
-    unresolved=[]
+    references=set(); resolved_targets=set(); unresolved=[]
     for row in manifest:
         target=(row.get('target_species') or '').strip()
         if not target:
@@ -125,7 +104,8 @@ def mitos2_reference_candidates(cfg):
         if no_chrm and (row.get('chrM_selection_status') or '').strip()=='missing_chrM_ref':
             continue
         standardized=fasta_dir/f'{target}.fa'
-        manifest_fasta=Path((row.get('chrM_expected_output_fasta') or '').strip()) if (row.get('chrM_expected_output_fasta') or '').strip() else None
+        raw_manifest_fasta=(row.get('chrM_expected_output_fasta') or '').strip()
+        manifest_fasta=Path(raw_manifest_fasta) if raw_manifest_fasta else None
         fasta=standardized if standardized.is_file() else manifest_fasta if manifest_fasta and manifest_fasta.is_file() else None
         if fasta is None:
             unresolved.append(target)
@@ -136,14 +116,57 @@ def mitos2_reference_candidates(cfg):
             unresolved.append(target)
             continue
         references.add('reference:mtref_'+sequence_sha)
+        resolved_targets.add(species_key(target))
+    return sorted(references), resolved_targets, sorted(set(unresolved))
+
+def resolved_static_samples(cfg):
+    """Resolve clean-start downstream samples using the same target-species coordinate inventory as MITOS2."""
+    mitos_paths=(cfg.get('mitos2_annotation',{}).get('paths',{}) or {})
+    sample_file=mitos_paths.get('sample_ref_file') or cfg.get('coordinate_liftover',{}).get('paths',{}).get('sample_ref_file','')
+    rows=table_rows(sample_file)
+    _, resolved_targets, _=resolved_reference_inventory(cfg)
+    samples=[]
+    for row in rows:
+        sample=(row.get('sample') or row.get('sample_id') or row.get('name') or '').strip()
+        target=(row.get('target_species') or row.get('species') or '').strip()
+        if sample and species_key(target) in resolved_targets:
+            samples.append(sample)
+    return samples
+
+def candidate_samples(step,cfg):
+    """Return the best available sample list without requiring downstream products."""
+    if step=='coordinate_liftover':
+        return table_samples(cfg[step]['paths']['sample_ref_file'])
+    configured=(cfg.get(step,{}).get('paths',{}) or {}).get('sample_reference_map','')
+    if configured and Path(configured).is_file():
+        return table_samples(configured)
+    mitos_paths=(cfg.get('mitos2_annotation',{}).get('paths',{}) or {})
+    if step=='rrna_match':
+        resolved_map=mitos_paths.get('mitos2_sample_coordinate_reference_map','')
+        if resolved_map and Path(resolved_map).is_file():
+            return table_samples(resolved_map)
+    coordinate_map=mitos_paths.get('sample_coordinate_reference_map','')
+    if coordinate_map and Path(coordinate_map).is_file():
+        return table_samples(coordinate_map)
+    return resolved_static_samples(cfg)
+
+def mitos2_reference_candidates(cfg):
+    """Return real MITOS2 task/reference keys; never substitute sample IDs."""
+    sec=cfg.get('mitos2_annotation') or {}; paths=sec.get('paths') or {}
+    task=Path(paths.get('mitos2_reference_tasks',''))
+    if task.is_file():
+        with task.open(newline='') as f:
+            rows=list(csv.DictReader(f,delimiter='\t'))
+        return ['task:'+r['task_id'] for r in rows if r.get('task_id') and r.get('status')!='completed']
+    references, _, unresolved=resolved_reference_inventory(cfg)
     if not references:
-        detail=', '.join(sorted(set(unresolved))[:10])
+        detail=', '.join(unresolved[:10])
         raise SystemExit('ERROR: cannot derive MITOS2 reference tasks from reference_manifest/FASTA files'
                          + (f' (unresolved examples: {detail})' if detail else ''))
     if unresolved:
         print('WARNING: MITOS2 references could not be pre-resolved for: '
-              + ', '.join(sorted(set(unresolved))[:20]), file=sys.stderr)
-    return sorted(references)
+              + ', '.join(unresolved[:20]), file=sys.stderr)
+    return references
 
 def valid_vcf(path, tag):
     try:
@@ -174,15 +197,13 @@ def main():
     # --sample narrows only genuinely sample-level steps. In particular, do
     # not turn a singleton/reference manifest entry into a sample identifier.
     if a.sample and step in SAMPLE_STEPS:
-        if step == 'trna_match':
-            mapped=table_samples(configured_sample_source(step,cfg))
-            candidates=[a.sample] if a.sample in mapped else []
-        else: candidates=[a.sample]
+        mapped=candidate_samples(step,cfg)
+        candidates=[a.sample] if a.sample in mapped else []
     elif step in GLOBAL_STEPS: candidates=[step]
     elif step=='mitos2_annotation':
         candidates=mitos2_reference_candidates(cfg)
     elif step in SAMPLE_STEPS:
-        candidates=table_samples(configured_sample_source(step,cfg))
+        candidates=candidate_samples(step,cfg)
     else: raise SystemExit(f'Unsupported array step: {step}')
     candidates=sorted(set(x for x in candidates if x))
     rows=[]; done=missing=invalid=0
