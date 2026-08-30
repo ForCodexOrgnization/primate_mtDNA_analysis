@@ -5,8 +5,12 @@ from __future__ import annotations
 import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 
-from qc_analysis.scripts.run_final_filter_streaming import *  # noqa: F401,F403
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from qc_analysis.scripts.run_final_filter_streaming import *  # noqa: F401,F403,E402
 
 
 if __name__ == "__main__":
