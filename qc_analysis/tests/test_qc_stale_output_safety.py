@@ -165,6 +165,9 @@ def test_final_filter_rebuild_removes_stale_final_file(tmp_path):
     (collection / "reports/variant_calling_collection_summary.tsv").write_text(
         "sample\tspecies\tstatus\nS1\tSpecies_one\tOK\n"
     )
+    liftover = tmp_path / "liftover"
+    (liftover / "reports").mkdir(parents=True)
+    (liftover / "reports/S1.coordinate_liftover_qc.tsv").write_text("sample\tS1\nstatus\tcompleted\n")
     intra = tmp_path / "intra.tsv"
     intra.write_text("sample\tcontamination_status\tqc_status\nS1\tno_strong_evidence\tPASS\n")
     sample_qc = tmp_path / "sample_qc.tsv"
@@ -172,12 +175,17 @@ def test_final_filter_rebuild_removes_stale_final_file(tmp_path):
         "sample\tqc_status\tfailed_criteria\tmt_median_coverage\tPercent_100\tnuclear_median_coverage\tmtcn_median\tMAD\n"
         "S1\tFAIL\tlow_mt_coverage\t10\t10\t30\t60\t0.1\n"
     )
+    stale_human = tmp_path / "stale_human.tsv"
+    stale_human.write_text("sample\thuman_contamination_status\nS1\tFAIL\n")
     out = tmp_path / "final"
     stale = out / "final_vcf/S1.final.vcf.gz"
     stale.parent.mkdir(parents=True)
     stale.write_text("stale\n")
     config = tmp_path / "qc.yaml"
     config.write_text(
+        "coordinate_liftover:\n"
+        "  paths:\n"
+        f"    output_dir: {liftover}\n"
         "final_filter:\n"
         "  enabled: true\n"
         f"  collected_dir: {collection}\n"
@@ -189,6 +197,9 @@ def test_final_filter_rebuild_removes_stale_final_file(tmp_path):
         "    intraspecies:\n"
         f"      path: {intra}\n"
         "      status_columns: contamination_status,qc_status\n"
+        "    human:\n"
+        f"      path: {stale_human}\n"
+        "      status_columns: human_contamination_status\n"
         "    sample_qc:\n"
         f"      path: {sample_qc}\n"
         "      status_columns: qc_status\n"
@@ -196,6 +207,7 @@ def test_final_filter_rebuild_removes_stale_final_file(tmp_path):
         f"      path: {tmp_path / 'missing_inter.tsv'}\n"
         "  sample_fail_status:\n"
         "    intraspecies: high_confidence_contaminated,FAIL\n"
+        "    human: FAIL\n"
         "    sample_qc: FAIL\n"
         "    interspecies: FAIL\n"
         "  vcf_sources:\n"
@@ -213,3 +225,4 @@ def test_final_filter_rebuild_removes_stale_final_file(tmp_path):
     with report.open(newline="") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
     assert rows[0]["final_sample_status"] == "FAIL"
+    assert "human:" not in rows[0]["final_sample_fail_reasons"]
