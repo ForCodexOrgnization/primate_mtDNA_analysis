@@ -212,6 +212,9 @@ def main():
         candidates=candidate_samples(step,cfg)
     else: raise SystemExit(f'Unsupported array step: {step}')
     candidates=sorted(set(x for x in candidates if x))
+    if step in SAMPLE_STEPS and not candidates:
+        detail=f' for requested sample {a.sample!r}' if a.sample else ''
+        raise SystemExit(f'ERROR: no candidate samples for {step}{detail}; check sample/reference metadata and reference inventory')
     rows=[]; done=missing=invalid=0
     defer_inputs=step in DEFERRED_INPUT_STEPS
     for item in candidates:
