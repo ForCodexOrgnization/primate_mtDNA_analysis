@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Re-check sample eligibility when a deferred Slurm array worker actually starts.
+"""Re-check deferred sample eligibility immediately before a worker starts.
 
-Array manifests for codon/tRNA/rRNA are intentionally allowed to be planned before
-all upstream products exist.  This helper turns later upstream exclusions (for
-example a MITOS2 reference that fails production QC) into a successful per-sample
-skip rather than an array failure.
+The submit-time manifest deliberately plans from current sample/reference inventory,
+not from possibly stale downstream maps.  This helper applies the latest runtime
+maps and inputs, and removes managed outputs for samples that are no longer
+eligible so stale annotations cannot leak into later fallback stages.
 """
 from __future__ import annotations
 
@@ -53,10 +53,42 @@ def formatted(directory: object, pattern: object, sample: str) -> Path:
     return resolve(directory) / str(pattern).format(sample=sample)
 
 
+def managed_outputs(step: str, sample: str, cfg: dict) -> list[Path]:
+    if step == "codon_match":
+        sec = cfg.get("codon_match") or {}; p, s = sec.get("paths") or {}, sec.get("settings") or {}
+        return [
+            resolve(p.get("output_dir", "results/qc/codon_match")) / "vcf_codon" / f"{sample}{s.get('output_suffix', '.lifted.codon.vcf')}",
+            resolve(p.get("reports_dir", "results/qc/codon_match/reports")) / f"{sample}.codon_match_summary.tsv",
+        ]
+    if step == "trna_match":
+        sec = cfg.get("trna_match") or {}; p, s = sec.get("paths") or {}, sec.get("settings") or {}
+        out = resolve(p.get("output_dir", "results/qc/trna_match")) / "vcf_trna"
+        return [
+            out / f"{sample}{s.get('output_suffix', '.lifted.codon.trna.vcf')}",
+            out / f"{sample}.lifted.trna.vcf",
+            resolve(p.get("reports_dir", "results/qc/trna_match/reports")) / f"{sample}.trna_match_summary.tsv",
+        ]
+    if step == "rrna_match":
+        sec = cfg.get("rrna_match") or {}; p, s = sec.get("paths") or {}, sec.get("settings") or {}
+        return [
+            resolve(p.get("output_dir", "results/qc/rrna_match")) / "vcf_rrna" / f"{sample}{s.get('output_suffix', '.lifted.codon.trna.rrna.vcf')}",
+            resolve(p.get("reports_dir", "results/qc/rrna_match/reports")) / f"{sample}.rrna_match_summary.tsv",
+        ]
+    return []
+
+
+def cleanup(step: str, sample: str, cfg: dict) -> list[str]:
+    removed = []
+    for path in managed_outputs(step, sample, cfg):
+        for candidate in (path, Path(str(path) + ".gz"), Path(str(path) + ".tbi")):
+            if candidate.exists() or candidate.is_symlink():
+                candidate.unlink(missing_ok=True)
+                removed.append(str(candidate))
+    return removed
+
+
 def decision(step: str, sample: str, cfg: dict) -> tuple[bool, str]:
     if step == "coordinate_liftover":
-        # Liftover itself already records skipped_missing_file and returns success,
-        # which is more informative than silently dropping the sample here.
         return True, "liftover_handles_missing_inputs"
 
     if step == "codon_match":
@@ -98,6 +130,7 @@ def decision(step: str, sample: str, cfg: dict) -> tuple[bool, str]:
                 return False, "sample_not_in_rrna_reference_map"
         choices = [
             formatted(paths.get("input_vcf_dir", ""), settings.get("input_vcf_pattern", "{sample}.lifted.codon.trna.vcf"), sample),
+            formatted(paths.get("fallback_trna_vcf_dir", paths.get("input_vcf_dir", "")), settings.get("fallback_trna_vcf_pattern", "{sample}.lifted.trna.vcf"), sample),
             formatted(paths.get("fallback_codon_vcf_dir", ""), settings.get("fallback_codon_vcf_pattern", "{sample}.lifted.codon.vcf"), sample),
             formatted(paths.get("fallback_raw_vcf_dir", ""), settings.get("fallback_raw_vcf_pattern", "{sample}.lifted.raw.vcf"), sample),
         ]
@@ -116,8 +149,10 @@ def main() -> int:
     args = parser.parse_args()
     cfg = read_simple_yaml(args.config)
     eligible, reason = decision(args.step, args.sample, cfg)
+    removed = [] if eligible else cleanup(args.step, args.sample, cfg)
     print(f"ELIGIBLE={1 if eligible else 0}")
     print(f"REASON={reason}")
+    print("CLEANED=" + ";".join(removed))
     return 0
 
 
