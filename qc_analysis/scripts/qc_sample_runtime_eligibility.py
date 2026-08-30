@@ -2,9 +2,9 @@
 """Re-check deferred sample eligibility immediately before a worker starts.
 
 The submit-time manifest deliberately plans from current sample/reference inventory,
-not from possibly stale downstream maps.  This helper applies the latest runtime
-maps and inputs and removes the scheduled sample's prior managed outputs before
-recomputation, preventing stale annotations from leaking into fallback stages.
+not from possibly stale downstream maps. This helper applies the latest runtime
+maps and current collection status and removes a scheduled sample's prior managed
+annotation outputs before recomputation.
 """
 from __future__ import annotations
 
@@ -48,6 +48,20 @@ def exists(path: Path) -> bool:
 
 def formatted(directory: object, pattern: object, sample: str) -> Path:
     return resolve(directory) / str(pattern).format(sample=sample)
+
+
+def collection_status(sample: str, cfg: dict) -> str | None:
+    sec = cfg.get("collect_variant_calling") or {}
+    out = resolve(sec.get("outdir", "results/qc/collected_variant_calling_results"))
+    report = out / "reports/variant_calling_collection_summary.tsv"
+    if not report.is_file():
+        return None
+    with report.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            name = (row.get("sample") or row.get("Sample") or "").strip()
+            if name == sample:
+                return (row.get("status") or row.get("collection_status") or "").strip()
+    return "MISSING_SAMPLE"
 
 
 def managed_outputs(step: str, sample: str, cfg: dict) -> list[Path]:
@@ -99,9 +113,8 @@ def prepare_rrna_trna_alias(sample: str, cfg: dict) -> str:
     if exists(primary) or not exists(trna):
         return ""
     primary.parent.mkdir(parents=True, exist_ok=True)
-    target = trna.resolve()
     try:
-        os.symlink(target, primary)
+        os.symlink(trna.resolve(), primary)
     except FileExistsError:
         pass
     return str(primary)
@@ -110,6 +123,12 @@ def prepare_rrna_trna_alias(sample: str, cfg: dict) -> str:
 def decision(step: str, sample: str, cfg: dict) -> tuple[bool, str]:
     if step == "coordinate_liftover":
         return True, "liftover_handles_missing_inputs"
+
+    current_collection = collection_status(sample, cfg)
+    if current_collection is None:
+        return False, "collection_summary_not_available"
+    if current_collection != "OK":
+        return False, "collection_status_" + (current_collection or "blank").lower()
 
     if step == "codon_match":
         section = cfg.get("codon_match") or {}; paths, settings = section.get("paths") or {}, section.get("settings") or {}
