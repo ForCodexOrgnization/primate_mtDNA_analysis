@@ -56,32 +56,31 @@ def call_class(af):
 def info_value(info,*aliases):return next((str(info[name]) for name in aliases if info.get(name) not in (None,"",".")),"NOT_AVAILABLE")
 LEGACY_SUFFIXES=(".lifted.codon.trna.rrna.vcf",".lifted.codon.trna.vcf",".lifted.trna.vcf",".lifted.codon.vcf",".lifted.raw.vcf",".vcf")
 def source_specs(value):
- """Normalize named exact-pattern sources and the legacy directory list."""
- if isinstance(value,dict):
-  return [(name,resolve(spec.get("dir",spec.get("directory"))),spec.get("pattern")) for name,spec in value.items() if isinstance(spec,dict)]
+ if isinstance(value,dict):return [(name,resolve(spec.get("dir",spec.get("directory"))),spec.get("pattern")) for name,spec in value.items() if isinstance(spec,dict)]
  return [(str(d),resolve(d),None) for d in names(value)]
 def find_vcf(directory,sample,pattern=None):
- """Resolve only exact sample filenames; never use a sample-prefix glob."""
  base=[directory/(pattern.format(sample=sample))] if pattern else [directory/f"{sample}{suffix}" for suffix in LEGACY_SUFFIXES]
  candidates=[]
- for path in base:
-  candidates.extend(p for p in (path,Path(str(path)+".gz")) if p.is_file())
+ for path in base:candidates.extend(p for p in (path,Path(str(path)+".gz")) if p.is_file())
  candidates=sorted(set(candidates))
  if len(candidates)>1:raise ValueError(f"ambiguous VCF source for sample {sample} in {directory}: {', '.join(map(str,candidates))}")
  return candidates[0] if candidates else None
+def liftover_status(sample,cfg):
+ section=cfg.get("coordinate_liftover") or {};paths=section.get("paths") or {};report=resolve(paths.get("output_dir","results/qc/coordinate_liftover"))/"reports"/f"{sample}.coordinate_liftover_qc.tsv"
+ if not report.is_file():return "NOT_AVAILABLE"
+ with report.open(newline="",encoding="utf-8") as h:
+  for row in csv.reader(h,delimiter="\t"):
+   if len(row)>=2 and row[0].strip()=="status":return row[1].strip() or "NOT_AVAILABLE"
+ return "NOT_AVAILABLE"
 def report_variant_key(row,spec,source):
- """Return the canonical sample + post-liftover human allele identity."""
- sample=pick(row,["sample","Sample"],"")
- human=[pick(row,[f"human_{x}"],"") for x in ("chrom","pos","ref","alt")]
+ sample=pick(row,["sample","Sample"],"");human=[pick(row,[f"human_{x}"],"") for x in ("chrom","pos","ref","alt")]
  if all(human):return (sample,*human)
  system=str(spec.get("coordinate_system","")).strip().lower()
- if system not in {"human","post-liftover","post_liftover"}:
-  raise ValueError(f"variant report {source} uses generic coordinates but coordinate_system is unknown or incompatible: {system or 'not declared'}")
+ if system not in {"human","post-liftover","post_liftover"}:raise ValueError(f"variant report {source} uses generic coordinates but coordinate_system is unknown or incompatible: {system or 'not declared'}")
  generic=[pick(row,[x.upper(),x],"") for x in ("chrom","pos","ref","alt")]
  if not all(generic):raise ValueError(f"variant report {source} lacks a complete human-coordinate variant key")
  return (sample,*generic)
 def bgzip_and_index(plain,dest):
- """Use htslib-compatible tooling only; ordinary gzip is never accepted."""
  try:
   import pysam
   pysam.tabix_compress(str(plain),str(dest),force=True);pysam.tabix_index(str(dest),preset="vcf",force=True);return
@@ -91,13 +90,11 @@ def bgzip_and_index(plain,dest):
  with dest.open("wb") as h:subprocess.run([bgzip,"-c",str(plain)],stdout=h,check=True)
  subprocess.run([tabix,"-f","-p","vcf",str(dest)],check=True)
 def sort_plain_vcf(input_vcf:Path,output_vcf:Path)->None:
- """Write a coordinate-sorted VCF while preserving header lines verbatim."""
  contig_order={};headers=[];records=[]
  with input_vcf.open("r",encoding="utf-8",newline="") as source:
   for line_number,line in enumerate(source,1):
    if line.startswith("#"):
-    headers.append(line)
-    match=re.match(r"^##contig=<ID=([^,>]+)",line)
+    headers.append(line);match=re.match(r"^##contig=<ID=([^,>]+)",line)
     if match:
      contig=match.group(1).strip().strip('"')
      if contig not in contig_order:contig_order[contig]=len(contig_order)
@@ -106,25 +103,22 @@ def sort_plain_vcf(input_vcf:Path,output_vcf:Path)->None:
    if len(fields)<5:raise ValueError(f"invalid VCF data line {line_number} in {input_vcf}")
    try:pos=int(fields[1])
    except ValueError as exc:raise ValueError(f"non-integer VCF POS on line {line_number} in {input_vcf}: {fields[1]!r}") from exc
-   chrom,ref,alt=fields[0],fields[3],fields[4]
-   contig_key=(0,contig_order[chrom]) if chrom in contig_order else (1,chrom)
-   records.append(((contig_key,pos,ref,alt,line),line))
+   chrom,ref,alt=fields[0],fields[3],fields[4];contig_key=(0,contig_order[chrom]) if chrom in contig_order else (1,chrom);records.append(((contig_key,pos,ref,alt,line),line))
  records.sort(key=lambda item:item[0])
- with output_vcf.open("w",encoding="utf-8",newline="") as target:
-  target.writelines(headers)
-  target.writelines(line for _key,line in records)
+ with output_vcf.open("w",encoding="utf-8",newline="") as target:target.writelines(headers);target.writelines(line for _key,line in records)
 def main():
- ap=argparse.ArgumentParser(description=__doc__);ap.add_argument("--config",type=Path,required=True);ap.add_argument("--overwrite",action="store_true");a=ap.parse_args();sec=read_simple_yaml(a.config).get("final_filter") or {}
+ ap=argparse.ArgumentParser(description=__doc__);ap.add_argument("--config",type=Path,required=True);ap.add_argument("--overwrite",action="store_true");a=ap.parse_args();cfg=read_simple_yaml(a.config);sec=cfg.get("final_filter") or {}
  if sec.get("enabled",True) is False:print("[final_filter] disabled; skipping.");return 0
  out=resolve(sec.get("output_dir","results/qc/final_filter"));collected=resolve(sec.get("collected_dir","results/qc/collected_variant_calling_results"));collection_path=collected/"reports/variant_calling_collection_summary.tsv"
  if not collection_path.is_file():raise ValueError(f"missing collection summary: {collection_path}")
  sources=sec.get("sample_reports") or {};defaults={"intraspecies":("results/qc/intraspecies_contamination/reports/intraspecies_contamination_report.tsv",["contamination_status","qc_status"]),"human":("results/qc/human_contamination/reports/human_contamination_report.tsv",["human_contamination_status","qc_status","status"]),"interspecies":("results/qc/interspecies_contamination/reports/interspecies_contamination_report.tsv",["interspecies_status","qc_status","status"]),"sample_qc":("results/qc/sample_variant_filtering/reports/sample_qc.tsv",["qc_status"])}
- required=set(names(sec.get("required_sample_reports",["intraspecies","sample_qc"])));optional=set(names(sec.get("optional_sample_reports",["human","interspecies"])))
- unknown=(required|optional)-set(defaults)
+ required=set(names(sec.get("required_sample_reports",["intraspecies","sample_qc"])));optional=set(names(sec.get("optional_sample_reports",["human","interspecies"])));active=required|optional;unknown=active-set(defaults)
  if unknown:raise ValueError(f"unknown sample reports: {sorted(unknown)}")
  indexed={};fields={};missing=[]
  for name,(fallback,candidates) in defaults.items():
-  spec=sources.get(name,{}) if isinstance(sources,dict) else {};p=resolve(spec.get("path",fallback));fields[name]=spec.get("status_columns",candidates)
+  spec=sources.get(name,{}) if isinstance(sources,dict) else {};fields[name]=spec.get("status_columns",candidates)
+  if name not in active:indexed[name]={};continue
+  p=resolve(spec.get("path",fallback))
   if name in required and not p.is_file():missing.append(f"{name}={p}")
   indexed[name]=index(p) if p.is_file() else {}
  if missing:raise ValueError("missing required sample report(s): "+", ".join(missing))
@@ -132,8 +126,6 @@ def main():
  for report in required:
   absent=sorted(set(collection)-set(indexed[report]))
   if absent and strict:raise ValueError(f"required report {report} is missing samples: {', '.join(absent)}")
- # A final-filter run owns this entire managed tree. Rebuild it every time so a
- # sample that changed from PASS to FAIL cannot leave a stale final VCF/cov/mtCN.
  if out.exists():shutil.rmtree(out)
  for d in (out/"reports",out/"logs",out/"final_vcf",out/"final_cov",out/"final_mtcn"):d.mkdir(parents=True,exist_ok=True)
  fail_cfg=sec.get("sample_fail_status") or {};fail_defaults={"intraspecies":["high_confidence_contaminated"],"human":["FAIL"],"interspecies":["FAIL"],"sample_qc":["FAIL"]};vcf_sources=source_specs(sec.get("vcf_sources",["results/qc/rrna_match/vcf_rrna","results/qc/trna_match/vcf_trna","results/qc/codon_match/vcf_codon","results/qc/coordinate_liftover/vcf_lifted_raw"]))
@@ -141,15 +133,17 @@ def main():
  for sample,row in sorted(collection.items()):
   statuses={n:pick(indexed[n].get(sample,{}),fields[n]) for n in defaults};reasons=[];warnings=[]
   for n,v in statuses.items():
+   if n not in active:continue
    if is_fail(v,fail_cfg.get(n,fail_defaults[n])):
     if n=="sample_qc":
-     failed=pick(sample_qc_rows.get(sample,{}),["failed_criteria"],"failed")
-     reasons.extend("sample_qc:"+x for x in failed.split(";") if x)
+     failed=pick(sample_qc_rows.get(sample,{}),["failed_criteria"],"failed");reasons.extend("sample_qc:"+x for x in failed.split(";") if x)
     else:reasons.append(n+":"+v)
    elif n=="intraspecies" and (v.startswith("insufficient_") or v=="candidate_contaminated"):warnings.append(n+":"+v)
    elif n=="human" and v.upper() in {"CANDIDATE","INSUFFICIENT_DATA"}:warnings.append(n+":"+v)
    elif v=="NOT_AVAILABLE" and n in required:reasons.append(n+":missing")
-  src=next((x for _,d,p in vcf_sources if (x:=find_vcf(d,sample,p))),None)
+  lift=liftover_status(sample,cfg)
+  if lift!="completed":reasons.append("liftover:"+lift)
+  src=next((x for _,d,p in vcf_sources if (x:=find_vcf(d,sample,p))),None) if lift=="completed" else None
   if not reasons and src is None:reasons.append("vcf:missing_downstream_source")
   status="FAIL" if reasons else "PASS"
   if status=="PASS":passing[sample]=src
@@ -182,8 +176,7 @@ def main():
   dest=out/"final_vcf"/f"{sample}.final.vcf.gz";sorted_plain=None
   try:
    with tempfile.NamedTemporaryFile("w",suffix=".sorted.vcf",delete=False,dir=out) as sorted_target:sorted_plain=Path(sorted_target.name)
-   sort_plain_vcf(plain,sorted_plain)
-   bgzip_and_index(sorted_plain,dest)
+   sort_plain_vcf(plain,sorted_plain);bgzip_and_index(sorted_plain,dest)
   finally:
    plain.unlink(missing_ok=True)
    if sorted_plain is not None:sorted_plain.unlink(missing_ok=True)
