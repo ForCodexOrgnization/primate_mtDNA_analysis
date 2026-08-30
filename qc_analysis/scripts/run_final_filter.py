@@ -132,7 +132,9 @@ def main():
  for report in required:
   absent=sorted(set(collection)-set(indexed[report]))
   if absent and strict:raise ValueError(f"required report {report} is missing samples: {', '.join(absent)}")
- if out.exists() and a.overwrite:shutil.rmtree(out)
+ # A final-filter run owns this entire managed tree. Rebuild it every time so a
+ # sample that changed from PASS to FAIL cannot leave a stale final VCF/cov/mtCN.
+ if out.exists():shutil.rmtree(out)
  for d in (out/"reports",out/"logs",out/"final_vcf",out/"final_cov",out/"final_mtcn"):d.mkdir(parents=True,exist_ok=True)
  fail_cfg=sec.get("sample_fail_status") or {};fail_defaults={"intraspecies":["high_confidence_contaminated"],"human":["FAIL"],"interspecies":["FAIL"],"sample_qc":["FAIL"]};vcf_sources=source_specs(sec.get("vcf_sources",["results/qc/rrna_match/vcf_rrna","results/qc/trna_match/vcf_trna","results/qc/codon_match/vcf_codon","results/qc/coordinate_liftover/vcf_lifted_raw"]))
  sample_rows=[];sample_context={};passing={};sample_qc_rows=indexed["sample_qc"]
