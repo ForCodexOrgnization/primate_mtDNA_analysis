@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -78,6 +79,7 @@ def test_completed_singleton_becomes_zero_task_noop(tmp_path):
 
 
 def write_runtime_config(tmp_path: Path, mapping_rows: str) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     mapping = tmp_path / "codon_map.tsv"
     mapping.write_text("sample\treference_key\n" + mapping_rows)
     inputs = tmp_path / "lifted"
@@ -126,7 +128,7 @@ def test_array_worker_runtime_exclusion_is_successful_skip(tmp_path):
             "--task-file", str(tasks), "codon_match", str(config),
         ],
         cwd=ROOT, text=True, capture_output=True,
-        env={**__import__("os").environ, "SLURM_ARRAY_TASK_ID": "1"},
+        env={**os.environ, "SLURM_ARRAY_TASK_ID": "1"},
     )
     assert result.returncode == 0, result.stderr
     assert "runtime_status=skipped" in result.stderr
