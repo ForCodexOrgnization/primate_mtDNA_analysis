@@ -142,9 +142,6 @@ def candidate_samples(step,cfg):
     if step=='coordinate_liftover':
         return table_samples(cfg[step]['paths']['sample_ref_file'])
     if step=='codon_match':
-        # Never plan codon workers from a possibly stale/partial PASS_PRODUCTION
-        # map.  Plan all coordinate-resolved samples and let runtime eligibility
-        # consult the map emitted by the current MITOS2 merge.
         static=resolved_static_samples(cfg)
         if static:return static
     configured=(cfg.get(step,{}).get('paths',{}) or {}).get('sample_reference_map','')
@@ -178,32 +175,6 @@ def mitos2_reference_candidates(cfg):
               + ', '.join(unresolved[:20]), file=sys.stderr)
     return references
 
-def file_ready(path):
-    try:return Path(path).is_file() and Path(path).stat().st_size>0
-    except OSError:return False
-
-def singleton_complete(step,cfg):
-    """Recognize durable singleton outputs that otherwise reject accidental overwrite."""
-    section=cfg.get(STEP_SECTIONS.get(step,''),{}) or {}
-    if section.get('enabled') is False:
-        return True
-    paths=section.get('paths',{}) or {}
-    outputs=[]
-    if step=='intraspecies_contamination':
-        out=Path(section.get('outdir','results/qc/intraspecies_contamination'))
-        outputs=[out/'reports/intraspecies_contamination_report.tsv']
-    elif step=='sample_variant_filtering':
-        out=Path(section.get('output_dir','results/qc/sample_variant_filtering'))
-        outputs=[out/'reports/sample_qc.tsv']
-    elif step=='interspecies_contamination':
-        out=Path(paths.get('output_dir','results/qc/interspecies_contamination'))
-        outputs=[out/'reports/interspecies_contamination_report.tsv']
-    elif step=='final_filter':
-        out=Path(section.get('output_dir','results/qc/final_filter'))
-        outputs=[out/'reports/final_sample_qc.tsv',out/'reports/final_variant_qc.tsv',out/'reports/final_filter_summary.tsv']
-    if not outputs:return False
-    return all(file_ready(path) for path in outputs)
-
 def valid_vcf(path, tag):
     try:
         if Path(path).stat().st_size == 0:return False
@@ -214,8 +185,6 @@ def valid_vcf(path, tag):
 def paths_for(step,s,cfg,defer_input=False):
     if step=='coordinate_liftover':
         p=cfg[step]['paths']
-        # SRC_POS is declared in every completed lifted VCF header, even when
-        # the sample has zero data records. MTCODON belongs to the next step.
         return '',str(Path(p['output_dir'])/'vcf_lifted_raw'/f'{s}.lifted.raw.vcf'),'##INFO=<ID=SRC_POS'
     sec=cfg[step];p=sec['paths']; st=sec['settings']
     if step=='codon_match': inp=Path(p['input_vcf_dir'])/st['input_vcf_pattern'].format(sample=s); tag='MTCODON'
@@ -236,8 +205,7 @@ def main():
     if a.sample and step in SAMPLE_STEPS:
         mapped=candidate_samples(step,cfg)
         candidates=[a.sample] if a.sample in mapped else []
-    elif step in GLOBAL_STEPS:
-        candidates=[] if (not a.force and singleton_complete(step,cfg)) else [step]
+    elif step in GLOBAL_STEPS: candidates=[step]
     elif step=='mitos2_annotation':
         candidates=mitos2_reference_candidates(cfg)
     elif step in SAMPLE_STEPS:
