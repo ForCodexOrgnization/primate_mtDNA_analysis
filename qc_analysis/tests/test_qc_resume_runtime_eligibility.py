@@ -1,3 +1,4 @@
+import csv
 import os
 import subprocess
 import sys
@@ -7,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "qc_analysis/scripts/qc_array_manifest.py"
 WRAPPER = ROOT / "qc_analysis/scripts/run_qc_preprocessing.sh"
 ELIGIBILITY = ROOT / "qc_analysis/scripts/qc_sample_runtime_eligibility.py"
+SAMPLE_QC = ROOT / "qc_analysis/scripts/run_sample_variant_filtering.py"
 
 
 def parse_values(stdout: str) -> dict[str, str]:
@@ -48,34 +50,57 @@ def test_completed_liftover_is_detected_without_mt_codon_tag(tmp_path):
     assert Path(values["TASK_FILE"]).read_text() == ""
 
 
-def test_completed_singleton_becomes_zero_task_noop(tmp_path):
+def test_missing_sample_candidates_are_not_silently_treated_as_complete(tmp_path):
+    samples = tmp_path / "samples.tsv"
+    samples.write_text("sample\tspecies\n")
+    config = tmp_path / "qc.yaml"
+    config.write_text(
+        "coordinate_liftover:\n"
+        "  paths:\n"
+        f"    sample_ref_file: {samples}\n"
+        f"    output_dir: {tmp_path / 'liftover'}\n"
+    )
+    result = subprocess.run(
+        [sys.executable, str(MANIFEST), "coordinate_liftover", str(config)],
+        cwd=ROOT, text=True, capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "no candidate samples for coordinate_liftover" in result.stderr
+
+
+def test_sample_qc_recomputes_and_replaces_existing_report(tmp_path):
+    collection = tmp_path / "collection.tsv"
+    collection.write_text(
+        "sample\tspecies\tmt_median_coverage\tPercent_100\tnuclear_median_coverage\tmtcn_median\tMAD\tstatus\n"
+        "S1\tSpecies_one\t150\t95\t30\t60\t0.1\tOK\n"
+    )
     out = tmp_path / "sample_qc"
     report = out / "reports/sample_qc.tsv"
     report.parent.mkdir(parents=True)
-    report.write_text("sample\tqc_status\nS1\tPASS\n")
+    report.write_text("sample\tqc_status\nSTALE\tFAIL\n")
     config = tmp_path / "qc.yaml"
     config.write_text(
         "sample_variant_filtering:\n"
         "  enabled: true\n"
+        f"  input_summary: {collection}\n"
         f"  output_dir: {out}\n"
+        "  thresholds:\n"
+        "    mt_median_coverage_min: 100\n"
+        "    percent_100_min: 90\n"
+        "    nuclear_median_coverage_min: 20\n"
+        "    mtcn_min: 40\n"
+        "    mad_max: 0.5\n"
     )
-
     result = subprocess.run(
-        [sys.executable, str(MANIFEST), "sample_variant_filtering", str(config)],
+        [sys.executable, str(SAMPLE_QC), "--config", str(config)],
         cwd=ROOT, text=True, capture_output=True,
     )
     assert result.returncode == 0, result.stderr
-    values = parse_values(result.stdout)
-    assert values["COUNT"] == "0"
-    assert values["STATE"] == "complete_noop"
-
-    wrapper = subprocess.run(
-        ["bash", str(WRAPPER), "--dry-run-submit", "sample_variant_filtering", str(config)],
-        cwd=ROOT, text=True, capture_output=True,
-    )
-    assert wrapper.returncode == 0, wrapper.stderr
-    assert "DRY RUN:" not in wrapper.stdout
-    assert "state=complete_noop" in wrapper.stderr
+    assert "replacing existing report" in result.stderr
+    with report.open(newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert [row["sample"] for row in rows] == ["S1"]
+    assert rows[0]["qc_status"] == "PASS"
 
 
 def write_runtime_config(tmp_path: Path, mapping_rows: str) -> Path:
