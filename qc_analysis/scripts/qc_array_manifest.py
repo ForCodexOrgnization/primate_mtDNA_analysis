@@ -178,7 +178,7 @@ def main():
     candidates=sorted(set(x for x in candidates if x))
     if step in SAMPLE_STEPS and not candidates:
         detail=f' for requested sample {a.sample!r}' if a.sample else ''
-        raise SystemExit(f'ERROR: no candidate samples for {step}{detail}; check sample/reference metadata and reference inventory')
+        raise SystemExit(f'ERROR: no candidate samples for {step}{detail}; no eligible tasks under current sample/reference inventory')
     rows=[];done=missing=invalid=0
     static_inventory=bool(resolved_static_samples(cfg)) if step in {'codon_match','trna_match','rrna_match'} else False
     defer_inputs=(step=='coordinate_liftover' or step=='codon_match' or (step in {'trna_match','rrna_match'} and static_inventory))
