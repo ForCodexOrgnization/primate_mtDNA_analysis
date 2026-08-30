@@ -101,6 +101,13 @@ def resolved_reference_inventory(cfg):
         references.add('reference:mtref_'+sequence_sha); resolved_targets.add(species_key(target))
     return sorted(references),resolved_targets,sorted(set(unresolved))
 
+def sample_inventory(cfg):
+    """Return the broad current sample inventory without consulting annotation QC."""
+    mitos_paths=(cfg.get('mitos2_annotation',{}).get('paths',{}) or {})
+    liftover_paths=(cfg.get('coordinate_liftover',{}).get('paths',{}) or {})
+    sample_file=mitos_paths.get('sample_ref_file') or liftover_paths.get('sample_ref_file','')
+    return table_samples(sample_file) if sample_file else []
+
 def resolved_static_samples(cfg):
     mitos_paths=(cfg.get('mitos2_annotation',{}).get('paths',{}) or {})
     sample_file=mitos_paths.get('sample_ref_file') or cfg.get('coordinate_liftover',{}).get('paths',{}).get('sample_ref_file','')
@@ -111,14 +118,21 @@ def resolved_static_samples(cfg):
     return samples
 
 def candidate_samples(step,cfg):
-    """Plan from current metadata/reference inventory, never a stale downstream map."""
-    if step=='coordinate_liftover': return table_samples(cfg[step]['paths']['sample_ref_file'])
+    """Plan from current metadata/reference inventory, never a stale downstream map.
+
+    Downstream maps are preferred only when no current static reference-resolved
+    inventory can be derived. As a final safety-first fallback, schedule the broad
+    sample inventory and let runtime eligibility perform the current map/QC gate.
+    """
+    if step=='coordinate_liftover':
+        paths=(cfg.get(step,{}).get('paths',{}) or {}); sample_file=paths.get('sample_ref_file','')
+        return table_samples(sample_file) if sample_file else []
     if step in {'codon_match','trna_match','rrna_match'}:
         static=resolved_static_samples(cfg)
         if static:return static
     configured=(cfg.get(step,{}).get('paths',{}) or {}).get('sample_reference_map','')
     if configured and Path(configured).is_file(): return table_samples(configured)
-    return resolved_static_samples(cfg)
+    return sample_inventory(cfg)
 
 def mitos2_reference_candidates(cfg):
     """Always derive current MITOS2 work from stable sequence SHA identity."""
@@ -155,7 +169,8 @@ def main():
     if a.resolve_paths:
         print(f'OUTPUT_DIR={runtime["output_dir"]}');print(f'JOB_ARRAY_DIR={runtime["job_array_dir"]}');print(f'LOG_DIR={runtime["log_dir"]}');return
     if a.sample and step in SAMPLE_STEPS:
-        mapped=candidate_samples(step,cfg);candidates=[a.sample] if a.sample in mapped else []
+        mapped=candidate_samples(step,cfg)
+        candidates=[a.sample] if not mapped or a.sample in mapped else []
     elif step in GLOBAL_STEPS:candidates=[step]
     elif step=='mitos2_annotation':candidates=mitos2_reference_candidates(cfg)
     elif step in SAMPLE_STEPS:candidates=candidate_samples(step,cfg)
@@ -163,13 +178,16 @@ def main():
     candidates=sorted(set(x for x in candidates if x))
     if step in SAMPLE_STEPS and not candidates:
         detail=f' for requested sample {a.sample!r}' if a.sample else ''
-        raise SystemExit(f'ERROR: no candidate samples for {step}{detail}; check sample/reference metadata and reference inventory')
-    rows=[];done=missing=invalid=0;defer_inputs=step in DEFERRED_INPUT_STEPS
+        raise SystemExit(f'ERROR: no candidate samples for {step}{detail}; no eligible tasks under current sample/reference inventory')
+    rows=[];done=missing=invalid=0
+    static_inventory=bool(resolved_static_samples(cfg)) if step in {'codon_match','trna_match','rrna_match'} else False
+    defer_inputs=(step=='coordinate_liftover' or step=='codon_match' or (step in {'trna_match','rrna_match'} and static_inventory))
     for item in candidates:
         inp=out=tag=''
         if step in SAMPLE_STEPS:inp,out,tag=paths_for(step,item,cfg,defer_input=defer_inputs)
         input_missing=bool(inp and not Path(inp).exists())
         if input_missing:missing+=1
+        if input_missing and not defer_inputs:continue
         complete=bool(out and valid_vcf(out,tag))
         if out and Path(out).exists() and not complete:invalid+=1
         if complete:done+=1
