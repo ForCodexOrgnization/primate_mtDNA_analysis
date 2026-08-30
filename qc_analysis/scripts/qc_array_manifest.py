@@ -20,6 +20,7 @@ STEP_SECTIONS = {
     "coordinate_liftover": "coordinate_liftover",
     "interspecies_contamination": "interspecies_contamination",
     "human_contamination": "human_contamination",
+    "build_primate_homo_background": "primate_homo_background",
     "mitos2_prepare_tasks": "mitos2_annotation", "mitos2_annotation": "mitos2_annotation",
     "mitos2_merge": "mitos2_annotation", "build_primate_codon_table": "build_primate_codon_table",
     "compare_genbank_mitos2": "genbank_mitos2_comparison",
@@ -36,6 +37,7 @@ FALLBACK_OUTPUTS = {
     "coordinate_liftover": "results/qc/coordinate_liftover",
     "interspecies_contamination": "results/qc/interspecies_contamination",
     "human_contamination": "results/qc/human_contamination",
+    "build_primate_homo_background": "results/qc/primate_homo_background",
     "mitos2_prepare_tasks": "results/qc/mitos2_annotation", "mitos2_annotation": "results/qc/mitos2_annotation",
     "mitos2_merge": "results/qc/mitos2_annotation", "build_primate_codon_table": "results/qc/codon_table_build",
     "compare_genbank_mitos2": "results/qc/genbank_mitos2_comparison",
@@ -53,6 +55,8 @@ def resolve_runtime_paths(step, cfg):
     section=cfg.get(STEP_SECTIONS.get(step,''),{}) or {}; paths=section.get('paths',{}) or {}
     explicit=paths.get('job_array_dir')
     output=paths.get('output_dir')
+    if not output:
+        output=section.get('outdir')
     if not output:
         reports=paths.get('reports_dir')
         if reports: output=str(Path(reports).parent)
@@ -120,7 +124,7 @@ def resolved_reference_inventory(cfg):
     return sorted(references), resolved_targets, sorted(set(unresolved))
 
 def resolved_static_samples(cfg):
-    """Resolve clean-start downstream samples using the same target-species coordinate inventory as MITOS2."""
+    """Resolve downstream planning samples without consulting annotation QC."""
     mitos_paths=(cfg.get('mitos2_annotation',{}).get('paths',{}) or {})
     sample_file=mitos_paths.get('sample_ref_file') or cfg.get('coordinate_liftover',{}).get('paths',{}).get('sample_ref_file','')
     rows=table_rows(sample_file)
@@ -134,9 +138,12 @@ def resolved_static_samples(cfg):
     return samples
 
 def candidate_samples(step,cfg):
-    """Return the best available sample list without requiring downstream products."""
+    """Return planning candidates; runtime workers re-check downstream eligibility."""
     if step=='coordinate_liftover':
         return table_samples(cfg[step]['paths']['sample_ref_file'])
+    if step=='codon_match':
+        static=resolved_static_samples(cfg)
+        if static:return static
     configured=(cfg.get(step,{}).get('paths',{}) or {}).get('sample_reference_map','')
     if configured and Path(configured).is_file():
         return table_samples(configured)
@@ -172,12 +179,13 @@ def valid_vcf(path, tag):
     try:
         if Path(path).stat().st_size == 0:return False
         text=Path(path).read_text(errors='ignore')
-        return '#CHROM' in text and tag in text
+        return '#CHROM' in text and (not tag or tag in text)
     except OSError:return False
 
 def paths_for(step,s,cfg,defer_input=False):
     if step=='coordinate_liftover':
-        p=cfg[step]['paths']; return '',str(Path(p['output_dir'])/'vcf_lifted_raw'/f'{s}.lifted.raw.vcf'),'MTCODON'
+        p=cfg[step]['paths']
+        return '',str(Path(p['output_dir'])/'vcf_lifted_raw'/f'{s}.lifted.raw.vcf'),'##INFO=<ID=SRC_POS'
     sec=cfg[step];p=sec['paths']; st=sec['settings']
     if step=='codon_match': inp=Path(p['input_vcf_dir'])/st['input_vcf_pattern'].format(sample=s); tag='MTCODON'
     elif step=='trna_match':
@@ -194,8 +202,6 @@ def main():
     runtime=resolve_runtime_paths(step,cfg)
     if a.resolve_paths:
         print(f'OUTPUT_DIR={runtime["output_dir"]}');print(f'JOB_ARRAY_DIR={runtime["job_array_dir"]}');print(f'LOG_DIR={runtime["log_dir"]}');return
-    # --sample narrows only genuinely sample-level steps. In particular, do
-    # not turn a singleton/reference manifest entry into a sample identifier.
     if a.sample and step in SAMPLE_STEPS:
         mapped=candidate_samples(step,cfg)
         candidates=[a.sample] if a.sample in mapped else []
@@ -206,6 +212,9 @@ def main():
         candidates=candidate_samples(step,cfg)
     else: raise SystemExit(f'Unsupported array step: {step}')
     candidates=sorted(set(x for x in candidates if x))
+    if step in SAMPLE_STEPS and not candidates:
+        detail=f' for requested sample {a.sample!r}' if a.sample else ''
+        raise SystemExit(f'ERROR: no candidate samples for {step}{detail}; check sample/reference metadata and reference inventory')
     rows=[]; done=missing=invalid=0
     defer_inputs=step in DEFERRED_INPUT_STEPS
     for item in candidates:
@@ -221,7 +230,6 @@ def main():
         if include:
             status='force_rerun' if complete else 'pending_input' if input_missing else 'pending'
             rows.append((item,inp,out,status))
-    if not rows: raise SystemExit(f'ERROR: no eligible tasks for {step} (candidates={len(candidates)}, completed={done}, missing_inputs={missing})')
     outdir=Path(a.outdir or runtime['job_array_dir']);outdir.mkdir(parents=True,exist_ok=True);stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     purpose='.retry' if a.retry else ''
     task=outdir/f'{step}.{stamp}{purpose}.tasks.txt'; manifest=outdir/f'{step}.{stamp}{purpose}.manifest.tsv'
@@ -235,5 +243,7 @@ def main():
     pointer=outdir/f'{step}.current.tsv';pt=pointer.with_suffix('.tmp');pt.write_text(str(manifest)+'\n');os.replace(pt,pointer)
     print(f'TASK_FILE={task}');print(f'MANIFEST={manifest}');print(f'COUNT={len(rows)}')
     print(f'OUTPUT_DIR={runtime["output_dir"]}');print(f'JOB_ARRAY_DIR={outdir}');print(f'LOG_DIR={runtime["log_dir"]}')
+    state='complete_noop' if not rows else 'scheduled'
+    print(f'STATE={state}')
     print(f'STATS=total candidates {len(candidates)}; already completed {done}; scheduled {len(rows)}; missing inputs {missing}; invalid existing outputs {invalid}',file=sys.stderr)
 if __name__=='__main__':main()

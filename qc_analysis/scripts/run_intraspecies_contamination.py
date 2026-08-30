@@ -24,7 +24,6 @@ def quantile7(values,p):
 def mirror_stats(rows,p):
  lows=[r for r in rows if p["mirror_low_vaf_min"]<=num(r,"VAF")<=p["mirror_low_vaf_max"]]
  highs=[r for r in rows if p["mirror_high_vaf_min"]<=num(r,"VAF")<=p["mirror_high_vaf_max"]]
- # Ground truth is an unconstrained within-sample cross product, including tolerance boundaries.
  pairs=[(i,j) for i,a in enumerate(lows) for j,b in enumerate(highs) if abs(num(a,"VAF")+num(b,"VAF")-1)<=p["mirror_tolerance"]+1e-12]
  mirrored=len({i for i,_ in pairs}); frac=mirrored/len(lows) if lows else 0.
  normalized=len(pairs)/(len(lows)*len(highs)) if lows and highs else 0.
@@ -41,7 +40,6 @@ def calibration(rows,p,nc_path):
  vals=[]
  for pair in tier:
   a,b=by.get(pair.get("Sample_A",""),[]),by.get(pair.get("Sample_B",""),[])
-  # Calibration uses the same normalized complementary-AF cross product on pooled pair calls.
   if a and b:vals.append(mirror_stats(a+b,p)[3])
  if len(vals)<int(p["min_negative_control_values"]):return None,None,"not_calibrated_insufficient_values",len(vals)
  return quantile7(vals,.95),quantile7(vals,.99),"calibrated",len(vals)
@@ -94,7 +92,7 @@ def main():
     v=sec.get(k);print(f"[intraspecies] {k}={str(v).lower() if isinstance(v,bool) else v if v not in (None,'') else '<not set>'}")
    print("[intraspecies] disabled; skipping.");return 0
  out=path(a.outdir or sec.get("outdir","results/qc/intraspecies_contamination"));report=out/"reports/intraspecies_contamination_report.tsv"
- if report.exists() and not (a.overwrite or truth(sec.get("overwrite"),False)):raise ValueError(f"output exists: {report}; use --overwrite")
+ if report.exists():print(f"[intraspecies] replacing existing report: {report}",file=sys.stderr)
  for d in (out/"logs",out/"reports"):d.mkdir(parents=True,exist_ok=True)
  table=a.variant_table or (path(sec["variant_table"]) if sec.get("variant_table") else None);sample_pairs=set()
  if table is None and truth(sec.get("build_variant_table"),True):
