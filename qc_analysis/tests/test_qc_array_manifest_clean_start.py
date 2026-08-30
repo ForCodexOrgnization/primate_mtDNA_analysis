@@ -105,13 +105,13 @@ def test_mitos2_clean_start_uses_reference_key_not_sample_id(tmp_path):
     assert rows[0]["item"] != "reference:S1"
 
 
-def test_codon_clean_start_keeps_future_input_as_pending(tmp_path):
+def test_codon_clean_start_keeps_future_input_for_runtime_revalidation(tmp_path):
     config = write_minimal_config(tmp_path)
     task_file, manifest_file, stderr = run_manifest("codon_match", config)
 
     assert task_file.read_text().splitlines() == ["S1"]
     with manifest_file.open(newline="") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
-    assert rows[0]["status_at_submission"] == "pending_input"
+    assert rows[0]["status_at_submission"] == "runtime_revalidate"
     assert rows[0]["expected_input"].endswith("S1.lifted.raw.vcf")
     assert "missing inputs 1" in stderr
