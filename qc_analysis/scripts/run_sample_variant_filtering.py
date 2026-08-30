@@ -46,7 +46,7 @@ def main():
  if sec.get("enabled",True) is False: print("[sample_variant_filtering] disabled; skipping.");return 0
  inp=resolve(sec.get("input_summary","results/qc/collected_variant_calling_results/reports/variant_calling_collection_summary.tsv")); out=resolve(sec.get("output_dir","results/qc/sample_variant_filtering")); report=out/"reports/sample_qc.tsv"
  if not inp.is_file(): raise ValueError(f"missing collection summary: {inp}")
- if report.exists() and not a.overwrite: raise ValueError(f"output exists: {report}; use --overwrite")
+ if report.exists(): print(f"[sample_variant_filtering] replacing existing report: {report}",file=sys.stderr)
  t={"mt_median_coverage_min":100,"percent_100_min":90,"nuclear_median_coverage_min":20,"mtcn_min":40,"mad_max":.5,**(sec.get("thresholds") or {})}
  with inp.open(newline="",encoding="utf-8") as h: rows=[evaluate(r,t) for r in csv.DictReader(h,delimiter="\t")]
  out.joinpath("reports").mkdir(parents=True,exist_ok=True);out.joinpath("logs").mkdir(exist_ok=True)
