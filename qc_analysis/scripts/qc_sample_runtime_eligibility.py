@@ -3,8 +3,8 @@
 
 The submit-time manifest deliberately plans from current sample/reference inventory,
 not from possibly stale downstream maps. This helper applies the latest runtime
-maps and current collection status and removes a scheduled sample's prior managed
-annotation outputs before recomputation.
+maps, current collection status, and current liftover QC, then removes a scheduled
+sample's prior managed annotation outputs before recomputation.
 """
 from __future__ import annotations
 
@@ -62,6 +62,19 @@ def collection_status(sample: str, cfg: dict) -> str | None:
             if name == sample:
                 return (row.get("status") or row.get("collection_status") or "").strip()
     return "MISSING_SAMPLE"
+
+
+def liftover_status(sample: str, cfg: dict) -> str | None:
+    section = cfg.get("coordinate_liftover") or {}
+    paths = section.get("paths") or {}
+    report = resolve(paths.get("output_dir", "results/qc/coordinate_liftover")) / "reports" / f"{sample}.coordinate_liftover_qc.tsv"
+    if not report.is_file():
+        return None
+    with report.open(newline="", encoding="utf-8") as handle:
+        for row in csv.reader(handle, delimiter="\t"):
+            if len(row) >= 2 and row[0].strip() == "status":
+                return row[1].strip()
+    return "MISSING_STATUS"
 
 
 def managed_outputs(step: str, sample: str, cfg: dict) -> list[Path]:
@@ -129,6 +142,12 @@ def decision(step: str, sample: str, cfg: dict) -> tuple[bool, str]:
         return False, "collection_summary_not_available"
     if current_collection != "OK":
         return False, "collection_status_" + (current_collection or "blank").lower()
+
+    current_liftover = liftover_status(sample, cfg)
+    if current_liftover is None:
+        return False, "liftover_qc_not_available"
+    if current_liftover != "completed":
+        return False, "liftover_status_" + (current_liftover or "blank").lower()
 
     if step == "codon_match":
         section = cfg.get("codon_match") or {}; paths, settings = section.get("paths") or {}, section.get("settings") or {}
