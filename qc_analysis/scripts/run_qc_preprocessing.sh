@@ -88,7 +88,7 @@ Examples:
 USAGE
 }
 
-SUBMIT_TO_SLURM=0; DRY_RUN_SUBMIT=0; PREPARE_ONLY=0; PREPARE_RETRY=0; ARRAY_TASK_MODE=0
+SUBMIT_TO_SLURM=0; DRY_RUN_SUBMIT=0; PREPARE_ONLY=0; PREPARE_RETRY=0; ARRAY_TASK_MODE=0; RUNTIME_ELIGIBILITY_MODE=0
 SAMPLE="${SAMPLE:-}"; TASK_FILE=""; ARRAY_CONCURRENCY="${SLURM_ARRAY_CONCURRENCY:-20}"
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
@@ -96,6 +96,7 @@ while [[ "${1:-}" == --* ]]; do
     --dry-run-submit) SUBMIT_TO_SLURM=1; DRY_RUN_SUBMIT=1; shift ;;
     --prepare-only) PREPARE_ONLY=1; shift ;;
     --prepare-retry) PREPARE_RETRY=1; shift ;;
+    --runtime-eligibility) RUNTIME_ELIGIBILITY_MODE=1; shift ;;
     --sample)
       [[ $# -ge 2 ]] || { echo "ERROR: --sample requires a value" >&2; exit 2; }
       SAMPLE="$2"
@@ -168,9 +169,6 @@ resolve_array_item() {
  (( SLURM_ARRAY_TASK_ID <= count )) || { echo "ERROR: task index $SLURM_ARRAY_TASK_ID exceeds $count" >&2; exit 2; }
  ITEM=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$TASK_FILE"); [[ -n "$ITEM" ]] || { echo 'ERROR: selected array item is empty' >&2; exit 2; }
  printf '[qc_preprocessing] step=%s array_job_id=%s array_task_id=%s selected_item=%s config=%s hostname=%s start_time=%s\n' "$STEP" "${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-unknown}}" "$SLURM_ARRAY_TASK_ID" "$ITEM" "$CONFIG" "$(hostname)" "$(date -u +%FT%TZ)" >&2
-  # Task-file entries only represent samples for sample-classified steps.
-  # Singleton entries are step names and reference entries are MITOS2 worker
-  # keys, neither of which may leak into a downstream --sample argument.
   if [[ "$(classify_step "$STEP")" == sample ]]; then
     SAMPLE="$ITEM"
   else
@@ -194,14 +192,18 @@ submit_array() {
  if [[ -n "$TASK_FILE" ]]; then
    [[ -f "$TASK_FILE" ]] || { echo "ERROR: task file does not exist: $TASK_FILE" >&2; exit 1; }
    TASK_COUNT=$(awk 'NF{n++} END{print n+0}' "$TASK_FILE")
-   (( TASK_COUNT > 0 )) || { echo "ERROR: task file is empty: $TASK_FILE" >&2; exit 1; }
  else prepare_task_manifest "$step"; fi
  [[ -n "${OUTPUT_DIR:-}" ]] || resolve_runtime_paths "$step"
+ if (( TASK_COUNT == 0 )); then
+   printf '[qc_preprocessing] step=%s state=complete_noop dependency_preserved=%s task_file=%s manifest=%s\n' "$step" "${dependency:-none}" "$TASK_FILE" "${MANIFEST:-unknown}" >&2
+   LAST_JOB_ID="$dependency"
+   return 0
+ fi
  local kind array;kind=$(classify_step "$step");array=$(build_array_expression "$TASK_COUNT" "$kind");resolve_step_resources "$step"
  local logs="${SLURM_LOG_DIR:-$CONFIG_LOG_DIR}";mkdir -p "$logs"
  local cmd=(sbatch --parsable --job-name="qc_preprocessing_${step}" --array="$array" --output="$logs/%A_%a.out" --error="$logs/%A_%a.err" --time="$RES_TIME" --mem="$RES_MEM" --cpus-per-task="$RES_CPUS")
  [[ -n "${SLURM_PARTITION:-}" ]] && cmd+=(--partition="$SLURM_PARTITION"); [[ -n "$dependency" ]] && cmd+=(--dependency="afterok:$dependency")
- cmd+=("$(readlink -f "${BASH_SOURCE[0]}")" --array-task --task-file "$TASK_FILE" "$step" "$CONFIG")
+ cmd+=("$(readlink -f "${BASH_SOURCE[0]}")" --array-task --runtime-eligibility --task-file "$TASK_FILE" "$step" "$CONFIG")
  printf '[qc_preprocessing] step=%s\n[qc_preprocessing] output_dir=%s\n[qc_preprocessing] task_file=%s\n[qc_preprocessing] manifest=%s\n[qc_preprocessing] logs=%s/%%A_%%a.{out,err}\n[qc_preprocessing] task_count=%s\n[qc_preprocessing] array=%s\n' "$step" "$OUTPUT_DIR" "$TASK_FILE" "${MANIFEST:-unknown}" "$logs" "$TASK_COUNT" "$array" >&2
  printf '[qc_preprocessing] concurrency=%s dependency=%s resources=%s,%s,%s\n' "$ARRAY_CONCURRENCY" "${dependency:-none}" "$RES_TIME" "$RES_MEM" "$RES_CPUS" >&2
  if [[ "$PREPARE_ONLY" == 1 ]]; then LAST_JOB_ID="prepared_${step}"; return; fi
@@ -212,7 +214,6 @@ submit_array() {
 submit_workflow() {
  local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination sample_variant_filtering discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
  for s in "${steps[@]}"; do
-   # Automatic merges are explicit graph nodes here, never also submitted by producers.
    TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
  done
 }
@@ -224,14 +225,13 @@ if [[ "$SUBMIT_TO_SLURM" == 1 ]]; then
  [[ -z "${SLURM_JOB_ID:-}" ]] || { echo 'ERROR: cannot submit from a Slurm job' >&2;exit 2; }
  if [[ "$STEP" == all ]];then submit_workflow
  else submit_array "$STEP"; producer="$LAST_JOB_ID"
-   if [[ "${AUTO_SUBMIT_MERGE:-true}" == true ]];then case "$STEP" in codon_match) TASK_FILE=""; submit_array codon_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; trna_match) TASK_FILE=""; submit_array trna_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; rrna_match) TASK_FILE=""; submit_array rrna_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; mitos2_annotation) TASK_FILE=""; submit_array mitos2_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; esac;fi
+   if [[ -n "$producer" && "${AUTO_SUBMIT_MERGE:-true}" == true ]];then case "$STEP" in codon_match) TASK_FILE=""; submit_array codon_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; trna_match) TASK_FILE=""; submit_array trna_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; rrna_match) TASK_FILE=""; submit_array rrna_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; mitos2_annotation) TASK_FILE=""; submit_array mitos2_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; esac;fi
  fi
  exit 0
 fi
 
-# Keep the workflow interpreter stable: activating MITOS2 must not change the
-# interpreter used by subsequent preprocessing steps when running `all`.
 BASE_PYTHON="${PYTHON:-python3}"
+RUNTIME_ELIGIBILITY_PYTHON="${RUNTIME_ELIGIBILITY_PYTHON:-python3}"
 COLLECT_SCRIPT="qc_analysis/scripts/collect_variant_calling_results.py"
 LIFTOVER_SCRIPT="qc_analysis/scripts/run_coordinate_liftover.py"
 INTERSPECIES_SCRIPT="qc_analysis/scripts/run_interspecies_contamination.py"
@@ -250,9 +250,8 @@ SAMPLE_FILTER_SCRIPT="qc_analysis/scripts/run_sample_variant_filtering.py"
 GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
 HUMAN_CONTAMINATION_SCRIPT="qc_analysis/scripts/run_human_contamination.py"
 PRIMATE_BACKGROUND_SCRIPT="qc_analysis/scripts/build_primate_homo_background.py"
+RUNTIME_ELIGIBILITY_SCRIPT="qc_analysis/scripts/qc_sample_runtime_eligibility.py"
 
-# Read the small, optional environment.biopython section without depending on
-# PyYAML (Biopython must be available before the build script can run).
 configured_biopython_value() {
   local requested_key="$1"
   awk -v requested_key="$requested_key" '
@@ -264,7 +263,6 @@ configured_biopython_value() {
       if (line !~ /[^[:space:]]/) next
       level = indent(line)
       content = trim(line)
-
       if (content == "environment:") { environment_indent = level; in_environment = 1; in_biopython = 0; next }
       if (in_environment && level <= environment_indent) { in_environment = 0; in_biopython = 0 }
       if (in_environment && content == "biopython:") { biopython_indent = level; in_biopython = 1; next }
@@ -278,8 +276,6 @@ configured_biopython_value() {
   ' "$CONFIG"
 }
 
-# Read the MITOS2 conda settings without requiring a Python YAML parser before
-# the environment that provides Biopython has been activated.
 configured_mitos2_value() {
   local requested_key="$1"
   awk -v requested_key="$requested_key" '
@@ -291,7 +287,6 @@ configured_mitos2_value() {
       if (line !~ /[^[:space:]]/) next
       level = indent(line)
       content = trim(line)
-
       if (content == "mitos2_annotation:") { mitos2_indent = level; in_mitos2 = 1; in_settings = 0; next }
       if (in_mitos2 && level <= mitos2_indent) { in_mitos2 = 0; in_settings = 0 }
       if (in_mitos2 && content == "settings:") { settings_indent = level; in_settings = 1; next }
@@ -305,8 +300,6 @@ configured_mitos2_value() {
   ' "$CONFIG"
 }
 
-# Read the independent tRNAscan-SE conda settings without requiring PyYAML.
-# This intentionally does not consult the MITOS2 environment configuration.
 configured_trnascan_value() {
   local requested_key="$1"
   awk -v requested_key="$requested_key" '
@@ -318,7 +311,6 @@ configured_trnascan_value() {
       if (line !~ /[^[:space:]]/) next
       level = indent(line)
       content = trim(line)
-
       if (content == "trna_match:") { trna_indent = level; in_trna = 1; in_settings = 0; next }
       if (in_trna && level <= trna_indent) { in_trna = 0; in_settings = 0 }
       if (in_trna && content == "settings:") { settings_indent = level; in_settings = 1; next }
@@ -346,6 +338,22 @@ MITOS2_CONDA_ENV="$(configured_mitos2_value conda_env)"
 TRNASCAN_CONDA_MODULE="$(configured_trnascan_value conda_module)"
 TRNASCAN_CONDA_ENV="$(configured_trnascan_value conda_env)"
 TRNASCAN_BIN="$(configured_trnascan_value trnascan_bin)"
+
+runtime_sample_eligible() {
+  [[ "$RUNTIME_ELIGIBILITY_MODE" == 1 ]] || return 0
+  [[ "$(classify_step "$STEP")" == sample ]] || return 0
+  [[ "$STEP" != coordinate_liftover ]] || return 0
+  local output eligible reason
+  output=$("$RUNTIME_ELIGIBILITY_PYTHON" "$RUNTIME_ELIGIBILITY_SCRIPT" "$STEP" "$SAMPLE" "$CONFIG")
+  eligible=$(printf '%s\n' "$output" | sed -n 's/^ELIGIBLE=//p')
+  reason=$(printf '%s\n' "$output" | sed -n 's/^REASON=//p')
+  if [[ "$eligible" != 1 ]]; then
+    printf '[qc_preprocessing] step=%s sample=%s runtime_status=skipped reason=%s\n' "$STEP" "$SAMPLE" "${reason:-not_eligible}" >&2
+    return 1
+  fi
+  printf '[qc_preprocessing] step=%s sample=%s runtime_status=eligible\n' "$STEP" "$SAMPLE" >&2
+  return 0
+}
 
 run_collect_variant_calling_results() {
   echo "[qc_preprocessing] Running collect_variant_calling_results with config: ${CONFIG}" >&2
@@ -387,26 +395,19 @@ activate_mitos2_environment() {
     echo "ERROR: mitos2_annotation.settings must define conda_module and conda_env." >&2
     exit 1
   fi
-
   echo "[qc_preprocessing] Loading MITOS2 conda module: ${MITOS2_CONDA_MODULE}" >&2
   if ! command -v module >/dev/null 2>&1; then
-    if [[ -f /etc/profile.d/modules.sh ]]; then
-      # module is commonly initialized only for login shells on HPC systems.
-      source /etc/profile.d/modules.sh
-    fi
+    if [[ -f /etc/profile.d/modules.sh ]]; then source /etc/profile.d/modules.sh; fi
   fi
   if ! command -v module >/dev/null 2>&1; then
     echo "ERROR: module command is unavailable; cannot load ${MITOS2_CONDA_MODULE}." >&2
     exit 1
   fi
   module load "$MITOS2_CONDA_MODULE"
-
-  # shellcheck disable=SC1090
   source "$(conda info --base)/etc/profile.d/conda.sh"
   echo "[qc_preprocessing] Activating MITOS2 conda environment: ${MITOS2_CONDA_ENV}" >&2
   conda activate "$MITOS2_CONDA_ENV"
   hash -r
-
   if [[ -z "${CONDA_PREFIX:-}" ]]; then
     echo "ERROR: conda activation did not set CONDA_PREFIX for MITOS2 environment: ${MITOS2_CONDA_ENV}." >&2
     exit 1
@@ -416,16 +417,12 @@ activate_mitos2_environment() {
     echo "ERROR: MITOS2 Python is missing or not executable: ${MITOS2_PYTHON}" >&2
     exit 1
   fi
-
   echo "[qc_preprocessing] CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-}" >&2
   echo "[qc_preprocessing] CONDA_PREFIX=${CONDA_PREFIX}" >&2
   echo "[qc_preprocessing] command -v python=$(command -v python || true)" >&2
   echo "[qc_preprocessing] MITOS2_PYTHON=${MITOS2_PYTHON}" >&2
   echo "[qc_preprocessing] MITOS2_PYTHON version=$($MITOS2_PYTHON --version 2>&1)" >&2
-
-  if ! "$MITOS2_PYTHON" -c \
-      'import sys, Bio; from Bio import SeqIO; print(sys.executable); print(Bio.__version__)'
-  then
+  if ! "$MITOS2_PYTHON" -c 'import sys, Bio; from Bio import SeqIO; print(sys.executable); print(Bio.__version__)'; then
     echo "ERROR: Biopython is not importable in the MITOS2 conda environment: ${MITOS2_CONDA_ENV}." >&2
     exit 1
   fi
@@ -442,12 +439,8 @@ activate_trnascan_environment() {
     echo "ERROR: trna_match.settings must define trnascan_bin." >&2
     exit 1
   fi
-
   echo "[qc_preprocessing] Loading tRNAscan-SE conda module: ${TRNASCAN_CONDA_MODULE}" >&2
-  if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile.d/modules.sh ]]; then
-    # module is commonly initialized only for login shells on HPC systems.
-    source /etc/profile.d/modules.sh
-  fi
+  if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile.d/modules.sh ]]; then source /etc/profile.d/modules.sh; fi
   if ! command -v module >/dev/null 2>&1; then
     echo "ERROR: module command is unavailable; cannot load ${TRNASCAN_CONDA_MODULE}." >&2
     echo "ERROR: failed to activate tRNAscan environment." >&2
@@ -458,14 +451,12 @@ activate_trnascan_environment() {
     echo "ERROR: failed to activate tRNAscan environment." >&2
     exit 1
   fi
-
   local conda_base
   if ! conda_base="$(conda info --base)" || [[ -z "$conda_base" || ! -f "$conda_base/etc/profile.d/conda.sh" ]]; then
     echo "ERROR: could not locate conda initialization script for tRNAscan-SE." >&2
     echo "ERROR: failed to activate tRNAscan environment." >&2
     exit 1
   fi
-  # shellcheck disable=SC1090
   source "$conda_base/etc/profile.d/conda.sh"
   echo "[qc_preprocessing] Activating tRNAscan conda environment: ${TRNASCAN_CONDA_ENV}" >&2
   if ! conda activate "$TRNASCAN_CONDA_ENV"; then
@@ -473,7 +464,6 @@ activate_trnascan_environment() {
     exit 1
   fi
   hash -r
-
   if [[ -z "${CONDA_PREFIX:-}" ]]; then
     echo "ERROR: conda activation did not set CONDA_PREFIX for tRNAscan environment: ${TRNASCAN_CONDA_ENV}." >&2
     exit 1
@@ -484,15 +474,8 @@ activate_trnascan_environment() {
     echo "Configured executable: ${TRNASCAN_BIN}" >&2
     exit 127
   fi
-  # tRNAscan-SE releases differ in their handling of --version: some print
-  # useful version or help text but still return a non-zero status.  Finding
-  # the configured executable is the mandatory preflight; version output is
-  # diagnostic only.
   trnascan_version="$("$TRNASCAN_BIN" --version 2>&1 || true)"
-  if [[ -z "$trnascan_version" ]]; then
-    "$TRNASCAN_BIN" -h >/dev/null 2>&1 || true
-  fi
-
+  if [[ -z "$trnascan_version" ]]; then "$TRNASCAN_BIN" -h >/dev/null 2>&1 || true; fi
   echo "[qc_preprocessing] CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-}" >&2
   echo "[qc_preprocessing] CONDA_PREFIX=${CONDA_PREFIX}" >&2
   echo "[qc_preprocessing] tRNAscan-SE executable=${trnascan_executable}" >&2
@@ -520,14 +503,12 @@ run_build_primate_codon_table() {
     if command -v module >/dev/null 2>&1; then
       module load "${BIOPYTHON_MODULE}"
     elif [[ -f /etc/profile.d/modules.sh ]]; then
-      # module is commonly initialized only for login shells on HPC systems.
       source /etc/profile.d/modules.sh
       module load "${BIOPYTHON_MODULE}"
     else
       echo "WARNING: BIOPYTHON_USE_MODULE=1 but module command is unavailable." >&2
     fi
   fi
-
   if ! "$BASE_PYTHON" - <<'PY'
 from Bio import Entrez, SeqIO
 print("Biopython import OK")
@@ -538,21 +519,12 @@ PY
     echo "Please check the HPC module name or set BIOPYTHON_USE_MODULE=0 if using a Python environment that already has Biopython." >&2
     exit 1
   fi
-
   local cmd=("$BASE_PYTHON" "$CODON_TABLE_SCRIPT" --config "$CONFIG")
   [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
   local workers="${CODON_TABLE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
-  if [[ "$workers" =~ ^[1-9][0-9]*$ ]]; then
-    cmd+=(--workers "$workers")
-  else
-    echo "WARNING: ignoring invalid CODON_TABLE_WORKERS value: ${workers}" >&2
-  fi
+  if [[ "$workers" =~ ^[1-9][0-9]*$ ]]; then cmd+=(--workers "$workers"); else echo "WARNING: ignoring invalid CODON_TABLE_WORKERS value: ${workers}" >&2; fi
   if [[ -n "${CODON_TABLE_DOWNLOAD_WORKERS:-}" ]]; then
-    if [[ "${CODON_TABLE_DOWNLOAD_WORKERS}" =~ ^[1-9][0-9]*$ ]]; then
-      cmd+=(--download-workers "${CODON_TABLE_DOWNLOAD_WORKERS}")
-    else
-      echo "WARNING: ignoring invalid CODON_TABLE_DOWNLOAD_WORKERS value: ${CODON_TABLE_DOWNLOAD_WORKERS}" >&2
-    fi
+    if [[ "${CODON_TABLE_DOWNLOAD_WORKERS}" =~ ^[1-9][0-9]*$ ]]; then cmd+=(--download-workers "${CODON_TABLE_DOWNLOAD_WORKERS}"); else echo "WARNING: ignoring invalid CODON_TABLE_DOWNLOAD_WORKERS value: ${CODON_TABLE_DOWNLOAD_WORKERS}" >&2; fi
   fi
   "${cmd[@]}"
 }
@@ -577,16 +549,14 @@ run_annotation() {
   "${cmd[@]}"
 }
 
+if ! runtime_sample_eligible; then
+  exit 0
+fi
+
 case "$STEP" in
-  collect_variant_calling_results)
-    run_collect_variant_calling_results
-    ;;
-  discover_global_anchor)
-    run_discover_global_anchor
-    ;;
-  coordinate_liftover)
-    run_coordinate_liftover
-    ;;
+  collect_variant_calling_results) run_collect_variant_calling_results ;;
+  discover_global_anchor) run_discover_global_anchor ;;
+  coordinate_liftover) run_coordinate_liftover ;;
   interspecies_contamination) "$BASE_PYTHON" "$INTERSPECIES_SCRIPT" --config "$CONFIG" ;;
   human_contamination) "$BASE_PYTHON" "$HUMAN_CONTAMINATION_SCRIPT" --config "$CONFIG" ;;
   build_primate_homo_background) "$BASE_PYTHON" "$PRIMATE_BACKGROUND_SCRIPT" --config "$CONFIG" ;;
