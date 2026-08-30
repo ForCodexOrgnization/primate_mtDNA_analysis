@@ -7,8 +7,8 @@ from qc_analysis.lib.simple_yaml import read_simple_yaml
 from qc_analysis.lib.reference_utils import normalized_fasta_sequence_sha256
 
 SAMPLE_STEPS = {"coordinate_liftover", "codon_match", "trna_match", "rrna_match"}
-DEFERRED_INPUT_STEPS = {"codon_match", "trna_match", "rrna_match"}
-WORKFLOW_REVALIDATE_STEPS = {"codon_match", "trna_match", "rrna_match"}
+DEFERRED_INPUT_STEPS = set(SAMPLE_STEPS)
+WORKFLOW_REVALIDATE_STEPS = set(SAMPLE_STEPS)
 GLOBAL_STEPS = {"collect_variant_calling_results", "discover_global_anchor", "build_primate_codon_table",
  "compare_genbank_mitos2", "mitos2_prepare_tasks", "mitos2_merge", "codon_match_validate",
  "codon_match_merge", "build_trna_indexes", "trna_match_merge", "trna_gene_qc", "rrna_match_merge", "build_primate_homo_background",
@@ -143,19 +143,14 @@ def paths_for(step,s,cfg,defer_input=False):
     elif step=='trna_match':
         a=Path(p['input_vcf_dir'])/st['input_vcf_pattern'].format(sample=s);b=Path(p['fallback_input_vcf_dir'])/st['fallback_input_vcf_pattern'].format(sample=s);inp=a if defer_input or a.exists() else b;tag='MTTRNA'
     else:
-        choices=[
-            Path(p['input_vcf_dir'])/st['input_vcf_pattern'].format(sample=s),
-            Path(p.get('fallback_trna_vcf_dir',p['input_vcf_dir']))/st.get('fallback_trna_vcf_pattern','{sample}.lifted.trna.vcf').format(sample=s),
-            Path(p['fallback_codon_vcf_dir'])/st['fallback_codon_vcf_pattern'].format(sample=s),
-            Path(p['fallback_raw_vcf_dir'])/st['fallback_raw_vcf_pattern'].format(sample=s),
-        ]
+        choices=[Path(p['input_vcf_dir'])/st['input_vcf_pattern'].format(sample=s),Path(p.get('fallback_trna_vcf_dir',p['input_vcf_dir']))/st.get('fallback_trna_vcf_pattern','{sample}.lifted.trna.vcf').format(sample=s),Path(p['fallback_codon_vcf_dir'])/st['fallback_codon_vcf_pattern'].format(sample=s),Path(p['fallback_raw_vcf_dir'])/st['fallback_raw_vcf_pattern'].format(sample=s)]
         inp=choices[0] if defer_input else next((x for x in choices if x.exists()),choices[0]);tag='MTRRNA'
     folder={'codon_match':'vcf_codon','trna_match':'vcf_trna','rrna_match':'vcf_rrna'}[step]
     suffix=st['output_suffix'] if step!='trna_match' or str(inp).startswith(str(p['input_vcf_dir'])) else '.lifted.trna.vcf'
     return str(inp),str(Path(p['output_dir'])/folder/f'{s}{suffix}'),tag
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('step');ap.add_argument('config');ap.add_argument('--sample');ap.add_argument('--outdir');ap.add_argument('--force',action='store_true');ap.add_argument('--retry',action='store_true');ap.add_argument('--resolve-paths',action='store_true');ap.add_argument('--workflow-run',action='store_true',help='Plan all current downstream samples so workers can revalidate stale outputs at runtime')
+    ap=argparse.ArgumentParser();ap.add_argument('step');ap.add_argument('config');ap.add_argument('--sample');ap.add_argument('--outdir');ap.add_argument('--force',action='store_true');ap.add_argument('--retry',action='store_true');ap.add_argument('--resolve-paths',action='store_true');ap.add_argument('--workflow-run',action='store_true')
     a=ap.parse_args();cfg=read_simple_yaml(Path(a.config));step=a.step;runtime=resolve_runtime_paths(step,cfg)
     if a.resolve_paths:
         print(f'OUTPUT_DIR={runtime["output_dir"]}');print(f'JOB_ARRAY_DIR={runtime["job_array_dir"]}');print(f'LOG_DIR={runtime["log_dir"]}');return
@@ -175,14 +170,13 @@ def main():
         if step in SAMPLE_STEPS:inp,out,tag=paths_for(step,item,cfg,defer_input=defer_inputs)
         input_missing=bool(inp and not Path(inp).exists())
         if input_missing:missing+=1
-        if input_missing and not defer_inputs:continue
         complete=bool(out and valid_vcf(out,tag))
         if out and Path(out).exists() and not complete:invalid+=1
         if complete:done+=1
-        workflow_revalidate=a.workflow_run and step in WORKFLOW_REVALIDATE_STEPS
+        workflow_revalidate=step in WORKFLOW_REVALIDATE_STEPS
         include=workflow_revalidate or ((not complete or a.force) if not a.retry else (not complete))
         if include:
-            status='workflow_revalidate' if workflow_revalidate else 'force_rerun' if complete else 'pending_input' if input_missing else 'pending'
+            status='runtime_revalidate' if workflow_revalidate else 'force_rerun' if complete else 'pending_input' if input_missing else 'pending'
             rows.append((item,inp,out,status))
     outdir=Path(a.outdir or runtime['job_array_dir']);outdir.mkdir(parents=True,exist_ok=True);stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ');purpose='.retry' if a.retry else ''
     task=outdir/f'{step}.{stamp}{purpose}.tasks.txt';manifest=outdir/f'{step}.{stamp}{purpose}.manifest.tsv'
