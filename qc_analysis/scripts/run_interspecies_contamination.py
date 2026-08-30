@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report cohort-level cross-species contamination from lifted mtDNA VCFs."""
+"""Report cohort-level cross-species contamination from current lifted mtDNA VCFs."""
 from __future__ import annotations
 
 import argparse
@@ -59,6 +59,21 @@ def read_metadata(path: Path, sample_col: str, species_col: str) -> dict[str, st
         return result
 
 
+def collection_ok_samples(cfg: dict) -> set[str]:
+    collect = cfg.get("collect_variant_calling") or {}
+    report = resolve(collect.get("outdir", "results/qc/collected_variant_calling_results")) / "reports/variant_calling_collection_summary.tsv"
+    if not report.is_file():
+        raise ValueError(f"current collection summary is required for interspecies QC: {report}")
+    result = set()
+    with report.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            sample = (row.get("sample") or row.get("Sample") or "").strip()
+            status = (row.get("status") or row.get("collection_status") or "").strip()
+            if sample and status == "OK":
+                result.add(sample)
+    return result
+
+
 def discover(directory: Path, pattern: str) -> dict[str, Path]:
     if "{sample}" not in pattern:
         raise ValueError("input_vcf_pattern must contain {sample}")
@@ -108,7 +123,8 @@ def main() -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
-    sec = read_simple_yaml(args.config).get("interspecies_contamination") or {}
+    cfg = read_simple_yaml(args.config)
+    sec = cfg.get("interspecies_contamination") or {}
     if sec.get("enabled", True) is False:
         print("[interspecies_contamination] disabled; skipping.")
         return 0
@@ -119,14 +135,16 @@ def main() -> int:
     output = output_dir / "reports/interspecies_contamination_report.tsv"
     if output.exists():
         print(f"[interspecies_contamination] replacing existing report: {output}", file=sys.stderr)
-    vcfs = discover(vcf_dir, str(paths.get("input_vcf_pattern", "{sample}.lifted.raw.vcf")))
-    if not vcfs:
-        raise ValueError(f"no post-liftover VCFs found in {vcf_dir}")
     metadata = read_metadata(metadata_path, str(paths.get("metadata_sample_column", "sample")),
                              str(paths.get("metadata_species_column", "species")))
-    missing = sorted(set(vcfs) - set(metadata))
-    if missing:
-        raise ValueError("lifted VCF samples missing species metadata: " + ", ".join(missing))
+    current_ok = collection_ok_samples(cfg)
+    discovered = discover(vcf_dir, str(paths.get("input_vcf_pattern", "{sample}.lifted.raw.vcf")))
+    ignored = sorted(set(discovered) - (set(metadata) & current_ok))
+    if ignored:
+        print("[interspecies_contamination] ignoring stale/non-current lifted VCFs: " + ", ".join(ignored[:20]), file=sys.stderr)
+    vcfs = {sample:path for sample,path in discovered.items() if sample in metadata and sample in current_ok}
+    if not vcfs:
+        raise ValueError(f"no current collection-OK post-liftover VCFs found in {vcf_dir}")
     dp_min = float(settings.get("dp_min", 100)); low_min = float(settings.get("low_vaf_min", .01))
     low_max = float(settings.get("low_vaf_max", .20)); high_min = float(settings.get("high_vaf_min", .99))
     min_overlap = int(settings.get("min_overlap", 3)); min_fraction = float(settings.get("min_overlap_fraction", .5))
