@@ -3,13 +3,14 @@
 
 The submit-time manifest deliberately plans from current sample/reference inventory,
 not from possibly stale downstream maps.  This helper applies the latest runtime
-maps and inputs, and removes managed outputs for samples that are no longer
-eligible so stale annotations cannot leak into later fallback stages.
+maps and inputs and removes the scheduled sample's prior managed outputs before
+recomputation, preventing stale annotations from leaking into fallback stages.
 """
 from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 from pathlib import Path
 
@@ -38,11 +39,7 @@ def table_samples(path: object) -> set[str]:
     headered = any(name in header for name in names)
     column = next((header.index(name) for name in names if name in header), 0)
     start = 1 if headered else 0
-    return {
-        row[column].strip()
-        for row in rows[start:]
-        if len(row) > column and row[column].strip()
-    }
+    return {row[column].strip() for row in rows[start:] if len(row) > column and row[column].strip()}
 
 
 def exists(path: Path) -> bool:
@@ -87,55 +84,60 @@ def cleanup(step: str, sample: str, cfg: dict) -> list[str]:
     return removed
 
 
+def rrna_inputs(sample: str, cfg: dict) -> tuple[Path, Path, Path, Path]:
+    section = cfg.get("rrna_match") or {}; paths, settings = section.get("paths") or {}, section.get("settings") or {}
+    primary = formatted(paths.get("input_vcf_dir", ""), settings.get("input_vcf_pattern", "{sample}.lifted.codon.trna.vcf"), sample)
+    trna = formatted(paths.get("fallback_trna_vcf_dir", paths.get("input_vcf_dir", "")), settings.get("fallback_trna_vcf_pattern", "{sample}.lifted.trna.vcf"), sample)
+    codon = formatted(paths.get("fallback_codon_vcf_dir", ""), settings.get("fallback_codon_vcf_pattern", "{sample}.lifted.codon.vcf"), sample)
+    raw = formatted(paths.get("fallback_raw_vcf_dir", ""), settings.get("fallback_raw_vcf_pattern", "{sample}.lifted.raw.vcf"), sample)
+    return primary, trna, codon, raw
+
+
+def prepare_rrna_trna_alias(sample: str, cfg: dict) -> str:
+    """Expose raw-fallback tRNA output under the historical rRNA primary name."""
+    primary, trna, _codon, _raw = rrna_inputs(sample, cfg)
+    if exists(primary) or not exists(trna):
+        return ""
+    primary.parent.mkdir(parents=True, exist_ok=True)
+    target = trna.resolve()
+    try:
+        os.symlink(target, primary)
+    except FileExistsError:
+        pass
+    return str(primary)
+
+
 def decision(step: str, sample: str, cfg: dict) -> tuple[bool, str]:
     if step == "coordinate_liftover":
         return True, "liftover_handles_missing_inputs"
 
     if step == "codon_match":
-        section = cfg.get("codon_match") or {}
-        paths, settings = section.get("paths") or {}, section.get("settings") or {}
+        section = cfg.get("codon_match") or {}; paths, settings = section.get("paths") or {}, section.get("settings") or {}
         mapping = paths.get("sample_reference_map")
-        if not mapping or not resolve(mapping).is_file():
-            return False, "production_codon_map_not_available"
-        if sample not in table_samples(mapping):
-            return False, "sample_not_in_pass_production_codon_map"
+        if not mapping or not resolve(mapping).is_file(): return False, "production_codon_map_not_available"
+        if sample not in table_samples(mapping): return False, "sample_not_in_pass_production_codon_map"
         inp = formatted(paths.get("input_vcf_dir", ""), settings.get("input_vcf_pattern", "{sample}.lifted.raw.vcf"), sample)
-        if not exists(inp):
-            return False, "liftover_vcf_not_available"
+        if not exists(inp): return False, "liftover_vcf_not_available"
         return True, "eligible"
 
     if step == "trna_match":
-        section = cfg.get("trna_match") or {}
-        paths, settings = section.get("paths") or {}, section.get("settings") or {}
+        section = cfg.get("trna_match") or {}; paths, settings = section.get("paths") or {}, section.get("settings") or {}
         mapping = paths.get("sample_reference_map")
         if mapping:
-            if not resolve(mapping).is_file():
-                return False, "trna_reference_map_not_available"
-            if sample not in table_samples(mapping):
-                return False, "sample_not_in_trna_reference_map"
+            if not resolve(mapping).is_file(): return False, "trna_reference_map_not_available"
+            if sample not in table_samples(mapping): return False, "sample_not_in_trna_reference_map"
         primary = formatted(paths.get("input_vcf_dir", ""), settings.get("input_vcf_pattern", "{sample}.lifted.codon.vcf"), sample)
         fallback = formatted(paths.get("fallback_input_vcf_dir", ""), settings.get("fallback_input_vcf_pattern", "{sample}.lifted.raw.vcf"), sample)
-        if not (exists(primary) or exists(fallback)):
-            return False, "no_trna_input_vcf_available"
+        if not (exists(primary) or exists(fallback)): return False, "no_trna_input_vcf_available"
         return True, "eligible"
 
     if step == "rrna_match":
-        section = cfg.get("rrna_match") or {}
-        paths, settings = section.get("paths") or {}, section.get("settings") or {}
+        section = cfg.get("rrna_match") or {}; paths = section.get("paths") or {}
         mapping = paths.get("sample_reference_map")
         if mapping:
-            if not resolve(mapping).is_file():
-                return False, "rrna_reference_map_not_available"
-            if sample not in table_samples(mapping):
-                return False, "sample_not_in_rrna_reference_map"
-        choices = [
-            formatted(paths.get("input_vcf_dir", ""), settings.get("input_vcf_pattern", "{sample}.lifted.codon.trna.vcf"), sample),
-            formatted(paths.get("fallback_trna_vcf_dir", paths.get("input_vcf_dir", "")), settings.get("fallback_trna_vcf_pattern", "{sample}.lifted.trna.vcf"), sample),
-            formatted(paths.get("fallback_codon_vcf_dir", ""), settings.get("fallback_codon_vcf_pattern", "{sample}.lifted.codon.vcf"), sample),
-            formatted(paths.get("fallback_raw_vcf_dir", ""), settings.get("fallback_raw_vcf_pattern", "{sample}.lifted.raw.vcf"), sample),
-        ]
-        if not any(exists(path) for path in choices):
-            return False, "no_rrna_input_vcf_available"
+            if not resolve(mapping).is_file(): return False, "rrna_reference_map_not_available"
+            if sample not in table_samples(mapping): return False, "sample_not_in_rrna_reference_map"
+        if not any(exists(path) for path in rrna_inputs(sample, cfg)): return False, "no_rrna_input_vcf_available"
         return True, "eligible"
 
     return True, "not_runtime_filtered"
@@ -146,13 +148,14 @@ def main() -> int:
     parser.add_argument("step", choices=("coordinate_liftover", "codon_match", "trna_match", "rrna_match"))
     parser.add_argument("sample")
     parser.add_argument("config", type=Path)
-    args = parser.parse_args()
-    cfg = read_simple_yaml(args.config)
+    args = parser.parse_args(); cfg = read_simple_yaml(args.config)
     eligible, reason = decision(args.step, args.sample, cfg)
-    removed = [] if eligible else cleanup(args.step, args.sample, cfg)
+    removed = cleanup(args.step, args.sample, cfg) if args.step in {"codon_match", "trna_match", "rrna_match"} else []
+    alias = prepare_rrna_trna_alias(args.sample, cfg) if eligible and args.step == "rrna_match" else ""
     print(f"ELIGIBLE={1 if eligible else 0}")
     print(f"REASON={reason}")
     print("CLEANED=" + ";".join(removed))
+    print(f"PREPARED_INPUT_ALIAS={alias}")
     return 0
 
 
