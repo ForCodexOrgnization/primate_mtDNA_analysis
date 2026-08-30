@@ -22,7 +22,7 @@ Steps:
   coordinate_liftover              Run coordinate liftover only.
   interspecies_contamination       Report cross-species contamination in lifted alleles.
   build_primate_homo_background   Consolidate orthology QC and build temporary homoplasmic background.
-  human_contamination              Screen annotated human-coordinate alleles with primate background correction.
+  human_contamination              Screen annotated human-coordinate alleles with primate background correction (standalone; temporarily excluded from all).
   build_primate_codon_table        Build the optional independent GenBank benchmark (not production).
   mitos2_prepare_tasks              Write one Slurm-array task per target-species chrM FASTA.
   mitos2_merge                      Merge completed per-reference MITOS2 raw outputs.
@@ -37,7 +37,7 @@ Steps:
   rrna_match                       Annotate VCFs with rRNA matching.
   rrna_match_merge                 Atomically merge per-sample rRNA summaries.
   final_filter                     Combine QC reports and materialize final filtered files.
-  all                              Run all preprocessing and downstream annotation steps.
+  all                              Run production preprocessing/annotation steps, currently excluding human_contamination.
 
 Run modes:
   --submit                         Submit this wrapper to Slurm from a login/frontend node.
@@ -210,7 +210,7 @@ submit_array() {
  printf 'step\tjob_id\ttask_file\tmanifest\tlog_dir\tarray\tsubmitted_at\n%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$step" "$LAST_JOB_ID" "$TASK_FILE" "${MANIFEST:-}" "$logs" "$array" "$submitted_at" >"$submission"
 }
 submit_workflow() {
- local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination sample_variant_filtering discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background human_contamination final_filter)
+ local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination sample_variant_filtering discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
  for s in "${steps[@]}"; do
    # Automatic merges are explicit graph nodes here, never also submitted by producers.
    TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
@@ -624,7 +624,8 @@ case "$STEP" in
     run_annotation rrna_match "$RRNA_SCRIPT"
     "$BASE_PYTHON" "$RRNA_MERGE_SCRIPT" --config "$CONFIG"
     "$BASE_PYTHON" "$PRIMATE_BACKGROUND_SCRIPT" --config "$CONFIG"
-    "$BASE_PYTHON" "$HUMAN_CONTAMINATION_SCRIPT" --config "$CONFIG"
+    # Human contamination is intentionally paused. Keep the standalone
+    # human_contamination step above so it can be run explicitly when resumed.
     "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG"
     ;;
 esac
