@@ -115,3 +115,21 @@ def test_codon_clean_start_keeps_future_input_for_runtime_revalidation(tmp_path)
     assert rows[0]["status_at_submission"] == "runtime_revalidate"
     assert rows[0]["expected_input"].endswith("S1.lifted.raw.vcf")
     assert "missing inputs 1" in stderr
+
+
+def test_headerless_sample_ref_keeps_trna_and_rrna_future_inputs(tmp_path):
+    config = write_minimal_config(tmp_path)
+    sample_ref = tmp_path / "sample_ref.tsv"
+    sample_ref.write_text("S1\tSpecies_one\n")
+
+    for step, suffix in (
+        ("trna_match", "S1.lifted.codon.vcf"),
+        ("rrna_match", "S1.lifted.codon.trna.vcf"),
+    ):
+        task_file, manifest_file, stderr = run_manifest(step, config)
+        assert task_file.read_text().splitlines() == ["S1"]
+        with manifest_file.open(newline="") as handle:
+            rows = list(csv.DictReader(handle, delimiter="\t"))
+        assert rows[0]["status_at_submission"] == "runtime_revalidate"
+        assert rows[0]["expected_input"].endswith(suffix)
+        assert "missing inputs 1" in stderr
