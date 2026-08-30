@@ -170,9 +170,6 @@ def main():
         print(f'OUTPUT_DIR={runtime["output_dir"]}');print(f'JOB_ARRAY_DIR={runtime["job_array_dir"]}');print(f'LOG_DIR={runtime["log_dir"]}');return
     if a.sample and step in SAMPLE_STEPS:
         mapped=candidate_samples(step,cfg)
-        # Explicit single-sample submission remains useful for dry-runs, retries,
-        # and diagnosis even when no submit-time inventory exists. If an inventory
-        # does exist, keep using it to catch an explicitly unmapped sample early.
         candidates=[a.sample] if not mapped or a.sample in mapped else []
     elif step in GLOBAL_STEPS:candidates=[step]
     elif step=='mitos2_annotation':candidates=mitos2_reference_candidates(cfg)
@@ -182,12 +179,15 @@ def main():
     if step in SAMPLE_STEPS and not candidates:
         detail=f' for requested sample {a.sample!r}' if a.sample else ''
         raise SystemExit(f'ERROR: no candidate samples for {step}{detail}; check sample/reference metadata and reference inventory')
-    rows=[];done=missing=invalid=0;defer_inputs=step in DEFERRED_INPUT_STEPS
+    rows=[];done=missing=invalid=0
+    static_inventory=bool(resolved_static_samples(cfg)) if step in {'codon_match','trna_match','rrna_match'} else False
+    defer_inputs=(step=='coordinate_liftover' or step=='codon_match' or (step in {'trna_match','rrna_match'} and static_inventory))
     for item in candidates:
         inp=out=tag=''
         if step in SAMPLE_STEPS:inp,out,tag=paths_for(step,item,cfg,defer_input=defer_inputs)
         input_missing=bool(inp and not Path(inp).exists())
         if input_missing:missing+=1
+        if input_missing and not defer_inputs:continue
         complete=bool(out and valid_vcf(out,tag))
         if out and Path(out).exists() and not complete:invalid+=1
         if complete:done+=1
