@@ -23,7 +23,7 @@ from qc_analysis.lib.simple_yaml import read_simple_yaml
 SAMPLE_COLUMNS = "sample species intraspecies_status human_contamination_status interspecies_status sample_level_qc_status final_sample_status final_sample_fail_reasons final_sample_warnings vcf_source".split()
 VARIANT_COLUMNS = (
     "sample species human_chrom human_pos human_ref human_alt source_chrom source_pos source_ref source_alt "
-    "AF DP vcf_filter variant_class call_class snv_type mt_median_coverage Percent_100 nuclear_median_coverage mtcn_median MAD "
+    "AF DP source_af source_dp source_call_class target_af liftover_allele_status vcf_filter variant_class call_class snv_type mt_median_coverage Percent_100 nuclear_median_coverage mtcn_median MAD "
     "sample_level_qc_status sample_failed_criteria intraspecies_status human_contamination_status interspecies_status "
     "region_type orthology_match_status orthology_fail_reason codon_match_status trna_match_status rrna_match_status "
     "final_variant_status final_variant_fail_reasons original_chrom original_pos original_ref original_alt liftover_status sample_variant_qc_status match_status"
@@ -409,6 +409,7 @@ def main():
             raise ValueError(f"required report {report} is missing samples: {', '.join(absent)}")
 
     reset_managed_outputs(out)
+    eligible_source_classes = {str(x).upper() for x in names(sec.get("biological_call_classes", ["HET", "HOM"]))}
 
     fail_cfg = sec.get("sample_fail_status") or {}
     fail_defaults = {
@@ -516,6 +517,14 @@ def main():
                             if vcf_filter != "PASS":
                                 why.append("vcf_filter:" + vcf_filter)
                             info, af, dp = variant_evidence(f)
+                            source_af = number(info.get("SOURCE_AF"))
+                            source_dp = number(info.get("SOURCE_DP"))
+                            source_call_class = info_value(info, "SOURCE_CALL_CLASS")
+                            # Annotated VCFs use SOURCE_CALL_CLASS as authority.
+                            # Legacy lifted VCFs retain the historical AF fallback.
+                            authoritative_class = source_call_class if source_call_class != "NOT_AVAILABLE" else call_class(af)
+                            if source_call_class != "NOT_AVAILABLE" and source_call_class.upper() not in eligible_source_classes:
+                                why.append("source_call_class:" + source_call_class)
                             variant_class, snv_type = variant_classes(f[3], f[4])
                             ref, alt = f[3].upper(), f[4].upper()
                             is_canonical_snv = len(ref) == len(alt) == 1 and ref in "ACGT" and alt in "ACGT" and "," not in alt
@@ -525,10 +534,10 @@ def main():
                             context = sample_context[sample]
                             qc = sample_qc_rows.get(sample, {})
                             annotation = variant_annotations.get(key, {})
-                            source_chrom = info_value(info, "SRC_CHROM", "MTLIFT_ORIG_CHROM")
-                            source_pos = info_value(info, "SRC_POS", "MTLIFT_ORIG_POS")
-                            source_ref = info_value(info, "SRC_REF", "MTLIFT_ORIG_REF")
-                            source_alt = info_value(info, "SRC_ALT", "MTLIFT_ORIG_ALT")
+                            source_chrom = info_value(info, "SOURCE_CHROM", "SRC_CHROM", "MTLIFT_ORIG_CHROM")
+                            source_pos = info_value(info, "SOURCE_POS", "SRC_POS", "MTLIFT_ORIG_POS")
+                            source_ref = info_value(info, "SOURCE_REF", "SRC_REF", "MTLIFT_ORIG_REF")
+                            source_alt = info_value(info, "SOURCE_ALT", "SRC_ALT", "MTLIFT_ORIG_ALT")
                             orthology_status = annotation.get("orthology_match_status", "NOT_AVAILABLE")
                             variant_writer.writerow(
                                 dict(
@@ -544,9 +553,14 @@ def main():
                                     source_alt=source_alt,
                                     AF=af if af is not None else "NA",
                                     DP=dp if dp is not None else "NA",
+                                    source_af=source_af if source_af is not None else "NA",
+                                    source_dp=source_dp if source_dp is not None else "NA",
+                                    source_call_class=source_call_class,
+                                    target_af=af if af is not None else "NA",
+                                    liftover_allele_status=info_value(info, "LIFTOVER_ALLELE_STATUS"),
                                     vcf_filter=vcf_filter,
                                     variant_class=variant_class,
-                                    call_class=call_class(af),
+                                    call_class=authoritative_class,
                                     snv_type=snv_type,
                                     mt_median_coverage=pick(qc, ["mt_median_coverage"]),
                                     Percent_100=pick(qc, ["Percent_100"]),

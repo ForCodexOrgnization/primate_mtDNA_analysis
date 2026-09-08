@@ -18,6 +18,8 @@ Steps:
   collect_variant_calling_results  Collect and standardize variant-calling outputs only.
   intraspecies_contamination       Write original-coordinate sample contamination QC report.
   sample_variant_filtering         Write the five-criterion biological sample QC report.
+  pre_liftover_variant_qc          Annotate native VCFs with immutable source-call QC.
+  local_heteroplasmy_qc            Report native-coordinate local HET clustering.
   discover_global_anchor           Discover reference-level global MSA anchors only.
   coordinate_liftover              Run coordinate liftover only.
   interspecies_contamination       Report cross-species contamination in lifted alleles.
@@ -128,12 +130,12 @@ done
 [[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
 STEP="$1"; CONFIG="${2:-config/qc_preprocessing.yaml}"
 case "$STEP" in
- collect_variant_calling_results|discover_global_anchor|coordinate_liftover|interspecies_contamination|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|rrna_match_merge|intraspecies_contamination|sample_variant_filtering|final_filter|all) ;;
+ collect_variant_calling_results|pre_liftover_variant_qc|local_heteroplasmy_qc|discover_global_anchor|coordinate_liftover|interspecies_contamination|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|rrna_match_merge|intraspecies_contamination|sample_variant_filtering|final_filter|all) ;;
  -h|--help|help) usage; exit 0;; *) echo "ERROR: unknown step: $STEP" >&2; exit 2;; esac
 [[ -s "$CONFIG" ]] || { echo "ERROR: missing or empty config file: $CONFIG" >&2; exit 1; }
 export SAMPLE
 
-classify_step() { case "$1" in coordinate_liftover|codon_match|trna_match|rrna_match) echo sample;; mitos2_annotation) echo reference;; *) echo singleton;; esac; }
+classify_step() { case "$1" in pre_liftover_variant_qc|coordinate_liftover|codon_match|trna_match|rrna_match) echo sample;; mitos2_annotation) echo reference;; *) echo singleton;; esac; }
 build_array_expression() { local n="$1" kind="$2"; if [[ "$kind" == singleton || "$n" == 1 ]]; then echo 1-1; else echo "1-${n}%${ARRAY_CONCURRENCY}"; fi; }
 trna_setting() {
  awk -v key="$1" '
@@ -212,7 +214,7 @@ submit_array() {
  printf 'step\tjob_id\ttask_file\tmanifest\tlog_dir\tarray\tsubmitted_at\n%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$step" "$LAST_JOB_ID" "$TASK_FILE" "${MANIFEST:-}" "$logs" "$array" "$submitted_at" >"$submission"
 }
 submit_workflow() {
- local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results intraspecies_contamination sample_variant_filtering discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
+ local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results sample_variant_filtering pre_liftover_variant_qc intraspecies_contamination local_heteroplasmy_qc discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
  for s in "${steps[@]}"; do
    TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
  done
@@ -247,6 +249,8 @@ RRNA_MERGE_SCRIPT="qc_analysis/scripts/merge_rrna_match_summaries.py"
 INTRASPECIES_SCRIPT="qc_analysis/scripts/run_intraspecies_contamination.py"
 FINAL_FILTER_SCRIPT="qc_analysis/scripts/run_final_filter.py"
 SAMPLE_FILTER_SCRIPT="qc_analysis/scripts/run_sample_variant_filtering.py"
+PRE_LIFTOVER_QC_SCRIPT="qc_analysis/scripts/run_pre_liftover_variant_qc.py"
+LOCAL_HET_QC_SCRIPT="qc_analysis/scripts/run_local_heteroplasmy_qc.py"
 GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
 HUMAN_CONTAMINATION_SCRIPT="qc_analysis/scripts/run_human_contamination.py"
 PRIMATE_BACKGROUND_SCRIPT="qc_analysis/scripts/build_primate_homo_background.py"
@@ -576,11 +580,15 @@ case "$STEP" in
   rrna_match_merge) "$BASE_PYTHON" "$RRNA_MERGE_SCRIPT" --config "$CONFIG" ;;
   intraspecies_contamination) "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG" ;;
   sample_variant_filtering) "$BASE_PYTHON" "$SAMPLE_FILTER_SCRIPT" --config "$CONFIG" ;;
+  pre_liftover_variant_qc) "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" --config "$CONFIG" ${SAMPLE:+--sample "$SAMPLE"} ;;
+  local_heteroplasmy_qc) "$BASE_PYTHON" "$LOCAL_HET_QC_SCRIPT" --config "$CONFIG" ;;
   final_filter) "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG" ;;
   all)
     run_collect_variant_calling_results
-    "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG"
     "$BASE_PYTHON" "$SAMPLE_FILTER_SCRIPT" --config "$CONFIG"
+    "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" --config "$CONFIG"
+    "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG"
+    "$BASE_PYTHON" "$LOCAL_HET_QC_SCRIPT" --config "$CONFIG"
     run_discover_global_anchor
     run_coordinate_liftover
     "$BASE_PYTHON" "$INTERSPECIES_SCRIPT" --config "$CONFIG"

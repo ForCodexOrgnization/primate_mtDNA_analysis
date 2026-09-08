@@ -46,6 +46,31 @@ sample_variant_filtering:
     mtcn_min: 40
     mad_max: 0.5
 
+# Non-destructive native-coordinate variant classification. SOURCE_* values
+# remain fixed even when liftover reverses REF/ALT and target FORMAT/AF.
+pre_liftover_variant_qc:
+  enabled: true
+  input_vcf_dir: results/qc/collected_variant_calling_results/collected_vcf
+  output_dir: results/qc/pre_liftover_variant_qc
+  dp_min: 100
+  pass_only: true
+  snv_only: true
+  heteroplasmy_af_min: 0.10
+  homoplasmy_af_min: 0.95
+
+# Report only: native-coordinate circular-window clustering, not a NUMT call.
+local_heteroplasmy_qc:
+  enabled: true
+  source_report: results/qc/pre_liftover_variant_qc/reports/source_variant_qc.tsv
+  output_dir: results/qc/local_heteroplasmy_qc
+  dp_min: 100
+  min_het_variants: 11
+  window_bp: 250
+  mt_length: 16569
+  simulations: 2000
+  empirical_p_max: 0.01
+  random_seed: 1729
+
 # Terminal decision step. Missing optional reports are represented as
 # NOT_AVAILABLE and do not fail a sample; paths can be enabled as they are added.
 final_filter:
@@ -55,6 +80,7 @@ final_filter:
   required_sample_reports: intraspecies,sample_qc
   optional_sample_reports: interspecies
   strict_missing_samples: true
+  biological_call_classes: HET,HOM
   # Priority-ordered exact filenames. Directory-only comma-separated values
   # remain accepted, but are resolved against known exact suffixes (never globs).
   vcf_sources:
@@ -170,8 +196,10 @@ coordinate_liftover:
     # produced by collect_variant_calling.outdir.
     species_fasta_dir: references/variant_calling/Ref_chrM
     species_fasta_extensions: .fa,.fasta,.fna
-    vcf_dir: results/qc/collected_variant_calling_results/collected_vcf
-    vcf_pattern: "{sample}.round2.original_coords.clean.final.split.vcf.gz,{sample}.round2.original_coords.clean.final.split.vcf"
+    # Prefer immutable source-QC annotations; the old collected-VCF paths remain
+    # supported by overriding these two settings.
+    vcf_dir: results/qc/pre_liftover_variant_qc/vcf_source_qc
+    vcf_pattern: "{sample}.source_qc.vcf.gz,{sample}.source_qc.vcf"
     cov_dir: results/qc/collected_variant_calling_results/collected_cov
     cov_pattern: "{sample}.merged.max_depth.per_base_coverage.tsv"
 

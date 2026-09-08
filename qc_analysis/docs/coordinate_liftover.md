@@ -110,3 +110,11 @@ Only temporary MAFFT inputs are masked: every ambiguous symbol (`RYSWKMBDHVN`) b
 Coordinate liftover remains coordinate-only. Its raw lifted VCF handoff files in
 `results/qc/coordinate_liftover/vcf_lifted_raw` are consumed by `codon_match`,
 `tRNA_match`, and `rRNA_match`; maps in `maps` retain source-to-human relationships.
+
+### Source call provenance
+
+Input should normally be the PRE-LIFTOVER source-QC VCF. The Number=1 INFO fields
+`SOURCE_CHROM`, `SOURCE_POS`, `SOURCE_REF`, `SOURCE_ALT`, `SOURCE_AF`, `SOURCE_DP`,
+`SOURCE_CALL_CLASS`, and `SOURCE_VARIANT_QC` are immutable. `FORMAT/AF` remains
+human-target ALT-oriented, including after `ALT_REF_FLIP`; source biological HET/HOM
+classification must never be recomputed from that lifted AF.
