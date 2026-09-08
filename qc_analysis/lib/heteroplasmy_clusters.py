@@ -1,9 +1,9 @@
 """Native-coordinate local heteroplasmy cluster detection.
 
 The implementation intentionally keeps cluster discovery independent from NUMT
-annotation.  It uses a circular mitochondrial coordinate system, an AF-coherent
-250-bp window, sample-specific permutation nulls, greedy independent seed
-selection, and post-hoc cluster expansion.
+annotation. It uses a circular mitochondrial coordinate system, AF-coherent
+windows, sample-specific permutation nulls, greedy independent seed selection,
+and post-hoc cluster expansion.
 """
 from __future__ import annotations
 
@@ -31,37 +31,50 @@ def circular_distance(a: int, b: int, length: int) -> int:
 
 def _window_members(positions: Sequence[int], anchor: int, length: int, window: int) -> list[int]:
     """Indices lying within a forward circular window [anchor, anchor + window]."""
-    out = []
-    for i, pos in enumerate(positions):
-        if (pos - anchor) % length <= window:
-            out.append(i)
+    return [i for i, pos in enumerate(positions) if (pos - anchor) % length <= window]
+
+
+def _af_coherent_subsets(
+    indices: Sequence[int],
+    afs: Sequence[float],
+    max_span: float,
+    minimum: int = 1,
+) -> list[tuple[int, ...]]:
+    """Enumerate maximal AF-sorted windows satisfying the AF-span constraint."""
+    if not indices:
+        return []
+    ordered = sorted(indices, key=lambda i: (afs[i], i))
+    out: list[tuple[int, ...]] = []
+    seen: set[tuple[int, ...]] = set()
+    right = 0
+    for left in range(len(ordered)):
+        right = max(right, left)
+        while right + 1 < len(ordered) and afs[ordered[right + 1]] - afs[ordered[left]] <= max_span:
+            right += 1
+        candidate = tuple(sorted(ordered[left : right + 1]))
+        if len(candidate) >= minimum and candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
     return out
 
 
 def _largest_af_coherent(indices: Sequence[int], afs: Sequence[float], max_span: float) -> tuple[int, ...]:
-    if not indices:
+    candidates = _af_coherent_subsets(indices, afs, max_span, minimum=1)
+    if not candidates:
         return ()
-    ordered = sorted(indices, key=lambda i: (afs[i], i))
-    left = 0
-    best: tuple[int, ...] = ()
-    for right in range(len(ordered)):
-        while afs[ordered[right]] - afs[ordered[left]] > max_span:
-            left += 1
-        candidate = tuple(sorted(ordered[left : right + 1]))
-        if len(candidate) > len(best):
-            best = candidate
-    return best
+    return max(candidates, key=lambda x: (len(x), tuple(-i for i in x)))
 
 
 def candidate_seeds(positions: Sequence[int], afs: Sequence[float], cfg: ClusterConfig) -> list[tuple[int, ...]]:
+    """Collect all unique AF-coherent candidates from every circular positional window."""
     seen: set[tuple[int, ...]] = set()
     seeds: list[tuple[int, ...]] = []
     for anchor in positions:
         members = _window_members(positions, anchor, cfg.mt_length, cfg.window_bp)
-        seed = _largest_af_coherent(members, afs, cfg.af_span_max)
-        if len(seed) >= cfg.min_seed_variants and seed not in seen:
-            seen.add(seed)
-            seeds.append(seed)
+        for seed in _af_coherent_subsets(members, afs, cfg.af_span_max, cfg.min_seed_variants):
+            if seed not in seen:
+                seen.add(seed)
+                seeds.append(seed)
     seeds.sort(key=lambda x: (-len(x), min(positions[i] for i in x), x))
     return seeds
 
@@ -138,7 +151,10 @@ def expand_clusters(
             if idx in assigned:
                 continue
             for cluster in expanded:
-                close = any(circular_distance(positions[idx], positions[j], cfg.mt_length) <= cfg.window_bp for j in cluster)
+                close = any(
+                    circular_distance(positions[idx], positions[j], cfg.mt_length) <= cfg.window_bp
+                    for j in cluster
+                )
                 if not close:
                     continue
                 trial = cluster + [idx]
