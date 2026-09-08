@@ -86,7 +86,7 @@ local_heteroplasmy_qc:
   # is imposed here.
   numt_besthit_dir: /nfs/roberts/pi/pi_njl27/lt692/primate_results/numt_besthit
   numt_besthit_pattern: "{sample}.numt_besthit.tsv,{sample}.besthit.tsv,{sample}.tsv"
-  numt_highconf_dir: /nfs/roberts/pi/pi_njl27/lt692/numt_discovery/primate_results_numt_besthit_strict
+  numt_highconf_dir: /nfs/roberts/pi/pi_njl27/lt692/primate_results/numt_besthit
   numt_highconf_pattern: "{sample}.highconf_numt.bed"
 
   # A cluster is regionally NUMT-supported when at least two cluster variants
