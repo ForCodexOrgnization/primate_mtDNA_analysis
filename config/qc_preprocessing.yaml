@@ -84,9 +84,9 @@ local_heteroplasmy_qc:
   # Upstream NUMT discovery outputs. pident/alignment length/read support are
   # retained for reporting and tie-breaking only; no new downstream threshold
   # is imposed here.
-  numt_besthit_dir: /nfs/roberts/pi/pi_njl27/lt692/primate_results/numt_besthit
+  numt_besthit_dir: /vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis/data/numt_besthit
   numt_besthit_pattern: "{sample}.numt_besthit.tsv,{sample}.besthit.tsv,{sample}.tsv"
-  numt_highconf_dir: /nfs/roberts/pi/pi_njl27/lt692/primate_results/numt_besthit
+  numt_highconf_dir: /vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis/data/numt_besthit
   numt_highconf_pattern: "{sample}.highconf_numt.bed"
 
   # A cluster is regionally NUMT-supported when at least two cluster variants
