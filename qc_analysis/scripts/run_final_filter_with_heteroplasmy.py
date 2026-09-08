@@ -3,7 +3,7 @@
 
 The base final_filter remains the owner of sample-level contamination/QC decisions.
 This wrapper then consumes local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv
-and removes exactly those variants by immutable SOURCE_* identity.  NUMT-associated
+and removes exactly those variants by immutable SOURCE_* identity. NUMT-associated
 samples are annotated, not failed wholesale by default.
 """
 from __future__ import annotations
@@ -80,6 +80,15 @@ def append_reason(existing: str, reason: str) -> str:
     return ";".join(parts)
 
 
+def final_vcf_sample_name(path: Path) -> str:
+    name = path.name
+    if ".final.vcf" in name:
+        return name.split(".final.vcf", 1)[0]
+    if ".vcf" in name:
+        return name.split(".vcf", 1)[0]
+    return path.stem
+
+
 def filter_vcf(path: Path, sample: str, removal: dict[tuple, dict]) -> int:
     """Remove SOURCE-keyed variants and regenerate tabix index when possible."""
     opener = gzip.open if path.suffix == ".gz" else open
@@ -124,8 +133,8 @@ def filter_vcf(path: Path, sample: str, removal: dict[tuple, dict]) -> int:
                 tabix = shutil.which("tabix")
                 if not bgzip or not tabix:
                     raise RuntimeError("pysam or bgzip+tabix is required to rewrite final .vcf.gz outputs")
-                compressed = subprocess.check_output([bgzip, "-c", str(plain)])
-                path.write_bytes(compressed)
+                with path.open("wb") as out_handle:
+                    subprocess.run([bgzip, "-c", str(plain)], stdout=out_handle, check=True)
                 subprocess.run([tabix, "-f", "-p", "vcf", str(path)], check=True)
         else:
             shutil.copy2(plain, path)
@@ -162,7 +171,13 @@ def main() -> int:
     removed_report_rows = 0
     if variants:
         base_fields = list(variants[0])
-        extra = ["heteroplasmy_filter_status", "heteroplasmy_filter_reason", "heteroplasmy_cluster_id", "heteroplasmy_numt_scope", "heteroplasmy_numt_tier"]
+        extra = [
+            "heteroplasmy_filter_status",
+            "heteroplasmy_filter_reason",
+            "heteroplasmy_cluster_id",
+            "heteroplasmy_numt_scope",
+            "heteroplasmy_numt_tier",
+        ]
         fields = base_fields + [field for field in extra if field not in base_fields]
         for row in variants:
             hit = removal.get(source_key(row))
@@ -205,7 +220,7 @@ def main() -> int:
     for path in sorted(final_vcf_dir.glob("*.vcf*")):
         if path.name.endswith((".tbi", ".csi")):
             continue
-        sample = path.name.split(".vcf", 1)[0]
+        sample = final_vcf_sample_name(path)
         removed_vcf_records += filter_vcf(path, sample, removal)
 
     summary = [{
@@ -217,7 +232,12 @@ def main() -> int:
     write_tsv_atomic(
         final_dir / "reports" / "heteroplasmy_final_filter_summary.tsv",
         summary,
-        ["blacklisted_source_variants", "final_variant_report_rows_failed_by_heteroplasmy", "final_vcf_records_removed", "numt_samples"],
+        [
+            "blacklisted_source_variants",
+            "final_variant_report_rows_failed_by_heteroplasmy",
+            "final_vcf_records_removed",
+            "numt_samples",
+        ],
     )
     return 0
 
