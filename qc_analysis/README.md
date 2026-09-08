@@ -308,3 +308,25 @@ contamination status and is never a final-output VCF source. Human QC retains
 its historical all-marker screen and reports background and informative subsets;
 the new corrected metrics do not affect classification by default. HaploGrep
 remains supplementary (`quality_required_for_fail: false`).
+
+## Native-coordinate PRE-LIFTOVER QC
+
+The production order is collection, report-only sample QC, `pre_liftover_variant_qc`,
+original-coordinate contamination and `local_heteroplasmy_qc`, anchor discovery and
+coordinate liftover, followed by human-coordinate contamination/functional QC and,
+last, `final_filter`. Native-coordinate QC precedes liftover; cross-species and human-
+coordinate QC follows it; irreversible filtering occurs only after all evidence is
+integrated.
+
+`pre_liftover_variant_qc` writes `vcf_source_qc/{sample}.source_qc.vcf.gz`,
+`reports/source_variant_qc.tsv`, and `reports/source_variant_qc_summary.tsv`.
+`SOURCE_AF` and `SOURCE_CALL_CLASS` describe the original species-reference call.
+Lifted `FORMAT/AF` describes the target human-reference-oriented ALT frequency. A
+REF/ALT flip can therefore change target AF from 0.03 to 0.97, but it never changes
+`SOURCE_CALL_CLASS`. LOW_AF records remain in intermediate VCFs for contamination
+work and are excluded from final biological calls by default.
+
+`local_heteroplasmy_qc` is report-only (not a NUMT classifier) and writes
+`local_heteroplasmy_sample_summary.tsv` and `local_heteroplasmy_variant_detail.tsv`.
+It assesses samples with more than ten eligible source HETs using 2,000 recurrence-
+weighted simulations of a 250-bp circular native-coordinate window.

@@ -775,6 +775,12 @@ def lift_vcf(
                 write_unresolved(unresolved, sample.name, src_chrom, src_pos, ref, alt, target_chrom, str(pos), final_ref, "FINAL_REF_MISMATCH")
                 continue
             info = parse_info(parts[7])
+            # SOURCE_* tags are Number=1 immutable provenance.  In particular,
+            # never derive them from the target-oriented fields after a flip.
+            info.setdefault("SOURCE_CHROM", src_chrom)
+            info.setdefault("SOURCE_POS", src_pos)
+            info.setdefault("SOURCE_REF", ref)
+            info.setdefault("SOURCE_ALT", alt)
             info.update({"SRC_CHROM": src_chrom, "SRC_POS": src_pos, "SRC_REF": ref, "SRC_ALT": alt, "LIFTOVER_ALLELE_STATUS": status})
             parts[0] = target_chrom
             parts[1] = str(pos)

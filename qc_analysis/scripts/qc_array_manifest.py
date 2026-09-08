@@ -6,18 +6,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 from qc_analysis.lib.reference_utils import normalized_fasta_sequence_sha256
 
-SAMPLE_STEPS = {"coordinate_liftover", "codon_match", "trna_match", "rrna_match"}
+SAMPLE_STEPS = {"pre_liftover_variant_qc", "coordinate_liftover", "codon_match", "trna_match", "rrna_match"}
 DEFERRED_INPUT_STEPS = set(SAMPLE_STEPS)
 WORKFLOW_REVALIDATE_STEPS = set(SAMPLE_STEPS)
 GLOBAL_STEPS = {"collect_variant_calling_results", "discover_global_anchor", "build_primate_codon_table",
  "compare_genbank_mitos2", "mitos2_prepare_tasks", "mitos2_merge", "codon_match_validate",
  "codon_match_merge", "build_trna_indexes", "trna_match_merge", "trna_gene_qc", "rrna_match_merge", "build_primate_homo_background",
- "intraspecies_contamination", "sample_variant_filtering", "human_contamination", "final_filter", "interspecies_contamination"}
+ "intraspecies_contamination", "sample_variant_filtering", "local_heteroplasmy_qc", "human_contamination", "final_filter", "interspecies_contamination"}
 
 STEP_SECTIONS = {
     "collect_variant_calling_results": "collect_variant_calling",
     "discover_global_anchor": "global_anchor_discovery",
     "coordinate_liftover": "coordinate_liftover",
+    "pre_liftover_variant_qc": "pre_liftover_variant_qc",
+    "local_heteroplasmy_qc": "local_heteroplasmy_qc",
     "interspecies_contamination": "interspecies_contamination",
     "human_contamination": "human_contamination",
     "build_primate_homo_background": "primate_homo_background",
@@ -35,6 +37,8 @@ FALLBACK_OUTPUTS = {
     "collect_variant_calling_results": "results/qc/variant_calling_collection",
     "discover_global_anchor": "results/qc/coordinate_liftover/global_anchor",
     "coordinate_liftover": "results/qc/coordinate_liftover",
+    "pre_liftover_variant_qc": "results/qc/pre_liftover_variant_qc",
+    "local_heteroplasmy_qc": "results/qc/local_heteroplasmy_qc",
     "interspecies_contamination": "results/qc/interspecies_contamination",
     "human_contamination": "results/qc/human_contamination",
     "build_primate_homo_background": "results/qc/primate_homo_background",
@@ -145,6 +149,8 @@ def candidate_samples(step,cfg):
     inventory can be derived. As a final safety-first fallback, schedule the broad
     sample inventory and let runtime eligibility perform the current map/QC gate.
     """
+    if step=='pre_liftover_variant_qc':
+        return sample_inventory(cfg)
     if step=='coordinate_liftover':
         paths=(cfg.get(step,{}).get('paths',{}) or {}); sample_file=paths.get('sample_ref_file','')
         return table_samples(sample_file) if sample_file else []
@@ -171,6 +177,9 @@ def valid_vcf(path,tag):
     except OSError:return False
 
 def paths_for(step,s,cfg,defer_input=False):
+    if step=='pre_liftover_variant_qc':
+        sec=cfg[step]; src=Path(sec.get('input_vcf_dir','results/qc/collected_variant_calling_results/collected_vcf'))/f'{s}.round2.original_coords.clean.final.split.vcf.gz'
+        return str(src),str(Path(sec.get('output_dir','results/qc/pre_liftover_variant_qc'))/'vcf_source_qc'/f'{s}.source_qc.vcf.gz'),'SOURCE_CALL_CLASS'
     if step=='coordinate_liftover':
         p=cfg[step]['paths']; return '',str(Path(p['output_dir'])/'vcf_lifted_raw'/f'{s}.lifted.raw.vcf'),'##INFO=<ID=SRC_POS'
     sec=cfg[step];p=sec['paths'];st=sec['settings']
@@ -202,7 +211,7 @@ def main():
         raise SystemExit(f'ERROR: no candidate samples for {step}{detail}; no eligible tasks under current sample/reference inventory')
     rows=[];done=missing=invalid=0
     static_inventory=bool(resolved_static_samples(cfg)) if step in {'codon_match','trna_match','rrna_match'} else False
-    defer_inputs=(step=='coordinate_liftover' or step=='codon_match' or (step in {'trna_match','rrna_match'} and static_inventory))
+    defer_inputs=(step in {'pre_liftover_variant_qc','coordinate_liftover'} or step=='codon_match' or (step in {'trna_match','rrna_match'} and static_inventory))
     for item in candidates:
         inp=out=tag=''
         if step in SAMPLE_STEPS:inp,out,tag=paths_for(step,item,cfg,defer_input=defer_inputs)
