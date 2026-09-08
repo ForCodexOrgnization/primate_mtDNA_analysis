@@ -1,6 +1,17 @@
 # Local heteroplasmy / NUMT analysis
 
-This module runs in the **native primate mitochondrial coordinate system before liftover**.  It is intentionally report-only until the terminal filtering step.
+This module runs in the **native primate mitochondrial coordinate system before liftover**. It is intentionally report-only until the terminal filtering step.
+
+## Configuration
+
+All production parameters are defined under `local_heteroplasmy_qc:` in `config/qc_preprocessing.yaml`. There is no separate heteroplasmy configuration file.
+
+Run the analysis with:
+
+```bash
+python3 qc_analysis/scripts/run_local_heteroplasmy_qc.py \
+  --config config/qc_preprocessing.yaml
+```
 
 ## Production order
 
@@ -18,8 +29,6 @@ The intended biological order is:
 10. terminal sample/variant filtering
 11. downstream analysis
 
-`human_contamination` is currently a standalone step in the legacy `all` wrapper; this feature branch documents it explicitly between liftover and inter-species contamination.
-
 ## Heteroplasmy definition
 
 Cluster discovery uses native-coordinate variants satisfying:
@@ -32,7 +41,7 @@ Cluster discovery uses native-coordinate variants satisfying:
 
 ## Local cluster detection
 
-Default parameters are defined in `config/heteroplasmy_numt.yaml`:
+Default parameters are defined under `local_heteroplasmy_qc:` in `config/qc_preprocessing.yaml`:
 
 - circular 250-bp window
 - whole-cluster AF span <= 0.06
@@ -40,7 +49,7 @@ Default parameters are defined in `config/heteroplasmy_numt.yaml`:
 - 2,000 permutations
 - empirical P <= 0.01
 
-The permutation null randomizes positions uniformly without replacement while retaining the observed AF values.  A sample-specific critical cluster count is derived from the empirical null.  Independent seeds are selected greedily, then expanded post hoc by adding unassigned variants within 250 bp of a member while preserving the whole-cluster AF span <= 0.06.  Expansion does not alter the seed P value.
+The permutation null randomizes positions uniformly without replacement while retaining the observed AF values. A sample-specific critical cluster count is derived from the empirical null. Independent seeds are selected greedily, then expanded post hoc by adding unassigned variants within 250 bp of a member while preserving the whole-cluster AF span <= 0.06. Expansion does not alter the seed P value.
 
 ## NUMT annotation
 
@@ -48,19 +57,19 @@ Cluster discovery and NUMT annotation are separate stages.
 
 ### Sample-level evidence
 
-Each cluster is compared with the target sample's upstream NUMT besthit intervals.  Upstream `highconf_numt.bed` overlap defines `HIGH_CONF_NUMT`; other upstream besthits are `BESTHIT_ONLY_NUMT`.  No new downstream threshold is imposed on pident, alignment length, read count, or MAPQ.
+Each cluster is compared with the target sample's upstream NUMT besthit intervals. Upstream `highconf_numt.bed` overlap defines `HIGH_CONF_NUMT`; other upstream besthits are `BESTHIT_ONLY_NUMT`. No new downstream threshold is imposed on pident, alignment length, read count, or MAPQ.
 
 A regional NUMT overlap requires, by default, at least 2 cluster variants and at least 50% of cluster variants to lie in the NUMT -> chrM interval.
 
 ### Species-level evidence
 
-All sample NUMT intervals are pooled by `species + reference_key` and merged into a species catalogue.  A target sample can receive species-level NUMT support only from **other samples** using the same species/reference coordinate system.  The output retains the number and identities of supporting samples.
+All sample NUMT intervals are pooled by `species + reference_key` and merged into a species catalogue. A target sample can receive species-level NUMT support only from **other samples** using the same species/reference coordinate system. The output retains the number and identities of supporting samples.
 
 This species-level layer is intended to rescue sample-specific NUMT-discovery false negatives; it does not replace direct sample-level evidence.
 
 ## Same-species recurrence
 
-For every cluster, the same native-coordinate `POS + REF + ALT` alleles are compared with other samples from the same species.  The default recurrent-pattern rule is:
+For every cluster, the same native-coordinate `POS + REF + ALT` alleles are compared with other samples from the same species. The default recurrent-pattern rule is:
 
 - >=2 shared variants
 - >=50% of cluster variants shared
@@ -77,7 +86,7 @@ NUMT evidence and recurrence are computed independently.
 | no | yes | `RECURRENT_ONLY` |
 | no | no | `UNRESOLVED` |
 
-`NUMT evidence=yes` includes either direct sample-level evidence or species-level evidence.  The detailed source/tier remains in the cluster report.
+`NUMT evidence=yes` includes either direct sample-level evidence or species-level evidence. The detailed source/tier remains in the cluster report.
 
 ## Conservative removal policy
 
@@ -89,7 +98,7 @@ Default actions are:
 - recurrence only -> `FLAG`
 - unresolved -> `KEEP`
 
-NUMT-associated samples are **not removed wholesale** by default.  The module marks `numt_sample=YES` and emits the specific variants to remove.  Sample exclusion remains the responsibility of sample QC and contamination reports.
+NUMT-associated samples are **not removed wholesale** by default. The module marks `numt_sample=YES` and emits the specific variants to remove. Sample exclusion remains the responsibility of sample QC and contamination reports.
 
 ## Outputs
 
@@ -109,10 +118,10 @@ The removal table uses the immutable source key:
 
 ## Terminal filtering
 
-Run the normal terminal final filter first, then apply the heteroplasmy blacklist using the immutable `SOURCE_*` INFO annotations that survive coordinate liftover:
+After the normal terminal final filter, apply the heteroplasmy blacklist using the immutable `SOURCE_*` INFO annotations that survive coordinate liftover:
 
 ```bash
-python qc_analysis/scripts/run_final_filter_with_heteroplasmy.py \
+python3 qc_analysis/scripts/run_final_filter_with_heteroplasmy.py \
   --config config/qc_preprocessing.yaml
 ```
 
@@ -125,32 +134,4 @@ The wrapper:
 5. removes matching records from `final_vcf/` by `SOURCE_*` identity;
 6. writes `reports/heteroplasmy_final_filter_summary.tsv`.
 
-## Running the analysis while this feature is under review
-
-```bash
-# prerequisite native-coordinate source QC
-bash qc_analysis/scripts/run_qc_preprocessing.sh \
-  pre_liftover_variant_qc config/qc_preprocessing.yaml
-
-# heteroplasmy/NUMT analysis
-python qc_analysis/scripts/run_local_heteroplasmy_qc.py \
-  --config config/heteroplasmy_numt.yaml
-
-# continue biological QC in the intended order
-bash qc_analysis/scripts/run_qc_preprocessing.sh \
-  intraspecies_contamination config/qc_preprocessing.yaml
-bash qc_analysis/scripts/run_qc_preprocessing.sh \
-  discover_global_anchor config/qc_preprocessing.yaml
-bash qc_analysis/scripts/run_qc_preprocessing.sh \
-  coordinate_liftover config/qc_preprocessing.yaml
-bash qc_analysis/scripts/run_qc_preprocessing.sh \
-  human_contamination config/qc_preprocessing.yaml
-bash qc_analysis/scripts/run_qc_preprocessing.sh \
-  interspecies_contamination config/qc_preprocessing.yaml
-
-# after codon/tRNA/rRNA annotation, run the terminal filter with NUMT removal
-python qc_analysis/scripts/run_final_filter_with_heteroplasmy.py \
-  --config config/qc_preprocessing.yaml
-```
-
-Before production use, verify the two external NUMT directories in `config/heteroplasmy_numt.yaml` against the current HPC NUMT-discovery outputs.
+Before production use, verify the external NUMT besthit/highconf directories configured under `local_heteroplasmy_qc:` against the current HPC NUMT-discovery outputs.
