@@ -11,6 +11,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEDUP_SAMPLE_REF = REPO_ROOT / "results/qc/sample_deduplication/reports/deduplicated_sample_ref_file.tsv"
+LEGACY_SAMPLE_REF_VALUES = {
+    "config/sample_ref_file.tsv",
+    str(REPO_ROOT / "config/sample_ref_file.tsv"),
+}
+
 
 def parse_scalar(value: str) -> object:
     """Convert a scalar from the limited configuration subset."""
@@ -46,6 +53,25 @@ def strip_yaml_comment(line: str) -> str:
         elif char == "#" and not in_single and not in_double:
             return line[:index]
     return line
+
+
+def _apply_deduplicated_sample_ref(mapping: Dict[str, object]) -> None:
+    """Redirect legacy sample/species paths to the canonical QC cohort.
+
+    ``sample_deduplication`` runs before QC collection and materializes one
+    representative accession per biological sample.  Once that file exists,
+    all QC scripts using this shared YAML reader automatically consume the same
+    deduplicated sample inventory without requiring every section of the large
+    production config to repeat the generated path.
+    """
+    if not DEDUP_SAMPLE_REF.is_file():
+        return
+    replacement = str(DEDUP_SAMPLE_REF)
+    for key, value in list(mapping.items()):
+        if isinstance(value, dict):
+            _apply_deduplicated_sample_ref(value)
+        elif isinstance(value, str) and value in LEGACY_SAMPLE_REF_VALUES:
+            mapping[key] = replacement
 
 
 def read_simple_yaml(path: Path) -> Dict[str, object]:
@@ -102,4 +128,5 @@ def read_simple_yaml(path: Path) -> Dict[str, object]:
                     normalize_empty_implicit(value)
 
     normalize_empty_implicit(root)
+    _apply_deduplicated_sample_ref(root)
     return root
