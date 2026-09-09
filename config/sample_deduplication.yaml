@@ -1,17 +1,26 @@
 # Canonical biological-sample deduplication applied before QC collection.
-# Place the enriched master metadata at the path below. The deduplication step
-# keeps unique_input and canonical_id_row accessions and excludes archive_alias_row.
+# Place the FINAL master metadata at the path below. Archive-level aliases are
+# removed; cross-BioSample biological-duplicate candidates are reported only.
 sample_deduplication:
   enabled: true
   metadata: data/metadata/primate_metadata_master_3332_FINAL.tsv
   output_dir: results/qc/sample_deduplication
+
   input_accession_column: input_accession
   canonical_sample_id_column: canonical_sample_id
   species_column: pipeline_species
-  duplicate_flag_column: duplicate_flag
-  duplicate_group_column: duplicate_group
-  duplicate_group_size_column: duplicate_group_size
-  duplicate_role_column: duplicate_role
-  duplicate_alias_column: duplicate_alias_accession
+
+  archive_duplicate_flag_column: archive_duplicate_flag
+  archive_duplicate_group_column: archive_duplicate_group
+  archive_duplicate_group_size_column: archive_duplicate_group_size
+  archive_duplicate_role_column: archive_duplicate_role
+  archive_duplicate_alias_column: archive_duplicate_alias_accession
+
+  biological_duplicate_candidate_flag_column: biological_duplicate_candidate_flag
+  biological_duplicate_candidate_group_column: biological_duplicate_candidate_group
+  biological_duplicate_evidence_type_column: biological_duplicate_evidence_type
+  biological_duplicate_evidence_value_column: biological_duplicate_evidence_value
+  biological_duplicate_candidate_class_column: biological_duplicate_candidate_class
+
   keep_roles: unique_input,canonical_id_row
   exclude_roles: archive_alias_row
