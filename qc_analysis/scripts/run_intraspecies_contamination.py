@@ -9,9 +9,11 @@ Target and source cohorts are deliberately asymmetric:
 Low-A target evidence uses the original VCF calls (before local-cluster removal)
 so local artifact filtering cannot erase a real contamination signal.
 
-Genome-wide dispersion metrics are diagnostic only. They describe how broadly
-best-source-matched low-A markers are distributed across chrM, but do not yet
-change contamination classification thresholds.
+Genome-wide dispersion metrics are diagnostic only. If a downstream local-
+heteroplasmy report already exists, the script also recomputes source matching
+after excluding detected local-cluster variants. This ALL-vs-NONCLUSTER
+comparison is a sensitivity analysis only and does not yet alter the primary
+contamination classification.
 """
 from __future__ import annotations
 
@@ -28,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_max_in_window best_overlap_max_local_fraction n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_max_in_window best_overlap_max_local_fraction local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -106,7 +108,6 @@ def key(r):
 
 
 def read_sample_pairs(p: Path) -> set[tuple[str, str]]:
-    """Read either a headered sample/species TSV or a two-column headerless file."""
     if not p.is_file():
         raise FileNotFoundError(f"sample list not found: {p}")
     with p.open(encoding="utf-8") as h:
@@ -116,8 +117,7 @@ def read_sample_pairs(p: Path) -> set[tuple[str, str]]:
     first = lines[0].split("\t") if "\t" in lines[0] else lines[0].split()
     lower = [x.strip().lower() for x in first]
     if "sample" in lower and "species" in lower:
-        sep = "\t" if "\t" in lines[0] else None
-        if sep:
+        if "\t" in lines[0]:
             rows = list(csv.DictReader(lines, delimiter="\t"))
         else:
             names = first
@@ -152,7 +152,6 @@ def read_sample_qc(p: Path) -> dict[str, str]:
 
 
 def count_strict_hets(source_qc_path: Path, allowed_samples: set[str], p: dict) -> Counter:
-    """Count strict native-coordinate HET calls used only for target eligibility."""
     if not source_qc_path.is_file():
         raise FileNotFoundError(
             f"source variant QC report not found: {source_qc_path}. "
@@ -179,6 +178,33 @@ def count_strict_hets(source_qc_path: Path, allowed_samples: set[str], p: dict) 
     return counts
 
 
+def load_clustered_variant_keys(cluster_report: Path | None):
+    """Return sample -> exact SOURCE allele keys for all detected local clusters.
+
+    The report contains only the strict HET range evaluated by local clustering,
+    so low-A calls below 0.10 are necessarily retained in the NONCLUSTER branch.
+    """
+    if cluster_report is None or not cluster_report.is_file():
+        return {}, False
+    rows = load_rows(cluster_report)
+    if rows and not {"sample", "source_chrom", "source_pos", "source_ref", "source_alt", "clustered"}.issubset(rows[0]):
+        raise ValueError(f"invalid local heteroplasmy variant report: {cluster_report}")
+    out = defaultdict(set)
+    for r in rows:
+        if str(r.get("clustered", "")).upper() != "YES":
+            continue
+        sample = str(r.get("sample", "")).strip()
+        if not sample:
+            continue
+        out[sample].add((
+            str(r.get("source_chrom", "")),
+            str(r.get("source_pos", "")),
+            str(r.get("source_ref", "")),
+            str(r.get("source_alt", "")),
+        ))
+    return dict(out), True
+
+
 def quantile7(values, p):
     x = sorted(values)
     h = (len(x) - 1) * p
@@ -187,7 +213,6 @@ def quantile7(values, p):
 
 
 def low_a_rows(rows, p):
-    """Target low-A calls: 1-20% AF plus >=3 ALT reads by default."""
     out = []
     for r in rows:
         af = as_float(r.get("VAF"))
@@ -200,41 +225,34 @@ def low_a_rows(rows, p):
     return out
 
 
-def overlap_dispersion(overlap_keys, p):
-    """Diagnostic spatial spread of best-source-matched markers on circular chrM.
-
-    No thresholds are applied here. Fixed bins are linear for interpretability;
-    circular_span and max-in-window explicitly account for the chrM boundary.
-    """
+def overlap_dispersion(overlap_keys, p, suffix=""):
     positions = sorted({int(k[1]) for k in overlap_keys})
     n = len(positions)
+    prefix = "best_overlap_"
+    def name(x):
+        return f"{prefix}{x}{suffix}"
     if not positions:
-        return dict(
-            best_overlap_positions="",
-            best_overlap_occupied_bins=0,
-            best_overlap_linear_span_bp=0,
-            best_overlap_circular_span_bp=0,
-            best_overlap_max_in_window=0,
-            best_overlap_max_local_fraction=None,
-        )
-
+        return {
+            name("positions"): "",
+            name("occupied_bins"): 0,
+            name("linear_span_bp"): 0,
+            name("circular_span_bp"): 0,
+            name("max_in_window"): 0,
+            name("max_local_fraction"): None,
+        }
     mt_length = int(p["mt_length"])
     bin_bp = int(p["dispersion_bin_bp"])
     window_bp = int(p["dispersion_window_bp"])
     if mt_length <= 0 or bin_bp <= 0 or window_bp <= 0:
         raise ValueError("mt_length, dispersion_bin_bp and dispersion_window_bp must be positive")
-
     occupied_bins = len({(pos - 1) // bin_bp for pos in positions})
     linear_span = positions[-1] - positions[0] if n > 1 else 0
-
     if n > 1:
         gaps = [positions[i + 1] - positions[i] for i in range(n - 1)]
         gaps.append((positions[0] + mt_length) - positions[-1])
         circular_span = mt_length - max(gaps)
     else:
         circular_span = 0
-
-    # Maximum number of matched markers in any circular window of window_bp.
     doubled = positions + [x + mt_length for x in positions]
     max_in_window = 0
     j = 0
@@ -245,16 +263,22 @@ def overlap_dispersion(overlap_keys, p):
         while j < i + n and doubled[j] <= limit:
             j += 1
         max_in_window = max(max_in_window, j - i)
-    max_local_fraction = max_in_window / n if n else None
+    return {
+        name("positions"): ",".join(str(x) for x in positions),
+        name("occupied_bins"): occupied_bins,
+        name("linear_span_bp"): linear_span,
+        name("circular_span_bp"): circular_span,
+        name("max_in_window"): max_in_window,
+        name("max_local_fraction"): max_in_window / n,
+    }
 
-    return dict(
-        best_overlap_positions=",".join(str(x) for x in positions),
-        best_overlap_occupied_bins=occupied_bins,
-        best_overlap_linear_span_bp=linear_span,
-        best_overlap_circular_span_bp=circular_span,
-        best_overlap_max_in_window=max_in_window,
-        best_overlap_max_local_fraction=max_local_fraction,
-    )
+
+def best_source_match(lowkeys, otherhigh):
+    ranked = [(len(lowkeys & ks), s) for s, ks in otherhigh.items()]
+    best_overlap, best_source = max(ranked, key=lambda x: (x[0], x[1])) if ranked else (0, "")
+    best_keys = lowkeys & otherhigh.get(best_source, set()) if best_source else set()
+    frac = best_overlap / len(lowkeys) if lowkeys else None
+    return best_source, best_overlap, frac, best_keys
 
 
 def mirror_stats(rows, p):
@@ -292,9 +316,10 @@ def calibration(rows, p, nc_path):
     return quantile7(vals, .95), quantile7(vals, .99), "calibrated", len(vals)
 
 
-def analyse(rows, p, source_pairs, qc_status, het_counts, negative_control_pairs=None):
-    """Analyse eligible targets against all deduplicated same-species sources."""
+def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
+            cluster_sensitivity_available=False, negative_control_pairs=None):
     source_pairs = set(source_pairs)
+    clustered_keys = clustered_keys or {}
     source_samples = {s for _, s in source_pairs}
     usable = [
         r for r in rows
@@ -343,6 +368,15 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, negative_control_pairs
             best_overlap_positions="", best_overlap_occupied_bins=0,
             best_overlap_linear_span_bp=0, best_overlap_circular_span_bp=0,
             best_overlap_max_in_window=0, best_overlap_max_local_fraction=None,
+            local_cluster_sensitivity_available=cluster_sensitivity_available,
+            n_lowA_clustered=0, n_lowA_noncluster=0,
+            best_source_sample_noncluster="", best_overlap_noncluster=0,
+            best_frac_lowA_in_highB_noncluster=None,
+            best_overlap_positions_noncluster="", best_overlap_occupied_bins_noncluster=0,
+            best_overlap_circular_span_bp_noncluster=0,
+            best_overlap_max_local_fraction_noncluster=None,
+            n_overlap_from_cluster=0, overlap_retention_after_cluster_removal=None,
+            source_stable_after_cluster_removal="NA",
             n_anchor_pool_excluding_A=0, n_anchor_tested_in_A=0,
             n_depressed_anchor=0, mt_high_hets_contamination=None,
             mt_high_hets_mode="not_tested", anchor_evidence_level="not_tested",
@@ -365,11 +399,30 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, negative_control_pairs
             s: {key(r) for r in by[species, s] if num(r, "VAF") >= source_high_min}
             for s in others
         }
-        ranked = [(len(lowkeys & ks), s) for s, ks in otherhigh.items()]
-        best_overlap, best_source = max(ranked, key=lambda x: (x[0], x[1])) if ranked else (0, "")
-        frac = best_overlap / len(lowkeys) if lowkeys else None
-        best_overlap_keys = lowkeys & otherhigh.get(best_source, set()) if best_source else set()
+        best_source, best_overlap, frac, best_overlap_keys = best_source_match(lowkeys, otherhigh)
         dispersion = overlap_dispersion(best_overlap_keys, p)
+
+        sensitivity = {}
+        if cluster_sensitivity_available:
+            sample_clustered = clustered_keys.get(sample, set())
+            low_clustered_keys = lowkeys & sample_clustered
+            lowkeys_noncluster = lowkeys - sample_clustered
+            source_nc, overlap_nc, frac_nc, overlap_keys_nc = best_source_match(lowkeys_noncluster, otherhigh)
+            dispersion_nc = overlap_dispersion(overlap_keys_nc, p, suffix="_noncluster")
+            n_overlap_from_cluster = len(best_overlap_keys & sample_clustered)
+            retention = overlap_nc / best_overlap if best_overlap else None
+            stable = "YES" if best_source and source_nc == best_source else "NO" if best_source or source_nc else "NA"
+            sensitivity.update(
+                n_lowA_clustered=len(low_clustered_keys),
+                n_lowA_noncluster=len(lowkeys_noncluster),
+                best_source_sample_noncluster=source_nc,
+                best_overlap_noncluster=overlap_nc,
+                best_frac_lowA_in_highB_noncluster=frac_nc,
+                n_overlap_from_cluster=n_overlap_from_cluster,
+                overlap_retention_after_cluster_removal=retention,
+                source_stable_after_cluster_removal=stable,
+                **dispersion_nc,
+            )
 
         anchor_pool = set().union(*otherhigh.values()) if otherhigh else set()
         ownmap = defaultdict(list)
@@ -437,6 +490,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, negative_control_pairs
             best_source_qc_status=qc_status.get(best_source, "MISSING") if best_source else "",
             best_overlap=best_overlap, best_frac_lowA_in_highB=frac,
             **dispersion,
+            **sensitivity,
             n_anchor_pool_excluding_A=len(anchor_pool),
             n_anchor_tested_in_A=len(tested), n_depressed_anchor=len(dep),
             mt_high_hets_contamination=est, mt_high_hets_mode=mode,
@@ -504,6 +558,12 @@ def main():
     ))
     het_counts = count_strict_hets(source_qc_path, allowed_samples, p)
 
+    cluster_report = path(sec.get(
+        "local_cluster_variant_report",
+        "results/qc/local_heteroplasmy_qc/reports/local_heteroplasmy_variant_detail.tsv",
+    ))
+    clustered_keys, cluster_sensitivity_available = load_clustered_variant_keys(cluster_report)
+
     table = a.variant_table or (path(sec["variant_table"]) if sec.get("variant_table") else None)
     if table is None and truth(sec.get("build_variant_table"), True):
         vcf = path(sec.get("vcf_dir", "results/qc/collected_variant_calling_results/collected_vcf"))
@@ -523,7 +583,12 @@ def main():
         raise ValueError("build_variant_table=false requires variant_table")
 
     nc = a.negative_control_pairs or sec.get("negative_control_pairs")
-    findings, eligibility = analyse(load_rows(path(table)), p, source_pairs, qc_status, het_counts, nc)
+    findings, eligibility = analyse(
+        load_rows(path(table)), p, source_pairs, qc_status, het_counts,
+        clustered_keys=clustered_keys,
+        cluster_sensitivity_available=cluster_sensitivity_available,
+        negative_control_pairs=nc,
+    )
     write_rows(report, findings, REPORT_COLUMNS)
     write_rows(out / "reports/target_sample_eligibility.tsv", eligibility, ELIGIBILITY_COLUMNS)
 
@@ -534,6 +599,8 @@ def main():
         w.writerow(("source_sample_ref_file", source_list))
         w.writerow(("sample_qc_report", sample_qc_path))
         w.writerow(("source_variant_qc_report", source_qc_path))
+        w.writerow(("local_cluster_variant_report", cluster_report))
+        w.writerow(("local_cluster_sensitivity_available", cluster_sensitivity_available))
         w.writerow(("variant_table", table))
         w.writerow(("timestamp", dt.datetime.now(dt.timezone.utc).isoformat()))
 
@@ -546,6 +613,8 @@ def main():
         f"min_alt_reads={p['min_alt_reads']}\n"
         f"dispersion_bin_bp={p['dispersion_bin_bp']}\n"
         f"dispersion_window_bp={p['dispersion_window_bp']}\n"
+        f"cluster_sensitivity_available={cluster_sensitivity_available}\n"
+        f"cluster_report={cluster_report}\n"
         f"report={report}\n",
         encoding="utf-8",
     )
@@ -553,7 +622,7 @@ def main():
         f"[intraspecies] report={report} deduplicated_samples={len(source_pairs)} "
         f"eligible_targets={n_eligible} source_AF>={p['source_high_vaf_min']} "
         f"lowA={p['low_vaf_min']}-{p['low_vaf_max']} AD_alt>={p['min_alt_reads']} "
-        f"dispersion_bin={p['dispersion_bin_bp']}bp window={p['dispersion_window_bp']}bp"
+        f"cluster_sensitivity={'yes' if cluster_sensitivity_available else 'no'}"
     )
     return 0
 
