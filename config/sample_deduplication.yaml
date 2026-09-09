@@ -3,7 +3,7 @@
 # keeps unique_input and canonical_id_row accessions and excludes archive_alias_row.
 sample_deduplication:
   enabled: true
-  metadata: data/metadata/primate_metadata_master_3332_enriched.tsv
+  metadata: data/metadata/primate_metadata_master_3332_FINAL.tsv
   output_dir: results/qc/sample_deduplication
   input_accession_column: input_accession
   canonical_sample_id_column: canonical_sample_id
