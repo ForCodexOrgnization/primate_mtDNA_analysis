@@ -8,6 +8,10 @@ Target and source cohorts are deliberately asymmetric:
 
 Low-A target evidence uses the original VCF calls (before local-cluster removal)
 so local artifact filtering cannot erase a real contamination signal.
+
+Genome-wide dispersion metrics are diagnostic only. They describe how broadly
+best-source-matched low-A markers are distributed across chrM, but do not yet
+change contamination classification thresholds.
 """
 from __future__ import annotations
 
@@ -24,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_max_in_window best_overlap_max_local_fraction n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -33,12 +37,13 @@ DEFAULTS = dict(
     low_vaf_min=.01,
     low_vaf_max=.20,
     min_alt_reads=3,
-    # New source threshold. Kept separate from the legacy high_vaf_min config so
-    # existing configs with high_vaf_min: 0.99 do not silently override this.
     source_high_vaf_min=.90,
     target_het_af_min=.10,
     target_het_af_max=.95,
     min_target_het=4,
+    mt_length=16569,
+    dispersion_bin_bp=1000,
+    dispersion_window_bp=1000,
     mt_lower=.80,
     mt_depressed_upper=.998,
     mt_anchor_upper=1.,
@@ -195,6 +200,63 @@ def low_a_rows(rows, p):
     return out
 
 
+def overlap_dispersion(overlap_keys, p):
+    """Diagnostic spatial spread of best-source-matched markers on circular chrM.
+
+    No thresholds are applied here. Fixed bins are linear for interpretability;
+    circular_span and max-in-window explicitly account for the chrM boundary.
+    """
+    positions = sorted({int(k[1]) for k in overlap_keys})
+    n = len(positions)
+    if not positions:
+        return dict(
+            best_overlap_positions="",
+            best_overlap_occupied_bins=0,
+            best_overlap_linear_span_bp=0,
+            best_overlap_circular_span_bp=0,
+            best_overlap_max_in_window=0,
+            best_overlap_max_local_fraction=None,
+        )
+
+    mt_length = int(p["mt_length"])
+    bin_bp = int(p["dispersion_bin_bp"])
+    window_bp = int(p["dispersion_window_bp"])
+    if mt_length <= 0 or bin_bp <= 0 or window_bp <= 0:
+        raise ValueError("mt_length, dispersion_bin_bp and dispersion_window_bp must be positive")
+
+    occupied_bins = len({(pos - 1) // bin_bp for pos in positions})
+    linear_span = positions[-1] - positions[0] if n > 1 else 0
+
+    if n > 1:
+        gaps = [positions[i + 1] - positions[i] for i in range(n - 1)]
+        gaps.append((positions[0] + mt_length) - positions[-1])
+        circular_span = mt_length - max(gaps)
+    else:
+        circular_span = 0
+
+    # Maximum number of matched markers in any circular window of window_bp.
+    doubled = positions + [x + mt_length for x in positions]
+    max_in_window = 0
+    j = 0
+    for i in range(n):
+        if j < i:
+            j = i
+        limit = doubled[i] + window_bp
+        while j < i + n and doubled[j] <= limit:
+            j += 1
+        max_in_window = max(max_in_window, j - i)
+    max_local_fraction = max_in_window / n if n else None
+
+    return dict(
+        best_overlap_positions=",".join(str(x) for x in positions),
+        best_overlap_occupied_bins=occupied_bins,
+        best_overlap_linear_span_bp=linear_span,
+        best_overlap_circular_span_bp=circular_span,
+        best_overlap_max_in_window=max_in_window,
+        best_overlap_max_local_fraction=max_local_fraction,
+    )
+
+
 def mirror_stats(rows, p):
     lows = [r for r in rows if p["mirror_low_vaf_min"] <= num(r, "VAF") <= p["mirror_low_vaf_max"]]
     highs = [r for r in rows if p["mirror_high_vaf_min"] <= num(r, "VAF") <= p["mirror_high_vaf_max"]]
@@ -252,8 +314,6 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, negative_control_pairs
     out = []
     eligibility = []
 
-    # Keep one report row for every deduplicated sample so downstream strict
-    # missing-sample checks remain stable. Only eligible targets are tested.
     for species, sample in sorted(source_pairs):
         sample_qc = qc_status.get(sample, "MISSING")
         n_het = int(het_counts.get(sample, 0))
@@ -279,14 +339,17 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, negative_control_pairs
             n_species_samples=counts[species], n_source_candidates=len(others),
             n_usable_variants=len(own), n_lowA=0, best_source_sample="",
             best_source_qc_status="", best_overlap=0,
-            best_frac_lowA_in_highB=None, n_anchor_pool_excluding_A=0,
-            n_anchor_tested_in_A=0, n_depressed_anchor=0,
-            mt_high_hets_contamination=None, mt_high_hets_mode="not_tested",
-            anchor_evidence_level="not_tested", anchor_source_count=0,
-            n_mirror_pairs=0, n_low_variants_with_mirror=0,
-            mirror_low_fraction=0., normalized_mirror_support=0.,
-            mirror_p95_threshold=p95, mirror_p99_threshold=p99,
-            mirror_calibration_status=cal_status,
+            best_frac_lowA_in_highB=None,
+            best_overlap_positions="", best_overlap_occupied_bins=0,
+            best_overlap_linear_span_bp=0, best_overlap_circular_span_bp=0,
+            best_overlap_max_in_window=0, best_overlap_max_local_fraction=None,
+            n_anchor_pool_excluding_A=0, n_anchor_tested_in_A=0,
+            n_depressed_anchor=0, mt_high_hets_contamination=None,
+            mt_high_hets_mode="not_tested", anchor_evidence_level="not_tested",
+            anchor_source_count=0, n_mirror_pairs=0,
+            n_low_variants_with_mirror=0, mirror_low_fraction=0.,
+            normalized_mirror_support=0., mirror_p95_threshold=p95,
+            mirror_p99_threshold=p99, mirror_calibration_status=cal_status,
             mirror_support_candidate=False, mirror_support_highconf=False,
             contamination_flag_candidate=False, contamination_flag_highconf=False,
         )
@@ -305,6 +368,8 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, negative_control_pairs
         ranked = [(len(lowkeys & ks), s) for s, ks in otherhigh.items()]
         best_overlap, best_source = max(ranked, key=lambda x: (x[0], x[1])) if ranked else (0, "")
         frac = best_overlap / len(lowkeys) if lowkeys else None
+        best_overlap_keys = lowkeys & otherhigh.get(best_source, set()) if best_source else set()
+        dispersion = overlap_dispersion(best_overlap_keys, p)
 
         anchor_pool = set().union(*otherhigh.values()) if otherhigh else set()
         ownmap = defaultdict(list)
@@ -371,15 +436,16 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, negative_control_pairs
             n_lowA=len(lowkeys), best_source_sample=best_source,
             best_source_qc_status=qc_status.get(best_source, "MISSING") if best_source else "",
             best_overlap=best_overlap, best_frac_lowA_in_highB=frac,
-            n_anchor_pool_excluding_A=len(anchor_pool), n_anchor_tested_in_A=len(tested),
-            n_depressed_anchor=len(dep), mt_high_hets_contamination=est,
-            mt_high_hets_mode=mode, anchor_evidence_level=level,
-            anchor_source_count=source_count, n_mirror_pairs=npair,
-            n_low_variants_with_mirror=nmir, mirror_low_fraction=mfrac,
-            normalized_mirror_support=norm, mirror_support_candidate=mcand,
-            mirror_support_highconf=mhigh, contamination_status=status,
-            contamination_flag_candidate=candidate, contamination_flag_highconf=highconf,
-            qc_status=qc, qc_reason=status,
+            **dispersion,
+            n_anchor_pool_excluding_A=len(anchor_pool),
+            n_anchor_tested_in_A=len(tested), n_depressed_anchor=len(dep),
+            mt_high_hets_contamination=est, mt_high_hets_mode=mode,
+            anchor_evidence_level=level, anchor_source_count=source_count,
+            n_mirror_pairs=npair, n_low_variants_with_mirror=nmir,
+            mirror_low_fraction=mfrac, normalized_mirror_support=norm,
+            mirror_support_candidate=mcand, mirror_support_highconf=mhigh,
+            contamination_status=status, contamination_flag_candidate=candidate,
+            contamination_flag_highconf=highconf, qc_status=qc, qc_reason=status,
         )
         out.append(base)
     return out, eligibility
@@ -419,8 +485,6 @@ def main():
         "pass_only": truth(sec.get("pass_only"), True),
     }
 
-    # Use the deduplicated cohort for BOTH target membership and source universe.
-    # Source samples are not filtered by biological sample QC.
     source_list = path(sec.get(
         "source_sample_ref_file",
         "results/qc/sample_deduplication/reports/deduplicated_sample_ref_file.tsv",
@@ -443,8 +507,6 @@ def main():
     table = a.variant_table or (path(sec["variant_table"]) if sec.get("variant_table") else None)
     if table is None and truth(sec.get("build_variant_table"), True):
         vcf = path(sec.get("vcf_dir", "results/qc/collected_variant_calling_results/collected_vcf"))
-        # Build the broad table as before; source/target cohort restrictions are
-        # applied explicitly below using the deduplicated sample list.
         meta = path(sec.get("sample_summary", "results/qc/collected_variant_calling_results/reports/variant_calling_collection_summary.tsv"))
         table = out / ".work/all_PASS_variants_core_table.tsv"
         table.parent.mkdir(parents=True, exist_ok=True)
@@ -482,13 +544,16 @@ def main():
         f"source_high_vaf_min={p['source_high_vaf_min']}\n"
         f"lowA={p['low_vaf_min']}-{p['low_vaf_max']}\n"
         f"min_alt_reads={p['min_alt_reads']}\n"
+        f"dispersion_bin_bp={p['dispersion_bin_bp']}\n"
+        f"dispersion_window_bp={p['dispersion_window_bp']}\n"
         f"report={report}\n",
         encoding="utf-8",
     )
     print(
         f"[intraspecies] report={report} deduplicated_samples={len(source_pairs)} "
         f"eligible_targets={n_eligible} source_AF>={p['source_high_vaf_min']} "
-        f"lowA={p['low_vaf_min']}-{p['low_vaf_max']} AD_alt>={p['min_alt_reads']}"
+        f"lowA={p['low_vaf_min']}-{p['low_vaf_max']} AD_alt>={p['min_alt_reads']} "
+        f"dispersion_bin={p['dispersion_bin_bp']}bp window={p['dispersion_window_bp']}bp"
     )
     return 0
 
