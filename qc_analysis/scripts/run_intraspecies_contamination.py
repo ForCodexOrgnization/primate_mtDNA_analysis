@@ -9,11 +9,11 @@ Target and source cohorts are deliberately asymmetric:
 Low-A target evidence uses the original VCF calls (before local-cluster removal)
 so local artifact filtering cannot erase a real contamination signal.
 
-Genome-wide dispersion metrics are diagnostic only. If a downstream local-
-heteroplasmy report already exists, the script also recomputes source matching
-after excluding detected local-cluster variants. This ALL-vs-NONCLUSTER
-comparison is a sensitivity analysis only and does not yet alter the primary
-contamination classification.
+Genome-wide dispersion and AF-coherence metrics are diagnostic only. If a
+downstream local-heteroplasmy report already exists, the script also recomputes
+source matching after excluding detected local-cluster variants. This
+ALL-vs-NONCLUSTER comparison is a sensitivity analysis only and does not yet
+alter the primary contamination classification.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ import argparse
 import csv
 import datetime as dt
 import math
+import statistics
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -30,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_max_in_window best_overlap_max_local_fraction local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -179,15 +180,12 @@ def count_strict_hets(source_qc_path: Path, allowed_samples: set[str], p: dict) 
 
 
 def load_clustered_variant_keys(cluster_report: Path | None):
-    """Return sample -> exact SOURCE allele keys for all detected local clusters.
-
-    The report contains only the strict HET range evaluated by local clustering,
-    so low-A calls below 0.10 are necessarily retained in the NONCLUSTER branch.
-    """
+    """Return sample -> exact SOURCE allele keys for all detected local clusters."""
     if cluster_report is None or not cluster_report.is_file():
         return {}, False
     rows = load_rows(cluster_report)
-    if rows and not {"sample", "source_chrom", "source_pos", "source_ref", "source_alt", "clustered"}.issubset(rows[0]):
+    required = {"sample", "source_chrom", "source_pos", "source_ref", "source_alt", "clustered"}
+    if rows and not required.issubset(rows[0]):
         raise ValueError(f"invalid local heteroplasmy variant report: {cluster_report}")
     out = defaultdict(set)
     for r in rows:
@@ -270,6 +268,52 @@ def overlap_dispersion(overlap_keys, p, suffix=""):
         name("circular_span_bp"): circular_span,
         name("max_in_window"): max_in_window,
         name("max_local_fraction"): max_in_window / n,
+    }
+
+
+def overlap_af_stats(low_rows, overlap_keys, suffix=""):
+    """AF coherence among source-matched target low-A markers.
+
+    MAD is the unscaled median absolute deviation. IQR is Q3-Q1 using the same
+    type-7 quantile implementation used elsewhere. CV is population SD / mean.
+    These are diagnostics; no AF-coherence threshold is applied yet.
+    """
+    prefix = "best_overlap_af_"
+    def name(x):
+        return f"{prefix}{x}{suffix}"
+
+    values_by_key = defaultdict(list)
+    for r in low_rows:
+        k = key(r)
+        if k in overlap_keys:
+            af = as_float(r.get("VAF"))
+            if af is not None:
+                values_by_key[k].append(af)
+    values = [statistics.median(vs) for vs in values_by_key.values() if vs]
+    if not values:
+        return {
+            name("median"): None,
+            name("mad"): None,
+            name("iqr"): None,
+            name("cv"): None,
+            name("min"): None,
+            name("max"): None,
+        }
+
+    med = statistics.median(values)
+    mad = statistics.median(abs(x - med) for x in values)
+    q1 = quantile7(values, .25)
+    q3 = quantile7(values, .75)
+    mean = sum(values) / len(values)
+    sd = math.sqrt(sum((x - mean) ** 2 for x in values) / len(values))
+    cv = sd / mean if mean else None
+    return {
+        name("median"): med,
+        name("mad"): mad,
+        name("iqr"): q3 - q1,
+        name("cv"): cv,
+        name("min"): min(values),
+        name("max"): max(values),
     }
 
 
@@ -368,6 +412,9 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             best_overlap_positions="", best_overlap_occupied_bins=0,
             best_overlap_linear_span_bp=0, best_overlap_circular_span_bp=0,
             best_overlap_max_in_window=0, best_overlap_max_local_fraction=None,
+            best_overlap_af_median=None, best_overlap_af_mad=None,
+            best_overlap_af_iqr=None, best_overlap_af_cv=None,
+            best_overlap_af_min=None, best_overlap_af_max=None,
             local_cluster_sensitivity_available=cluster_sensitivity_available,
             n_lowA_clustered=0, n_lowA_noncluster=0,
             best_source_sample_noncluster="", best_overlap_noncluster=0,
@@ -375,6 +422,9 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             best_overlap_positions_noncluster="", best_overlap_occupied_bins_noncluster=0,
             best_overlap_circular_span_bp_noncluster=0,
             best_overlap_max_local_fraction_noncluster=None,
+            best_overlap_af_median_noncluster=None, best_overlap_af_mad_noncluster=None,
+            best_overlap_af_iqr_noncluster=None, best_overlap_af_cv_noncluster=None,
+            best_overlap_af_min_noncluster=None, best_overlap_af_max_noncluster=None,
             n_overlap_from_cluster=0, overlap_retention_after_cluster_removal=None,
             source_stable_after_cluster_removal="NA",
             n_anchor_pool_excluding_A=0, n_anchor_tested_in_A=0,
@@ -401,14 +451,17 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
         }
         best_source, best_overlap, frac, best_overlap_keys = best_source_match(lowkeys, otherhigh)
         dispersion = overlap_dispersion(best_overlap_keys, p)
+        af_stats = overlap_af_stats(low, best_overlap_keys)
 
         sensitivity = {}
         if cluster_sensitivity_available:
             sample_clustered = clustered_keys.get(sample, set())
             low_clustered_keys = lowkeys & sample_clustered
             lowkeys_noncluster = lowkeys - sample_clustered
+            low_noncluster = [r for r in low if key(r) in lowkeys_noncluster]
             source_nc, overlap_nc, frac_nc, overlap_keys_nc = best_source_match(lowkeys_noncluster, otherhigh)
             dispersion_nc = overlap_dispersion(overlap_keys_nc, p, suffix="_noncluster")
+            af_stats_nc = overlap_af_stats(low_noncluster, overlap_keys_nc, suffix="_noncluster")
             n_overlap_from_cluster = len(best_overlap_keys & sample_clustered)
             retention = overlap_nc / best_overlap if best_overlap else None
             stable = "YES" if best_source and source_nc == best_source else "NO" if best_source or source_nc else "NA"
@@ -422,6 +475,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
                 overlap_retention_after_cluster_removal=retention,
                 source_stable_after_cluster_removal=stable,
                 **dispersion_nc,
+                **af_stats_nc,
             )
 
         anchor_pool = set().union(*otherhigh.values()) if otherhigh else set()
@@ -490,6 +544,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             best_source_qc_status=qc_status.get(best_source, "MISSING") if best_source else "",
             best_overlap=best_overlap, best_frac_lowA_in_highB=frac,
             **dispersion,
+            **af_stats,
             **sensitivity,
             n_anchor_pool_excluding_A=len(anchor_pool),
             n_anchor_tested_in_A=len(tested), n_depressed_anchor=len(dep),
