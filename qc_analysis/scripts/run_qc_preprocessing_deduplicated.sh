@@ -16,6 +16,7 @@ QC_CONFIG="${QC_CONFIG:-config/qc_preprocessing.yaml}"
 DEDUP_SCRIPT="qc_analysis/scripts/run_sample_deduplication.py"
 COLLECT_SCRIPT="qc_analysis/scripts/collect_variant_calling_results.py"
 BASE_WRAPPER="qc_analysis/scripts/run_qc_preprocessing.sh"
+NUMT_PROPAGATION_SCRIPT="qc_analysis/scripts/propagate_species_numt_positions.py"
 DEDUP_REF="results/qc/sample_deduplication/reports/deduplicated_sample_ref_file.tsv"
 
 usage() {
@@ -54,7 +55,12 @@ run_collect_dedup() {
 }
 
 run_step() {
-  bash "$BASE_WRAPPER" "$1" "$QC_CONFIG"
+  local step="$1"
+  bash "$BASE_WRAPPER" "$step" "$QC_CONFIG"
+  if [[ "$step" == "local_heteroplasmy_qc" ]]; then
+    echo "[qc_deduplicated] Propagating NUMT-supported positions across same-species samples" >&2
+    "$PYTHON" "$NUMT_PROPAGATION_SCRIPT" --config "$QC_CONFIG"
+  fi
 }
 
 run_dedup
