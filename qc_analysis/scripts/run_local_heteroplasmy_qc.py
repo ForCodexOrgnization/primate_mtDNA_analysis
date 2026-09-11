@@ -342,11 +342,16 @@ def main() -> int:
         afs = [float(r["source_af"]) for r in srows]
         assessed = len(srows) >= cfg_cluster.min_seed_variants
         observed = max_af_coherent_count(pos, afs, cfg_cluster) if assessed else 0
+
+        # Keep the permutation-based empirical P value as a diagnostic only.
+        # Cluster discovery itself no longer depends on empirical P or a
+        # permutation-derived critical count. A seed is defined directly by the
+        # configured biological rule: >= min_seed_variants within window_bp and
+        # whole-seed AF span <= af_span_max.
         null = permutation_null(afs, cfg_cluster, zlib.crc32(sample.encode())) if assessed else []
         pval = empirical_p(observed, null)
-        crit = critical_count(null, cfg_cluster.empirical_p_max, cfg_cluster.min_seed_variants) if assessed else cfg_cluster.min_seed_variants
-        detected = pval is not None and pval <= cfg_cluster.empirical_p_max
-        seeds = independent_seeds(pos, afs, crit, cfg_cluster) if detected else []
+        crit = cfg_cluster.min_seed_variants
+        seeds = independent_seeds(pos, afs, crit, cfg_cluster) if assessed else []
         expanded = expand_clusters(seeds, pos, afs, cfg_cluster) if seeds else []
 
         ann = {i: {"cluster_id": "", "cluster_class": "", "filter_action": "KEEP", "filter_reason": ""} for i in range(len(srows))}
