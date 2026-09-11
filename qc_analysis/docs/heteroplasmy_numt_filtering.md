@@ -41,15 +41,15 @@ Cluster discovery uses native-coordinate variants satisfying:
 
 ## Local cluster detection
 
-Default parameters are defined under `local_heteroplasmy_qc:` in `config/qc_preprocessing.yaml`:
+Default production cluster criteria are defined under `local_heteroplasmy_qc:` in `config/qc_preprocessing.yaml`:
 
 - circular 250-bp window
 - whole-cluster AF span <= 0.06
 - minimum seed size 3
-- 2,000 permutations
-- empirical P <= 0.01
 
-The permutation null randomizes positions uniformly without replacement while retaining the observed AF values. A sample-specific critical cluster count is derived from the empirical null. Independent seeds are selected greedily, then expanded post hoc by adding unassigned variants within 250 bp of a member while preserving the whole-cluster AF span <= 0.06. Expansion does not alter the seed P value.
+A local cluster seed is therefore defined directly as at least 3 AF-coherent HET variants within a 250-bp circular window. Independent seeds are selected greedily, then expanded post hoc by adding unassigned variants within 250 bp of a cluster member while preserving the whole-cluster AF span <= 0.06.
+
+The permutation null and empirical P value are retained only as diagnostics. They no longer gate cluster existence and no permutation-derived critical count is used for seed discovery; `critical_count` in reports corresponds to the configured minimum seed size.
 
 ## NUMT annotation
 
