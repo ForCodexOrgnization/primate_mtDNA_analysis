@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """Detect indel-centered complex regions among residual native-coordinate HETs.
 
-This step runs after local NUMT filtering/seed expansion.  It does not require a
-pre-existing AF-coherent HET cluster.  Instead, each raw-VFC indel is used as a
-local center and residual strict-HET SNVs are evaluated in a configurable
-circular window together with low-AF SNV and additional-indel context.
+This step runs after local NUMT filtering / seed expansion and intentionally does
+not require a pre-existing AF-coherent HET cluster. Raw indels are used as local
+centers and all residual strict-HET SNVs are evaluated together with low-AF SNV
+context.
 
-Default REMOVE-level evidence patterns (all require >=3 residual strict HETs in
-an indel-centered +/-100-bp window):
+Production decisions are conservative:
 
-* AF_MATCHED: at least one local indel has AF within 0.05 of the median HET AF.
-* MULTI_INDEL: at least two local indels occur in the window.
-* WATERFALL: at least two 1-10% SNVs, at least five total local SNVs
-  (residual HET + low-AF), and SNV AF span >=0.10.
+* A region is HIGH_CONFIDENCE only when >=2 independent evidence patterns are
+  present among AF_MATCHED, MULTI_INDEL and WATERFALL. All residual HETs in a
+  high-confidence region are removed.
+* A single-signal region is flagged, not removed wholesale.
+* For AF_MATCHED-only regions, individual HETs whose AF is itself within the
+  configured delta of a local indel are removed at variant level; other HETs in
+  the region remain flagged.
 
-Thresholds are optional config keys under ``indel_complex_region``.  When that
-section is absent, conservative defaults are used and the raw VCF directory is
-inherited from ``pre_liftover_variant_qc.input_vcf_dir``.
+Native mitochondrial length is read per sample from the raw VCF ``##contig``
+header. If no usable length is available, distance calculation falls back to
+linear distance rather than assuming human 16,569 bp; this avoids false/negative
+circular distances in non-human primates.
 """
 from __future__ import annotations
 
@@ -24,6 +27,7 @@ import argparse
 import csv
 import gzip
 import math
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -81,24 +85,27 @@ def yes(value) -> bool:
     return str(value).strip().upper() in {"YES", "TRUE", "T", "1"}
 
 
-def circular_distance(a: int, b: int, length: int) -> int:
-    d = abs(a - b)
-    return min(d, length - d)
+def append_reason(existing: str, reason: str) -> str:
+    parts = [item for item in str(existing or "").split(";") if item]
+    if reason and reason not in parts:
+        parts.append(reason)
+    return ";".join(parts)
 
 
-def source_key(row: dict) -> tuple[str, str, str, str, str]:
-    return (
-        str(row.get("sample", "")),
-        str(row.get("source_chrom", "")),
-        str(row.get("source_pos", "")),
-        str(row.get("source_ref", "")),
-        str(row.get("source_alt", "")),
-    )
+def circular_distance(a: int, b: int, length: int | None) -> int:
+    """Safe circular distance; use linear distance if length/coordinates are invalid."""
+    linear = abs(a - b)
+    if length is None or length <= 0:
+        return linear
+    if a < 1 or b < 1 or a > length or b > length:
+        return linear
+    return min(linear, length - linear)
 
 
 def variant_identity(row: dict) -> tuple:
     return (
         str(row.get("sample", "")),
+        str(row.get("chrom", "")),
         str(row.get("pos", "")),
         str(row.get("ref", "")),
         str(row.get("alt", "")),
@@ -115,8 +122,7 @@ def find_sample_vcf(vcf_dir: Path, sample: str) -> Path | None:
 
     matches = []
     for path in vcf_dir.glob(f"{sample}*"):
-        name = path.name
-        if name.endswith(".vcf") or name.endswith(".vcf.gz"):
+        if path.name.endswith(".vcf") or path.name.endswith(".vcf.gz"):
             matches.append(path)
     if not matches:
         return None
@@ -147,6 +153,17 @@ def parse_float_list(value: str | None) -> list[float | None]:
     return [fnum(item) for item in str(value).split(",")]
 
 
+def parse_contig_header(line: str) -> tuple[str | None, int | None]:
+    """Parse ##contig=<ID=...,length=...> without depending on field order."""
+    if not line.startswith("##contig=<"):
+        return None, None
+    id_match = re.search(r"(?:^|[,<])ID=([^,>]+)", line)
+    len_match = re.search(r"(?:^|[,<])(?:length|Length|LENGTH)=([0-9]+)", line)
+    if not id_match or not len_match:
+        return None, None
+    return id_match.group(1).strip('"'), inum(len_match.group(1))
+
+
 def read_raw_context(
     path: Path,
     sample: str,
@@ -156,14 +173,22 @@ def read_raw_context(
     low_snv_af_max: float = 0.10,
     indel_af_min: float = 0.01,
     indel_af_max: float = 0.95,
-) -> list[dict]:
-    """Read raw native-coordinate LOW_AF_SNV and INDEL context from one VCF."""
+) -> tuple[list[dict], dict[str, int]]:
+    """Read LOW_AF_SNV / INDEL context and VCF contig lengths."""
     opener = gzip.open if path.name.endswith(".gz") else open
     out: list[dict] = []
+    contig_lengths: dict[str, int] = {}
+
     with opener(path, "rt") as handle:
         for line in handle:
+            if line.startswith("##contig=<"):
+                contig, length = parse_contig_header(line)
+                if contig and length:
+                    contig_lengths[contig] = length
+                continue
             if not line or line.startswith("#"):
                 continue
+
             fields = line.rstrip("\n").split("\t")
             if len(fields) < 8:
                 continue
@@ -215,6 +240,7 @@ def read_raw_context(
                     variant_type = "INDEL"
                 if variant_type is None:
                     continue
+
                 out.append(
                     {
                         "sample": sample,
@@ -228,11 +254,32 @@ def read_raw_context(
                         "variant_type": variant_type,
                     }
                 )
-    return out
+    return out, contig_lengths
+
+
+def choose_native_length(
+    contig_lengths: dict[str, int], residuals: list[dict], context: list[dict]
+) -> tuple[int | None, str, str]:
+    """Choose sample-native mt length, preferring the residual SOURCE chromosome."""
+    residual_chroms = [str(row.get("chrom", "")) for row in residuals if row.get("chrom")]
+    for chrom in residual_chroms:
+        if chrom in contig_lengths:
+            return contig_lengths[chrom], "VCF_HEADER_SOURCE_CHROM", chrom
+
+    context_chroms = [str(row.get("chrom", "")) for row in context if row.get("chrom")]
+    for chrom in context_chroms:
+        if chrom in contig_lengths:
+            return contig_lengths[chrom], "VCF_HEADER_CONTEXT_CHROM", chrom
+
+    if len(contig_lengths) == 1:
+        chrom, length = next(iter(contig_lengths.items()))
+        return length, "VCF_HEADER_SINGLE_CONTIG", chrom
+
+    return None, "LINEAR_FALLBACK_NO_USABLE_CONTIG_LENGTH", ""
 
 
 def reset_previous_indel_calls(variants: list[dict]) -> None:
-    """Make the step safely rerunnable after a fresh or repeated NUMT expansion."""
+    """Restore pre-indel action/reason so this step is safely rerunnable."""
     for row in variants:
         if str(row.get("indel_complex_region", "")).upper() != "YES":
             continue
@@ -241,18 +288,52 @@ def reset_previous_indel_calls(variants: list[dict]) -> None:
         for field in (
             "indel_complex_region_id",
             "indel_complex_pattern",
+            "indel_complex_decision",
+            "indel_complex_evidence_count",
             "indel_complex_nearest_indel_distance_bp",
             "indel_complex_best_delta_af",
+            "indel_complex_variant_af_matched",
         ):
             row[field] = ""
         row["indel_complex_region"] = "NO"
+
+
+def classify_patterns(
+    hets: list[dict],
+    indels: list[dict],
+    low_snvs: list[dict],
+    af_match_max_delta: float,
+    multiple_indel_min: int,
+    waterfall_min_low_snv: int,
+    waterfall_min_total_snv: int,
+    waterfall_min_snv_af_span: float,
+) -> tuple[list[str], float | None, float]:
+    het_afs = [float(row["af"]) for row in hets]
+    low_afs = [float(row["af"]) for row in low_snvs]
+    med = median(het_afs)
+    best_delta = min(abs(float(row["af"]) - med) for row in indels) if indels else None
+    snv_afs = het_afs + low_afs
+    snv_span = max(snv_afs) - min(snv_afs) if snv_afs else 0.0
+
+    patterns = []
+    if best_delta is not None and best_delta <= af_match_max_delta + 1e-12:
+        patterns.append("AF_MATCHED")
+    if len(indels) >= multiple_indel_min:
+        patterns.append("MULTI_INDEL")
+    if (
+        len(low_snvs) >= waterfall_min_low_snv
+        and len(hets) + len(low_snvs) >= waterfall_min_total_snv
+        and snv_span >= waterfall_min_snv_af_span - 1e-12
+    ):
+        patterns.append("WATERFALL")
+    return patterns, best_delta, snv_span
 
 
 def detect_candidate_windows(
     residuals: list[dict],
     indels: list[dict],
     low_snvs: list[dict],
-    mt_length: int = 16569,
+    mt_length: int | None = None,
     radius_bp: int = 100,
     min_residual_het: int = 3,
     af_match_max_delta: float = 0.05,
@@ -261,7 +342,7 @@ def detect_candidate_windows(
     waterfall_min_total_snv: int = 5,
     waterfall_min_snv_af_span: float = 0.10,
 ) -> list[dict]:
-    """Return indel-centered windows meeting at least one artifact pattern."""
+    """Return indel-centered windows with >=1 evidence pattern."""
     candidates = []
     for center in indels:
         center_pos = int(center["pos"])
@@ -279,27 +360,19 @@ def detect_candidate_windows(
             row for row in low_snvs
             if circular_distance(int(row["pos"]), center_pos, mt_length) <= radius_bp
         ]
-
-        het_afs = [float(row["af"]) for row in local_hets]
-        het_median = median(het_afs)
-        best_delta = min(abs(float(row["af"]) - het_median) for row in local_indels)
-        snv_afs = het_afs + [float(row["af"]) for row in local_low]
-        snv_af_span = max(snv_afs) - min(snv_afs) if snv_afs else 0.0
-
-        patterns = []
-        if best_delta <= af_match_max_delta + 1e-12:
-            patterns.append("AF_MATCHED")
-        if len(local_indels) >= multiple_indel_min:
-            patterns.append("MULTI_INDEL")
-        if (
-            len(local_low) >= waterfall_min_low_snv
-            and len(local_hets) + len(local_low) >= waterfall_min_total_snv
-            and snv_af_span >= waterfall_min_snv_af_span - 1e-12
-        ):
-            patterns.append("WATERFALL")
+        patterns, best_delta, snv_span = classify_patterns(
+            local_hets,
+            local_indels,
+            local_low,
+            af_match_max_delta,
+            multiple_indel_min,
+            waterfall_min_low_snv,
+            waterfall_min_total_snv,
+            waterfall_min_snv_af_span,
+        )
         if not patterns:
             continue
-
+        het_afs = [float(row["af"]) for row in local_hets]
         candidates.append(
             {
                 "sample": str(center.get("sample", "")),
@@ -309,9 +382,9 @@ def detect_candidate_windows(
                 "indels": local_indels,
                 "low_snvs": local_low,
                 "patterns": patterns,
-                "het_median_af": het_median,
+                "het_median_af": median(het_afs),
                 "het_af_span": max(het_afs) - min(het_afs),
-                "snv_context_af_span": snv_af_span,
+                "snv_context_af_span": snv_span,
                 "best_indel_delta_af": best_delta,
             }
         )
@@ -348,21 +421,33 @@ def merge_candidate_windows(candidates: list[dict]) -> list[list[dict]]:
     return list(groups.values())
 
 
-def build_regions(candidate_groups: list[list[dict]], mt_length: int, radius_bp: int) -> list[dict]:
+def build_regions(
+    candidate_groups: list[list[dict]],
+    mt_length_by_sample: dict[str, int | None],
+    length_source_by_sample: dict[str, str],
+    length_chrom_by_sample: dict[str, str],
+    radius_bp: int,
+    af_match_max_delta: float = 0.05,
+    multiple_indel_min: int = 2,
+    waterfall_min_low_snv: int = 2,
+    waterfall_min_total_snv: int = 5,
+    waterfall_min_snv_af_span: float = 0.10,
+    high_conf_min_patterns: int = 2,
+) -> list[dict]:
     regions = []
     per_sample_counter = Counter()
+
     for group in candidate_groups:
         sample = group[0]["sample"]
+        length = mt_length_by_sample.get(sample)
         per_sample_counter[sample] += 1
         region_id = f"{sample}_ICR{per_sample_counter[sample]:03d}"
 
         het_by_idx = {}
         indel_by_key = {}
         low_by_key = {}
-        patterns = set()
         trigger_positions = set()
         for item in group:
-            patterns.update(item["patterns"])
             trigger_positions.add(int(item["center_pos"]))
             for row in item["hets"]:
                 het_by_idx[int(row["variant_index"])] = row
@@ -374,50 +459,96 @@ def build_regions(candidate_groups: list[list[dict]], mt_length: int, radius_bp:
         hets = list(het_by_idx.values())
         indels = list(indel_by_key.values())
         low_snvs = list(low_by_key.values())
+        patterns, best_delta, snv_span = classify_patterns(
+            hets,
+            indels,
+            low_snvs,
+            af_match_max_delta,
+            multiple_indel_min,
+            waterfall_min_low_snv,
+            waterfall_min_total_snv,
+            waterfall_min_snv_af_span,
+        )
+        if not patterns:
+            continue
+
         het_afs = [float(row["af"]) for row in hets]
-        low_afs = [float(row["af"]) for row in low_snvs]
-        med = median(het_afs)
-        best_delta = min(abs(float(row["af"]) - med) for row in indels) if indels else None
-        nearest_dist = min(
-            circular_distance(int(h["pos"]), int(ind["pos"]), mt_length)
-            for h in hets for ind in indels
-        ) if hets and indels else None
-        snv_afs = het_afs + low_afs
+        nearest_dist = (
+            min(
+                circular_distance(int(h["pos"]), int(ind["pos"]), length)
+                for h in hets for ind in indels
+            )
+            if hets and indels else None
+        )
+        af_matched_het_indices = {
+            int(h["variant_index"])
+            for h in hets
+            if any(abs(float(h["af"]) - float(ind["af"])) <= af_match_max_delta + 1e-12 for ind in indels)
+        }
+        evidence_count = len(patterns)
+        high_confidence = evidence_count >= high_conf_min_patterns
+        if high_confidence:
+            decision = "REMOVE_REGION_HIGH_CONF"
+        elif patterns == ["AF_MATCHED"]:
+            decision = "FLAG_REGION_REMOVE_AF_MATCHED_VARIANTS"
+        else:
+            decision = "FLAG_REGION_SINGLE_SIGNAL"
 
         regions.append(
             {
                 "region_id": region_id,
                 "sample": sample,
-                "patterns": sorted(patterns),
+                "patterns": patterns,
+                "evidence_count": evidence_count,
+                "high_confidence": high_confidence,
+                "decision": decision,
                 "trigger_positions": sorted(trigger_positions),
                 "hets": hets,
                 "indels": indels,
                 "low_snvs": low_snvs,
+                "af_matched_het_indices": af_matched_het_indices,
                 "n_residual_het": len(hets),
+                "n_af_matched_het_variants": len(af_matched_het_indices),
                 "n_preexisting_clustered_het": sum(yes(row.get("clustered")) for row in hets),
                 "n_unclustered_het": sum(not yes(row.get("clustered")) for row in hets),
                 "n_indels": len(indels),
                 "n_low_af_snv": len(low_snvs),
-                "het_median_af": med,
+                "het_median_af": median(het_afs),
                 "het_af_min": min(het_afs),
                 "het_af_max": max(het_afs),
                 "het_af_span": max(het_afs) - min(het_afs),
-                "snv_context_af_span": max(snv_afs) - min(snv_afs) if snv_afs else 0.0,
+                "snv_context_af_span": snv_span,
                 "best_indel_delta_af": best_delta,
                 "nearest_het_indel_distance_bp": nearest_dist,
                 "radius_bp": radius_bp,
+                "native_mt_length": length,
+                "native_mt_length_source": length_source_by_sample.get(sample, ""),
+                "native_mt_contig": length_chrom_by_sample.get(sample, ""),
             }
         )
     return regions
 
 
-def annotate_variants(variants: list[dict], regions: list[dict], action: str, mt_length: int) -> list[dict]:
+def annotate_variants(
+    variants: list[dict],
+    regions: list[dict],
+    af_match_max_delta: float,
+    mt_length_by_sample: dict[str, int | None],
+) -> tuple[int, int, int]:
+    """Apply region-level and variant-level decisions.
+
+    Returns counts of (high-conf region removals, single-AF matched removals,
+    single-signal flagged HETs).
+    """
     by_index = {}
     for region in regions:
         for het in region["hets"]:
             by_index[int(het["variant_index"])] = region
 
-    annotated = []
+    n_high_conf_removed = 0
+    n_af_variant_removed = 0
+    n_flagged = 0
+
     for i, row in enumerate(variants):
         region = by_index.get(i)
         if region is None:
@@ -428,39 +559,67 @@ def annotate_variants(variants: list[dict], regions: list[dict], action: str, mt
         if not row.get("pre_indel_filter_action"):
             row["pre_indel_filter_action"] = row.get("filter_action", "KEEP") or "KEEP"
             row["pre_indel_filter_reason"] = row.get("filter_reason", "")
+
         pos = inum(row.get("source_pos"))
         af = fnum(row.get("source_af"))
+        length = mt_length_by_sample.get(str(row.get("sample", "")))
         nearest = None
         best_delta = None
-        if pos is not None:
-            nearest = min(circular_distance(pos, int(ind["pos"]), mt_length) for ind in region["indels"])
-        if af is not None:
+        if pos is not None and region["indels"]:
+            nearest = min(circular_distance(pos, int(ind["pos"]), length) for ind in region["indels"])
+        if af is not None and region["indels"]:
             best_delta = min(abs(af - float(ind["af"])) for ind in region["indels"])
+        variant_af_matched = best_delta is not None and best_delta <= af_match_max_delta + 1e-12
 
         row["indel_complex_region"] = "YES"
         row["indel_complex_region_id"] = region["region_id"]
         row["indel_complex_pattern"] = "+".join(region["patterns"])
+        row["indel_complex_decision"] = region["decision"]
+        row["indel_complex_evidence_count"] = str(region["evidence_count"])
         row["indel_complex_nearest_indel_distance_bp"] = "" if nearest is None else str(nearest)
         row["indel_complex_best_delta_af"] = "" if best_delta is None else f"{best_delta:.6g}"
-        if action == "REMOVE":
+        row["indel_complex_variant_af_matched"] = "YES" if variant_af_matched else "NO"
+
+        if region["high_confidence"]:
             row["filter_action"] = "REMOVE"
-            row["filter_reason"] = "INDEL_COMPLEX_REGION"
-        elif action == "FLAG" and str(row.get("filter_action", "")).upper() == "KEEP":
-            row["filter_action"] = "FLAG"
-            row["filter_reason"] = "INDEL_COMPLEX_REGION"
-        annotated.append(dict(row))
-    return annotated
+            row["filter_reason"] = "INDEL_COMPLEX_REGION_HIGH_CONF"
+            n_high_conf_removed += 1
+        elif region["patterns"] == ["AF_MATCHED"] and variant_af_matched:
+            row["filter_action"] = "REMOVE"
+            row["filter_reason"] = "INDEL_AF_MATCHED_VARIANT"
+            n_af_variant_removed += 1
+        else:
+            previous_action = str(row.get("filter_action", "KEEP")).upper()
+            if previous_action not in {"REMOVE", "FLAG"}:
+                row["filter_action"] = "FLAG"
+            row["filter_reason"] = append_reason(row.get("filter_reason", ""), "INDEL_COMPLEX_REGION_SINGLE_SIGNAL")
+            n_flagged += 1
+
+    return n_high_conf_removed, n_af_variant_removed, n_flagged
 
 
 def update_samples(samples: list[dict], variants: list[dict], regions: list[dict]) -> list[dict]:
-    region_n = Counter(region["sample"] for region in regions)
-    indel_var_n = Counter()
+    region_n = Counter()
+    high_conf_n = Counter()
+    single_n = Counter()
+    complex_var_n = Counter()
+    af_variant_removed = Counter()
     total_remove = Counter()
     remain = Counter()
+
+    for region in regions:
+        region_n[region["sample"]] += 1
+        if region["high_confidence"]:
+            high_conf_n[region["sample"]] += 1
+        else:
+            single_n[region["sample"]] += 1
+
     for row in variants:
         sample = str(row.get("sample", ""))
         if str(row.get("indel_complex_region", "")).upper() == "YES":
-            indel_var_n[sample] += 1
+            complex_var_n[sample] += 1
+        if str(row.get("filter_reason", "")) == "INDEL_AF_MATCHED_VARIANT":
+            af_variant_removed[sample] += 1
         if str(row.get("filter_action", "")).upper() == "REMOVE":
             total_remove[sample] += 1
         else:
@@ -472,7 +631,10 @@ def update_samples(samples: list[dict], variants: list[dict], regions: list[dict
         sample = str(row.get("sample", ""))
         n_het = inum(row.get("n_het")) or 0
         row["n_indel_complex_regions"] = region_n[sample]
-        row["n_indel_complex_variants"] = indel_var_n[sample]
+        row["n_indel_high_conf_regions"] = high_conf_n[sample]
+        row["n_indel_single_signal_regions"] = single_n[sample]
+        row["n_indel_complex_variants"] = complex_var_n[sample]
+        row["n_indel_variant_af_matched_removed"] = af_variant_removed[sample]
         row["n_heteroplasmy_variants_to_remove"] = total_remove[sample]
         row["n_het_after_local_artifact_filter"] = remain[sample]
         row["fraction_het_removed_all"] = f"{total_remove[sample] / n_het:.6g}" if n_het else "0"
@@ -493,8 +655,7 @@ def main() -> int:
         print("[indel_complex_region] disabled", file=sys.stderr)
         return 0
 
-    local_out = resolve(local_sec.get("output_dir", "results/qc/local_heteroplasmy_qc"))
-    report_dir = local_out / "reports"
+    report_dir = resolve(local_sec.get("output_dir", "results/qc/local_heteroplasmy_qc")) / "reports"
     variant_path = report_dir / "local_heteroplasmy_variant_detail.tsv"
     sample_path = report_dir / "local_heteroplasmy_sample_summary.tsv"
     variants = read_tsv(variant_path)
@@ -509,7 +670,6 @@ def main() -> int:
     if not vcf_dir.is_dir():
         raise RuntimeError(f"Raw VCF directory does not exist: {vcf_dir}")
 
-    mt_length = int(sec.get("mt_length", local_sec.get("mt_length", 16569)))
     radius_bp = int(sec.get("radius_bp", 100))
     dp_min = int(sec.get("dp_min", local_sec.get("dp_min", 100)))
     pass_only = bool(sec.get("pass_only", True))
@@ -523,9 +683,7 @@ def main() -> int:
     water_low = int(sec.get("waterfall_min_low_snv", 2))
     water_total = int(sec.get("waterfall_min_total_snv", 5))
     water_span = float(sec.get("waterfall_min_snv_af_span", 0.10))
-    action = str(sec.get("action", "REMOVE")).strip().upper()
-    if action not in {"REMOVE", "FLAG"}:
-        raise ValueError("indel_complex_region.action must be REMOVE or FLAG")
+    high_conf_min_patterns = int(sec.get("high_conf_min_patterns", 2))
 
     residual_by_sample = defaultdict(list)
     for i, row in enumerate(variants):
@@ -539,6 +697,7 @@ def main() -> int:
                 "variant_index": i,
                 "sample": str(row.get("sample", "")),
                 "species": str(row.get("species", "")),
+                "chrom": str(row.get("source_chrom", "")),
                 "pos": pos,
                 "af": af,
                 "clustered": row.get("clustered", "NO"),
@@ -549,6 +708,10 @@ def main() -> int:
     all_candidates = []
     missing_vcf = []
     raw_context_counts = Counter()
+    mt_length_by_sample: dict[str, int | None] = {}
+    length_source_by_sample: dict[str, str] = {}
+    length_chrom_by_sample: dict[str, str] = {}
+
     for sample, residuals in sorted(residual_by_sample.items()):
         if len(residuals) < min_het:
             continue
@@ -556,7 +719,8 @@ def main() -> int:
         if vcf is None:
             missing_vcf.append(sample)
             continue
-        context = read_raw_context(
+
+        context, contig_lengths = read_raw_context(
             vcf,
             sample,
             dp_min=dp_min,
@@ -566,18 +730,24 @@ def main() -> int:
             indel_af_min=indel_min,
             indel_af_max=indel_max,
         )
+        native_length, length_source, length_chrom = choose_native_length(contig_lengths, residuals, context)
+        mt_length_by_sample[sample] = native_length
+        length_source_by_sample[sample] = length_source
+        length_chrom_by_sample[sample] = length_chrom
+
         indels = [row for row in context if row["variant_type"] == "INDEL"]
         low_snvs = [row for row in context if row["variant_type"] == "LOW_AF_SNV"]
         raw_context_counts["indels"] += len(indels)
         raw_context_counts["low_snvs"] += len(low_snvs)
         if not indels:
             continue
+
         all_candidates.extend(
             detect_candidate_windows(
                 residuals,
                 indels,
                 low_snvs,
-                mt_length=mt_length,
+                mt_length=native_length,
                 radius_bp=radius_bp,
                 min_residual_het=min_het,
                 af_match_max_delta=af_delta,
@@ -588,8 +758,26 @@ def main() -> int:
             )
         )
 
-    regions = build_regions(merge_candidate_windows(all_candidates), mt_length, radius_bp)
-    annotated = annotate_variants(variants, regions, action, mt_length)
+    regions = build_regions(
+        merge_candidate_windows(all_candidates),
+        mt_length_by_sample,
+        length_source_by_sample,
+        length_chrom_by_sample,
+        radius_bp,
+        af_match_max_delta=af_delta,
+        multiple_indel_min=multi_min,
+        waterfall_min_low_snv=water_low,
+        waterfall_min_total_snv=water_total,
+        waterfall_min_snv_af_span=water_span,
+        high_conf_min_patterns=high_conf_min_patterns,
+    )
+
+    n_high_conf_removed, n_af_variant_removed, n_flagged = annotate_variants(
+        variants,
+        regions,
+        af_match_max_delta=af_delta,
+        mt_length_by_sample=mt_length_by_sample,
+    )
     samples = update_samples(samples, variants, regions)
 
     variant_extra = [
@@ -598,15 +786,21 @@ def main() -> int:
         "indel_complex_region",
         "indel_complex_region_id",
         "indel_complex_pattern",
+        "indel_complex_decision",
+        "indel_complex_evidence_count",
         "indel_complex_nearest_indel_distance_bp",
         "indel_complex_best_delta_af",
+        "indel_complex_variant_af_matched",
     ]
     variant_fields = add_fields(list(variants[0]), variant_extra)
     sample_fields = add_fields(
         list(samples[0]) if samples else [],
         [
             "n_indel_complex_regions",
+            "n_indel_high_conf_regions",
+            "n_indel_single_signal_regions",
             "n_indel_complex_variants",
+            "n_indel_variant_af_matched_removed",
             "n_heteroplasmy_variants_to_remove",
             "n_het_after_local_artifact_filter",
             "fraction_het_removed_all",
@@ -628,9 +822,16 @@ def main() -> int:
                 "sample": region["sample"],
                 "species": species,
                 "patterns": "+".join(region["patterns"]),
+                "evidence_count": region["evidence_count"],
+                "high_confidence": "YES" if region["high_confidence"] else "NO",
+                "decision": region["decision"],
                 "trigger_indel_positions": ",".join(str(x) for x in region["trigger_positions"]),
                 "radius_bp": region["radius_bp"],
+                "native_mt_length": "" if region["native_mt_length"] is None else region["native_mt_length"],
+                "native_mt_length_source": region["native_mt_length_source"],
+                "native_mt_contig": region["native_mt_contig"],
                 "n_residual_het": region["n_residual_het"],
+                "n_af_matched_het_variants": region["n_af_matched_het_variants"],
                 "n_preexisting_clustered_het": region["n_preexisting_clustered_het"],
                 "n_unclustered_het": region["n_unclustered_het"],
                 "n_indels": region["n_indels"],
@@ -642,31 +843,33 @@ def main() -> int:
                 "snv_context_af_span": f"{region['snv_context_af_span']:.6g}",
                 "best_indel_delta_af": "" if region["best_indel_delta_af"] is None else f"{region['best_indel_delta_af']:.6g}",
                 "nearest_het_indel_distance_bp": "" if region["nearest_het_indel_distance_bp"] is None else region["nearest_het_indel_distance_bp"],
-                "action": action,
             }
         )
+
     region_fields = [
-        "region_id", "sample", "species", "patterns", "trigger_indel_positions", "radius_bp",
-        "n_residual_het", "n_preexisting_clustered_het", "n_unclustered_het", "n_indels", "n_low_af_snv",
-        "het_median_af", "het_af_min", "het_af_max", "het_af_span", "snv_context_af_span",
-        "best_indel_delta_af", "nearest_het_indel_distance_bp", "action",
+        "region_id", "sample", "species", "patterns", "evidence_count", "high_confidence", "decision",
+        "trigger_indel_positions", "radius_bp", "native_mt_length", "native_mt_length_source", "native_mt_contig",
+        "n_residual_het", "n_af_matched_het_variants", "n_preexisting_clustered_het", "n_unclustered_het",
+        "n_indels", "n_low_af_snv", "het_median_af", "het_af_min", "het_af_max", "het_af_span",
+        "snv_context_af_span", "best_indel_delta_af", "nearest_het_indel_distance_bp",
     ]
     write_tsv(report_dir / "indel_complex_regions.tsv", region_rows, region_fields)
-    write_tsv(report_dir / "indel_complex_variant_detail.tsv", annotated, variant_fields)
+    write_tsv(report_dir / "indel_complex_variant_detail.tsv", [dict(row) for row in variants if yes(row.get("indel_complex_region"))], variant_fields)
 
     removals = [dict(row) for row in variants if str(row.get("filter_action", "")).upper() == "REMOVE"]
-    # New generic combined report plus legacy filename for the existing final-filter wrapper.
     write_tsv(report_dir / "heteroplasmy_variants_to_remove.tsv", removals, variant_fields)
+    # Compatibility with existing final-filter wrapper.
     write_tsv(report_dir / "numt_variants_to_remove.tsv", removals, variant_fields)
 
     pattern_counts = Counter()
+    decision_counts = Counter(region["decision"] for region in regions)
     for region in regions:
         for pattern in region["patterns"]:
             pattern_counts[pattern] += 1
-    indel_removed = sum(str(row.get("indel_complex_region", "")).upper() == "YES" for row in variants)
+
+    linear_fallback_samples = sum(1 for source in length_source_by_sample.values() if source.startswith("LINEAR_FALLBACK"))
     summary = [
         {
-            "action": action,
             "radius_bp": radius_bp,
             "min_residual_het": min_het,
             "af_match_max_delta": f"{af_delta:.6g}",
@@ -674,19 +877,26 @@ def main() -> int:
             "waterfall_min_low_snv": water_low,
             "waterfall_min_total_snv": water_total,
             "waterfall_min_snv_af_span": f"{water_span:.6g}",
+            "high_conf_min_patterns": high_conf_min_patterns,
             "n_candidate_windows": len(all_candidates),
             "n_complex_regions": len(regions),
-            "n_indel_complex_het": indel_removed,
+            "n_high_conf_regions": decision_counts["REMOVE_REGION_HIGH_CONF"],
+            "n_single_signal_regions": len(regions) - decision_counts["REMOVE_REGION_HIGH_CONF"],
+            "n_high_conf_region_het_removed": n_high_conf_removed,
+            "n_single_af_matched_variants_removed": n_af_variant_removed,
+            "n_single_signal_het_flagged": n_flagged,
             "n_regions_af_matched": pattern_counts["AF_MATCHED"],
             "n_regions_multi_indel": pattern_counts["MULTI_INDEL"],
             "n_regions_waterfall": pattern_counts["WATERFALL"],
             "n_raw_indels_examined": raw_context_counts["indels"],
             "n_raw_low_snv_examined": raw_context_counts["low_snvs"],
             "n_samples_missing_vcf": len(missing_vcf),
+            "n_samples_linear_distance_fallback": linear_fallback_samples,
             "n_total_heteroplasmy_removals": len(removals),
         }
     ]
     write_tsv(report_dir / "indel_complex_summary.tsv", summary, list(summary[0]))
+
     if missing_vcf:
         write_tsv(
             report_dir / "indel_complex_missing_vcf.tsv",
@@ -694,10 +904,25 @@ def main() -> int:
             ["sample"],
         )
 
+    length_rows = [
+        {
+            "sample": sample,
+            "native_mt_length": "" if mt_length_by_sample.get(sample) is None else mt_length_by_sample[sample],
+            "native_mt_length_source": length_source_by_sample.get(sample, ""),
+            "native_mt_contig": length_chrom_by_sample.get(sample, ""),
+        }
+        for sample in sorted(mt_length_by_sample)
+    ]
+    write_tsv(
+        report_dir / "indel_complex_native_mt_lengths.tsv",
+        length_rows,
+        ["sample", "native_mt_length", "native_mt_length_source", "native_mt_contig"],
+    )
+
     print(
-        f"[indel_complex_region] regions={len(regions)} indel_complex_het={indel_removed} "
-        f"patterns(AF_MATCHED={pattern_counts['AF_MATCHED']},MULTI_INDEL={pattern_counts['MULTI_INDEL']},"
-        f"WATERFALL={pattern_counts['WATERFALL']}) total_remove={len(removals)} missing_vcf={len(missing_vcf)}",
+        f"[indel_complex_region] regions={len(regions)} high_conf_regions={decision_counts['REMOVE_REGION_HIGH_CONF']} "
+        f"high_conf_removed={n_high_conf_removed} single_af_removed={n_af_variant_removed} flagged={n_flagged} "
+        f"total_remove={len(removals)} linear_fallback_samples={linear_fallback_samples} missing_vcf={len(missing_vcf)}",
         file=sys.stderr,
     )
     return 0
