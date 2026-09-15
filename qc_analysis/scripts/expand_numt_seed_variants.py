@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Limited AF expansion around REMOVE-level NUMT-supported HET clusters."""
+"""Promote strong species-level NUMT clusters and expand REMOVE-level NUMT seeds."""
 from __future__ import annotations
 
 import argparse, csv, math, sys
@@ -59,13 +59,110 @@ def inside_interval(pos, start, end):
     return start <= pos <= end if start <= end else (pos >= start or pos <= end)
 
 
+def reset_previous(variants, clusters):
+    """Restore any prior expansion/strong-species promotions before recalculation."""
+    for r in variants:
+        if str(r.get("numt_expanded", "")).upper() == "YES":
+            r["filter_action"] = r.get("pre_expansion_filter_action", "KEEP") or "KEEP"
+            r["filter_reason"] = r.get("pre_expansion_filter_reason", "")
+            r["numt_scope"] = r.get("pre_expansion_numt_scope", "NONE") or "NONE"
+            r["numt_tier"] = r.get("pre_expansion_numt_tier", "NONE") or "NONE"
+            for k in ("numt_expansion_seed_id", "numt_expansion_delta_af", "numt_expansion_distance_bp", "numt_expansion_final_af_span"):
+                r[k] = ""
+            r["numt_expanded"] = "NO"
+        if str(r.get("strong_species_numt_evidence", "")).upper() == "YES":
+            r["filter_action"] = r.get("pre_strong_species_filter_action", "FLAG") or "FLAG"
+            r["filter_reason"] = r.get("pre_strong_species_filter_reason", "SPECIES_NUMT_OVERLAP")
+            r["numt_scope"] = r.get("pre_strong_species_numt_scope", "SPECIES") or "SPECIES"
+            r["numt_tier"] = r.get("pre_strong_species_numt_tier", r.get("numt_tier", "NONE")) or "NONE"
+            r["strong_species_numt_evidence"] = "NO"
+
+    for r in clusters:
+        if str(r.get("strong_species_numt_evidence", "")).upper() == "YES":
+            r["filter_action"] = r.get("pre_strong_species_filter_action", "FLAG") or "FLAG"
+            r["filter_reason"] = r.get("pre_strong_species_filter_reason", "SPECIES_NUMT_OVERLAP")
+            r["numt_scope"] = r.get("pre_strong_species_numt_scope", "SPECIES") or "SPECIES"
+            r["strong_species_numt_evidence"] = "NO"
+        r["numt_expansion_n_variants"] = 0
+        r["numt_expansion_final_af_min"] = r.get("af_min", "")
+        r["numt_expansion_final_af_max"] = r.get("af_max", "")
+        r["numt_expansion_final_af_span"] = r.get("af_span", "")
+
+
+def promote_strong_species_numt_clusters(
+    clusters,
+    variants,
+    min_support_samples=2,
+    min_overlap_variants=3,
+    min_overlap_fraction=0.80,
+):
+    """Promote strict species-NUMT-only clusters to REMOVE when evidence is strong.
+
+    The strict local-cluster requirement is already satisfied because this function
+    evaluates only rows emitted in local_heteroplasmy_cluster_summary.tsv.
+    """
+    by_cluster = defaultdict(list)
+    for i, r in enumerate(variants):
+        cid = str(r.get("cluster_id", ""))
+        if cid:
+            by_cluster[cid].append(i)
+
+    promoted_clusters = 0
+    promoted_variants = 0
+    for r in clusters:
+        cid = str(r.get("cluster_id", ""))
+        sample_numt = str(r.get("sample_numt_evidence", "")).upper() == "YES"
+        species_numt = str(r.get("species_numt_evidence", "")).upper() == "YES"
+        recurrent = str(r.get("recurrence", "")).upper() == "YES"
+        support_n = inum(r.get("species_numt_support_n")) or 0
+        overlap_n = inum(r.get("numt_overlap_n")) or 0
+        overlap_fraction = fnum(r.get("numt_overlap_fraction")) or 0.0
+
+        strong = (
+            (not sample_numt)
+            and species_numt
+            and (not recurrent)
+            and support_n >= min_support_samples
+            and overlap_n >= min_overlap_variants
+            and overlap_fraction >= min_overlap_fraction
+        )
+        r["strong_species_numt_evidence"] = "YES" if strong else "NO"
+        if not strong:
+            continue
+
+        if not r.get("pre_strong_species_filter_action"):
+            r["pre_strong_species_filter_action"] = r.get("filter_action", "FLAG") or "FLAG"
+            r["pre_strong_species_filter_reason"] = r.get("filter_reason", "SPECIES_NUMT_OVERLAP")
+            r["pre_strong_species_numt_scope"] = r.get("numt_scope", "SPECIES") or "SPECIES"
+        r["filter_action"] = "REMOVE"
+        r["filter_reason"] = "STRONG_SPECIES_NUMT_OVERLAP"
+        r["numt_scope"] = "SPECIES"
+        promoted_clusters += 1
+
+        for i in by_cluster.get(cid, []):
+            v = variants[i]
+            if not v.get("pre_strong_species_filter_action"):
+                v["pre_strong_species_filter_action"] = v.get("filter_action", "FLAG") or "FLAG"
+                v["pre_strong_species_filter_reason"] = v.get("filter_reason", "SPECIES_NUMT_OVERLAP")
+                v["pre_strong_species_numt_scope"] = v.get("numt_scope", "SPECIES") or "SPECIES"
+                v["pre_strong_species_numt_tier"] = v.get("numt_tier", "NONE") or "NONE"
+            v["strong_species_numt_evidence"] = "YES"
+            v["filter_action"] = "REMOVE"
+            v["filter_reason"] = "STRONG_SPECIES_NUMT_OVERLAP"
+            v["numt_scope"] = "SPECIES"
+            promoted_variants += 1
+
+    return promoted_clusters, promoted_variants
+
+
 def strong_seeds(cluster_rows):
     out = []
     for r in cluster_rows:
         if str(r.get("filter_action", "")).upper() != "REMOVE": continue
         sample_ok = str(r.get("sample_numt_evidence", "")).upper() == "YES"
         species_rec = str(r.get("species_numt_evidence", "")).upper() == "YES" and str(r.get("recurrence", "")).upper() == "YES"
-        if not (sample_ok or species_rec): continue
+        species_strong = str(r.get("strong_species_numt_evidence", "")).upper() == "YES"
+        if not (sample_ok or species_rec or species_strong): continue
         vals = [inum(r.get(k)) for k in ("cluster_start", "cluster_end", "numt_chrm_start", "numt_chrm_end")]
         afs = [fnum(r.get(k)) for k in ("median_af", "af_min", "af_max")]
         if any(v is None for v in vals + afs): continue
@@ -79,26 +176,26 @@ def strong_seeds(cluster_rows):
     return out
 
 
-def reset_previous(variants, clusters):
-    for r in variants:
-        if str(r.get("numt_expanded", "")).upper() != "YES": continue
-        r["filter_action"] = r.get("pre_expansion_filter_action", "KEEP") or "KEEP"
-        r["filter_reason"] = r.get("pre_expansion_filter_reason", "")
-        r["numt_scope"] = r.get("pre_expansion_numt_scope", "NONE") or "NONE"
-        r["numt_tier"] = r.get("pre_expansion_numt_tier", "NONE") or "NONE"
-        for k in ("numt_expansion_seed_id", "numt_expansion_delta_af", "numt_expansion_distance_bp", "numt_expansion_final_af_span"):
-            r[k] = ""
-        r["numt_expanded"] = "NO"
-    for r in clusters:
-        r["numt_expansion_n_variants"] = 0
-        r["numt_expansion_final_af_min"] = r.get("af_min", "")
-        r["numt_expansion_final_af_max"] = r.get("af_max", "")
-        r["numt_expansion_final_af_span"] = r.get("af_span", "")
-
-
-def apply_expansion(clusters, variants, mt_length=16569, max_distance_bp=250, max_delta_af=0.07, max_total_af_span=0.10):
-    """Expand strict REMOVE seeds without changing the original seed centre."""
+def apply_expansion(
+    clusters,
+    variants,
+    mt_length=16569,
+    max_distance_bp=250,
+    max_delta_af=0.07,
+    max_total_af_span=0.10,
+    strong_species_min_support_samples=2,
+    strong_species_min_overlap_variants=3,
+    strong_species_min_overlap_fraction=0.80,
+):
+    """Promote strong species NUMT clusters, then expand strong REMOVE seeds."""
     reset_previous(variants, clusters)
+    promote_strong_species_numt_clusters(
+        clusters,
+        variants,
+        min_support_samples=strong_species_min_support_samples,
+        min_overlap_variants=strong_species_min_overlap_variants,
+        min_overlap_fraction=strong_species_min_overlap_fraction,
+    )
     seeds = strong_seeds(clusters)
     by_sample = defaultdict(list)
     for s in seeds: by_sample[s["sample"]].append(s)
@@ -167,15 +264,18 @@ def rebuild_removal(variants):
 
 
 def update_samples(samples, variants):
-    rem, exp = Counter(), Counter()
+    rem, exp, strong = Counter(), Counter(), Counter()
     for r in variants:
         s = str(r.get("sample", ""))
         if str(r.get("filter_action", "")).upper() == "REMOVE": rem[s] += 1
         if str(r.get("numt_expanded", "")).upper() == "YES": exp[s] += 1
+        if str(r.get("strong_species_numt_evidence", "")).upper() == "YES": strong[s] += 1
     out = []
     for raw in samples:
         r = dict(raw); s = str(r.get("sample", "")); n = inum(r.get("n_het")) or 0
-        r["n_numt_variants_to_remove"] = rem[s]; r["n_numt_expanded_variants"] = exp[s]
+        r["n_numt_variants_to_remove"] = rem[s]
+        r["n_numt_expanded_variants"] = exp[s]
+        r["n_strong_species_numt_variants"] = strong[s]
         r["fraction_het_removed"] = f"{rem[s]/n:.6g}" if n else "0"
         if rem[s] > 0: r["numt_sample"] = "YES"
         out.append(r)
@@ -197,30 +297,70 @@ def main():
     report = resolve(sec.get("output_dir", "results/qc/local_heteroplasmy_qc")) / "reports"
     cp, vp, sp = report/"local_heteroplasmy_cluster_summary.tsv", report/"local_heteroplasmy_variant_detail.tsv", report/"local_heteroplasmy_sample_summary.tsv"
     clusters, variants, samples = read_tsv(cp), read_tsv(vp), read_tsv(sp)
+
     L = int(sec.get("mt_length", 16569)); dist = int(sec.get("numt_seed_expansion_distance_bp", 250))
     delta = float(sec.get("numt_seed_expansion_max_delta_af", 0.07)); cap = float(sec.get("numt_seed_expansion_max_total_af_span", 0.10))
-    diag = apply_expansion(clusters, variants, L, dist, delta, cap)
+    strong_support = int(sec.get("species_numt_strong_min_support_samples", 2))
+    strong_overlap_n = int(sec.get("species_numt_strong_min_overlap_variants", 3))
+    strong_overlap_frac = float(sec.get("species_numt_strong_min_overlap_fraction", 0.80))
+
+    diag = apply_expansion(
+        clusters, variants, L, dist, delta, cap,
+        strong_species_min_support_samples=strong_support,
+        strong_species_min_overlap_variants=strong_overlap_n,
+        strong_species_min_overlap_fraction=strong_overlap_frac,
+    )
     removals, samples = rebuild_removal(variants), update_samples(samples, variants)
     numt_samples = [r for r in samples if str(r.get("numt_sample", "")).upper() == "YES"]
 
-    vf = add_fields(list(variants[0]) if variants else [], ["pre_expansion_filter_action", "pre_expansion_filter_reason", "pre_expansion_numt_scope", "pre_expansion_numt_tier",
-                    "numt_expanded", "numt_expansion_seed_id", "numt_expansion_delta_af", "numt_expansion_distance_bp", "numt_expansion_final_af_span"])
-    cf = add_fields(list(clusters[0]) if clusters else [], ["numt_expansion_n_variants", "numt_expansion_final_af_min", "numt_expansion_final_af_max", "numt_expansion_final_af_span"])
-    sf = add_fields(list(samples[0]) if samples else [], ["n_numt_expanded_variants"])
+    vf = add_fields(list(variants[0]) if variants else [], [
+        "pre_strong_species_filter_action", "pre_strong_species_filter_reason", "pre_strong_species_numt_scope", "pre_strong_species_numt_tier",
+        "strong_species_numt_evidence",
+        "pre_expansion_filter_action", "pre_expansion_filter_reason", "pre_expansion_numt_scope", "pre_expansion_numt_tier",
+        "numt_expanded", "numt_expansion_seed_id", "numt_expansion_delta_af", "numt_expansion_distance_bp", "numt_expansion_final_af_span",
+    ])
+    cf = add_fields(list(clusters[0]) if clusters else [], [
+        "pre_strong_species_filter_action", "pre_strong_species_filter_reason", "pre_strong_species_numt_scope", "strong_species_numt_evidence",
+        "numt_expansion_n_variants", "numt_expansion_final_af_min", "numt_expansion_final_af_max", "numt_expansion_final_af_span",
+    ])
+    sf = add_fields(list(samples[0]) if samples else [], ["n_strong_species_numt_variants", "n_numt_expanded_variants"])
     rf = ["sample", "species", "source_chrom", "source_pos", "source_ref", "source_alt", "source_af", "source_dp", "clustered", "cluster_id", "cluster_class",
-          "numt_scope", "numt_tier", "recurrence", "numt_expanded", "numt_expansion_seed_id", "numt_expansion_delta_af", "numt_expansion_distance_bp",
-          "numt_expansion_final_af_span", "filter_action", "filter_reason"]
+          "numt_scope", "numt_tier", "recurrence", "strong_species_numt_evidence", "numt_expanded", "numt_expansion_seed_id", "numt_expansion_delta_af",
+          "numt_expansion_distance_bp", "numt_expansion_final_af_span", "filter_action", "filter_reason"]
     write_tsv(cp, clusters, cf); write_tsv(vp, variants, vf); write_tsv(sp, samples, sf)
     write_tsv(report/"numt_samples.tsv", numt_samples, sf); write_tsv(report/"numt_variants_to_remove.tsv", removals, rf)
+
     df = ["variant_key", "sample", "source_pos", "source_ref", "source_alt", "source_af", "seed_id", "seed_scope", "seed_median_af", "seed_af_min", "seed_af_max",
           "numt_chrm_start", "numt_chrm_end", "distance_bp", "delta_af", "accepted", "rejection_reason"]
     write_tsv(report/"numt_seed_expansion_variants.tsv", diag, df)
+
     acc = [r for r in diag if r["accepted"] == "YES"]; scopes = Counter(r["seed_scope"] for r in acc)
-    summary = [{"max_distance_bp": dist, "max_delta_af": f"{delta:.6g}", "max_total_af_span": f"{cap:.6g}", "n_remove_level_seeds": len(strong_seeds(clusters)),
-                "n_expansion_candidates": len(diag), "n_expanded_variants": len(acc), "n_expanded_samples": len({r['sample'] for r in acc}),
-                "n_sample_scope_expanded_variants": scopes["SAMPLE"], "n_species_scope_expanded_variants": scopes["SPECIES"], "n_total_variants_to_remove": len(removals)}]
+    strong_clusters = [r for r in clusters if str(r.get("strong_species_numt_evidence", "")).upper() == "YES"]
+    strong_variants = sum(str(r.get("strong_species_numt_evidence", "")).upper() == "YES" for r in variants)
+    summary = [{
+        "strong_species_min_support_samples": strong_support,
+        "strong_species_min_overlap_variants": strong_overlap_n,
+        "strong_species_min_overlap_fraction": f"{strong_overlap_frac:.6g}",
+        "n_strong_species_numt_clusters": len(strong_clusters),
+        "n_strong_species_numt_variants": strong_variants,
+        "max_distance_bp": dist,
+        "max_delta_af": f"{delta:.6g}",
+        "max_total_af_span": f"{cap:.6g}",
+        "n_remove_level_seeds": len(strong_seeds(clusters)),
+        "n_expansion_candidates": len(diag),
+        "n_expanded_variants": len(acc),
+        "n_expanded_samples": len({r['sample'] for r in acc}),
+        "n_sample_scope_expanded_variants": scopes["SAMPLE"],
+        "n_species_scope_expanded_variants": scopes["SPECIES"],
+        "n_total_variants_to_remove": len(removals),
+    }]
     write_tsv(report/"numt_seed_expansion_summary.tsv", summary, list(summary[0]))
-    print(f"[numt_seed_expansion] seeds={summary[0]['n_remove_level_seeds']} candidates={len(diag)} expanded={len(acc)} samples={summary[0]['n_expanded_samples']} total_remove={len(removals)}", file=sys.stderr)
+    print(
+        f"[numt_seed_expansion] strong_species_clusters={len(strong_clusters)} strong_species_variants={strong_variants} "
+        f"seeds={summary[0]['n_remove_level_seeds']} candidates={len(diag)} expanded={len(acc)} "
+        f"samples={summary[0]['n_expanded_samples']} total_remove={len(removals)}",
+        file=sys.stderr,
+    )
     return 0
 
 
