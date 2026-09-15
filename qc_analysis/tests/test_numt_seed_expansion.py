@@ -19,12 +19,17 @@ class NumtSeedExpansionTests(unittest.TestCase):
                 "af_span": "0.055",
                 "sample_numt_evidence": "YES",
                 "species_numt_evidence": "NO",
+                "species_numt_support_n": "0",
+                "numt_overlap_n": "5",
+                "numt_overlap_fraction": "1.0",
                 "recurrence": "NO",
                 "numt_chrm_start": "1941",
                 "numt_chrm_end": "2115",
                 "numt_tier": "BESTHIT_ONLY_NUMT",
                 "cluster_class": "NUMT_ONLY",
                 "filter_action": "REMOVE",
+                "filter_reason": "SAMPLE_NUMT_OVERLAP",
+                "numt_scope": "SAMPLE",
             }
         ]
         self.variant_rows = [
@@ -61,15 +66,56 @@ class NumtSeedExpansionTests(unittest.TestCase):
         self.assertEqual(by_pos[2071]["numt_expansion_seed_id"], "S1_C1")
         self.assertEqual(by_pos[2150]["filter_action"], "KEEP")
 
-    def test_species_numt_without_recurrence_cannot_drive_expansion(self):
+    def test_species_numt_without_recurrence_needs_strong_evidence(self):
         clusters = copy.deepcopy(self.cluster_rows)
-        clusters[0]["sample_numt_evidence"] = "NO"
-        clusters[0]["species_numt_evidence"] = "YES"
-        clusters[0]["recurrence"] = "NO"
+        clusters[0].update({
+            "sample_numt_evidence": "NO",
+            "species_numt_evidence": "YES",
+            "species_numt_support_n": "1",
+            "numt_overlap_n": "2",
+            "numt_overlap_fraction": "0.75",
+            "recurrence": "NO",
+            "filter_action": "FLAG",
+            "filter_reason": "SPECIES_NUMT_OVERLAP",
+            "numt_scope": "SPECIES",
+        })
         variants = copy.deepcopy(self.variant_rows)
+        for v in variants:
+            v["cluster_id"] = "S1_C1"
+            v["clustered"] = "YES"
+            v["filter_action"] = "FLAG"
+            v["filter_reason"] = "SPECIES_NUMT_OVERLAP"
         diagnostics = apply_expansion(clusters, variants)
         self.assertEqual(diagnostics, [])
-        self.assertTrue(all(v["filter_action"] == "KEEP" for v in variants))
+        self.assertTrue(all(v["filter_action"] == "FLAG" for v in variants))
+        self.assertEqual(clusters[0]["strong_species_numt_evidence"], "NO")
+
+    def test_strong_species_numt_without_recurrence_is_removed(self):
+        clusters = copy.deepcopy(self.cluster_rows)
+        clusters[0].update({
+            "sample_numt_evidence": "NO",
+            "species_numt_evidence": "YES",
+            "species_numt_support_n": "2",
+            "numt_overlap_n": "3",
+            "numt_overlap_fraction": "0.80",
+            "recurrence": "NO",
+            "filter_action": "FLAG",
+            "filter_reason": "SPECIES_NUMT_OVERLAP",
+            "numt_scope": "SPECIES",
+        })
+        variants = copy.deepcopy(self.variant_rows)
+        for v in variants:
+            v["cluster_id"] = "S1_C1"
+            v["clustered"] = "YES"
+            v["filter_action"] = "FLAG"
+            v["filter_reason"] = "SPECIES_NUMT_OVERLAP"
+            v["numt_scope"] = "SPECIES"
+        apply_expansion(clusters, variants)
+        self.assertEqual(clusters[0]["strong_species_numt_evidence"], "YES")
+        self.assertEqual(clusters[0]["filter_action"], "REMOVE")
+        self.assertEqual(clusters[0]["filter_reason"], "STRONG_SPECIES_NUMT_OVERLAP")
+        self.assertTrue(all(v["filter_action"] == "REMOVE" for v in variants))
+        self.assertTrue(all(v["strong_species_numt_evidence"] == "YES" for v in variants))
 
     def test_total_span_cap_blocks_overexpansion(self):
         clusters = copy.deepcopy(self.cluster_rows)
