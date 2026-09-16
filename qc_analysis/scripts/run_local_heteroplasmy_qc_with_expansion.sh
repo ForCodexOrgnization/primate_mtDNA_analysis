@@ -13,6 +13,9 @@ PYTHON_BIN="${PYTHON:-python3}"
 "$PYTHON_BIN" qc_analysis/scripts/detect_indel_complex_regions.py \
   --config "$CONFIG"
 
+"$PYTHON_BIN" qc_analysis/scripts/apply_residual_artifact_rules.py \
+  --config "$CONFIG"
+
 "$PYTHON_BIN" qc_analysis/scripts/analyze_residual_artifact_sensitivity.py \
   --config "$CONFIG"
 
