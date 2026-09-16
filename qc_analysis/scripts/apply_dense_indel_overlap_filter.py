@@ -1,29 +1,39 @@
 #!/usr/bin/env python3
-"""Apply HET-group-centered indel artifact filtering to residual heteroplasmy.
+"""Apply local indel-associated artifact filtering to residual heteroplasmy.
 
 This production step runs after ``detect_indel_complex_regions.py`` and before
-later residual-artifact sensitivity / recurrent-block analyses. It replaces the
-previous same-indel +/-50/100-bp rule with a HET-group-centered design.
+later residual-artifact sensitivity / recurrent-block analyses.
 
-A local residual HET group is >=3 residual strict-HET SNVs whose minimum circular
-span is <=250 bp.
+Three complementary rules are applied to the same pre-step residual HET universe:
+
+0) DIRECT_INDEL_PROXIMITY
+   - any residual strict-HET SNV whose position is <=10 bp from a raw PASS indel;
+   - no minimum HET count and no AF-matching requirement.
+   -> REMOVE that HET only.
+
+   This deliberately targets the visually obvious case where an SNV and indel
+   essentially overlap.  The default 10-bp distance is intentionally much more
+   stringent than the group-level windows below.
 
 1) COHERENT_INDEL_CLUSTER
-   - AF span <=0.10
-   - nearest indel <=100 bp
-   - |group median AF - nearby indel AF| <=0.05
-   -> REMOVE whole group
+   - >=3 residual HETs with minimum circular span <=250 bp;
+   - group AF span <=0.10;
+   - nearest indel <=100 bp;
+   - |group median AF - nearby indel AF| <=0.05.
+   -> REMOVE the whole group.
 
 2) COMPLEX_INDEL_REGION
-   - AF span >0.10
-   - nearest indel <=100 bp
+   - >=3 residual HETs with minimum circular span <=250 bp;
+   - group AF span >0.10;
+   - nearest indel <=100 bp;
    - and either >=2 indels within 250 bp of the group OR >=2 low-AF SNVs
-     within 250 bp of the group
-   -> REMOVE whole group
+     within 250 bp of the group.
+   -> REMOVE the whole group.
 
 A narrow high-AF band near a low-AF indel is therefore protected unless the indel
-AF actually matches the HET group. Broad-AF/waterfall-like groups do not require
-AF matching, but do require additional local-complexity evidence.
+AF actually matches the HET group, while a single HET that nearly coincides with
+an indel can still be removed by the much stricter DIRECT_INDEL_PROXIMITY rule.
+All rules use each sample's native mitochondrial length from the raw VCF header.
 """
 from __future__ import annotations
 
@@ -93,9 +103,13 @@ def yes(value) -> bool:
 
 
 def reset_previous_calls(variants: list[dict]) -> None:
-    """Restore pre-step decisions from either old or new implementation."""
+    """Restore pre-step decisions from prior implementations for deterministic reruns."""
     for row in variants:
-        previously_applied = yes(row.get("dense_indel_filtered")) or yes(row.get("het_group_indel_filtered"))
+        previously_applied = (
+            yes(row.get("dense_indel_filtered"))
+            or yes(row.get("het_group_indel_filtered"))
+            or yes(row.get("direct_indel_proximity"))
+        )
         if not previously_applied:
             continue
         row["filter_action"] = (
@@ -125,6 +139,10 @@ def reset_previous_calls(variants: list[dict]) -> None:
             "het_group_best_indel_delta_af",
             "het_group_n_indels_250bp",
             "het_group_n_low_snv_250bp",
+            "direct_indel_proximity",
+            "direct_indel_nearest_distance_bp",
+            "direct_indel_positions",
+            "direct_indel_best_delta_af",
         ):
             row[field] = ""
 
@@ -284,6 +302,7 @@ def classify_het_group(
 
 
 def update_sample_summary(samples: list[dict], variants: list[dict]) -> list[dict]:
+    direct_n = Counter()
     coherent_n = Counter()
     complex_n = Counter()
     filtered_n = Counter()
@@ -291,12 +310,14 @@ def update_sample_summary(samples: list[dict], variants: list[dict]) -> list[dic
     residual_n = Counter()
     for row in variants:
         sample = str(row.get("sample", ""))
+        if yes(row.get("direct_indel_proximity")):
+            direct_n[sample] += 1
         rule = str(row.get("het_group_indel_rule", ""))
         if "COHERENT_INDEL_CLUSTER" in rule:
             coherent_n[sample] += 1
         if "COMPLEX_INDEL_REGION" in rule:
             complex_n[sample] += 1
-        if yes(row.get("het_group_indel_filtered")):
+        if yes(row.get("dense_indel_filtered")):
             filtered_n[sample] += 1
         if str(row.get("filter_action", "")).upper() == "REMOVE":
             total_remove[sample] += 1
@@ -308,9 +329,10 @@ def update_sample_summary(samples: list[dict], variants: list[dict]) -> list[dic
         row = dict(raw)
         sample = str(row.get("sample", ""))
         n_het = inum(row.get("n_het")) or 0
+        row["n_direct_indel_proximity_variants"] = direct_n[sample]
         row["n_coherent_indel_cluster_variants"] = coherent_n[sample]
         row["n_complex_indel_region_variants"] = complex_n[sample]
-        row["n_het_group_indel_filtered_variants"] = filtered_n[sample]
+        row["n_het_group_indel_filtered_variants"] = coherent_n[sample] + complex_n[sample]
         row["n_dense_indel_filtered_variants"] = filtered_n[sample]
         row["n_heteroplasmy_variants_to_remove"] = total_remove[sample]
         row["n_het_after_local_artifact_filter"] = residual_n[sample]
@@ -329,7 +351,7 @@ def main() -> int:
     local_sec = cfg.get("local_heteroplasmy_qc", {})
     pre_sec = cfg.get("pre_liftover_variant_qc", {})
     if sec.get("enabled", True) is False:
-        print("[het_group_indel_filter] disabled", file=sys.stderr)
+        print("[local_indel_artifact_filter] disabled", file=sys.stderr)
         return 0
 
     report_dir = resolve(local_sec.get("output_dir", "results/qc/local_heteroplasmy_qc")) / "reports"
@@ -353,6 +375,8 @@ def main() -> int:
     low_max = float(sec.get("low_snv_af_max", 0.10))
     indel_min = float(sec.get("indel_af_min", 0.01))
     indel_max = float(sec.get("indel_af_max", 0.95))
+
+    direct_max_distance = int(sec.get("direct_indel_max_distance_bp", 10))
     group_span = int(sec.get("het_group_max_span_bp", 250))
     group_min_het = int(sec.get("het_group_min_residual_het", 3))
     nearby_indel_bp = int(sec.get("het_group_nearby_indel_bp", 100))
@@ -380,14 +404,14 @@ def main() -> int:
         })
 
     group_report_rows = []
-    evidence_by_variant = defaultdict(list)
+    direct_report_rows = []
+    group_evidence_by_variant = defaultdict(list)
+    direct_evidence_by_variant = {}
     missing_vcf = []
     group_counter = Counter()
     rule_groups = Counter()
 
     for sample, residuals in sorted(residual_by_sample.items()):
-        if len(residuals) < group_min_het:
-            continue
         vcf = find_sample_vcf(vcf_dir, sample)
         if vcf is None:
             missing_vcf.append(sample)
@@ -409,6 +433,43 @@ def main() -> int:
             continue
 
         native_length, _, _ = choose_native_length(contig_lengths, residuals, context)
+
+        # ----------------------------------------------------
+        # Rule 0: direct SNV-indel proximity.
+        # Evaluate every residual HET independently, including isolated HETs.
+        # ----------------------------------------------------
+        for het in residuals:
+            distances = [
+                (circular_distance(int(het["pos"]), int(indel["pos"]), native_length), indel)
+                for indel in indels
+            ]
+            nearest_distance = min(distance for distance, _ in distances)
+            if nearest_distance > direct_max_distance:
+                continue
+            nearest_indels = [indel for distance, indel in distances if distance == nearest_distance]
+            best_delta = min(abs(float(het["af"]) - float(indel["af"])) for indel in nearest_indels)
+            direct_evidence_by_variant[int(het["variant_index"])] = {
+                "distance": nearest_distance,
+                "indel_positions": sorted({int(indel["pos"]) for indel in nearest_indels}),
+                "best_delta_af": best_delta,
+            }
+            direct_report_rows.append({
+                "sample": sample,
+                "species": het.get("species", ""),
+                "het_pos": het["pos"],
+                "het_af": f"{float(het['af']):.6g}",
+                "nearest_indel_distance_bp": nearest_distance,
+                "nearest_indel_positions": ",".join(str(int(indel["pos"])) for indel in nearest_indels),
+                "best_indel_delta_af": f"{best_delta:.6g}",
+                "action": "REMOVE",
+            })
+
+        # ----------------------------------------------------
+        # Group rules are evaluated on the same pre-step residual universe.
+        # Direct hits are not removed first, so they cannot break up groups.
+        # ----------------------------------------------------
+        if len(residuals) < group_min_het:
+            continue
         groups = local_het_groups(residuals, native_length, group_span, group_min_het)
 
         for group in groups:
@@ -432,7 +493,7 @@ def main() -> int:
             group_id = f"{sample}_HIG{group_counter[sample]:03d}"
             rule_groups[rule] += 1
             for member in group["members"]:
-                evidence_by_variant[int(member["variant_index"])].append({
+                group_evidence_by_variant[int(member["variant_index"])].append({
                     "group_id": group_id,
                     "rule": rule,
                     "span_bp": group["span_bp"],
@@ -461,35 +522,70 @@ def main() -> int:
                 "context_indel_positions": ",".join(str(x) for x in classification["context_indel_positions"]),
             })
 
-    for idx, evidence in evidence_by_variant.items():
+    all_filtered_indices = set(group_evidence_by_variant) | set(direct_evidence_by_variant)
+    for idx in all_filtered_indices:
         row = variants[idx]
         if not row.get("pre_het_group_indel_filter_action"):
             row["pre_het_group_indel_filter_action"] = row.get("filter_action", "KEEP") or "KEEP"
             row["pre_het_group_indel_filter_reason"] = row.get("filter_reason", "")
 
-        rules = sorted({item["rule"] for item in evidence})
-        primary_rule = "COHERENT_INDEL_CLUSTER" if "COHERENT_INDEL_CLUSTER" in rules else "COMPLEX_INDEL_REGION"
-        row["het_group_indel_filtered"] = "YES"
-        row["het_group_indel_rule"] = "+".join(rules)
-        row["het_group_indel_group_ids"] = ";".join(sorted({item["group_id"] for item in evidence}))
-        row["het_group_span_bp"] = str(min(int(item["span_bp"]) for item in evidence))
-        row["het_group_af_span"] = f"{min(float(item['af_span']) for item in evidence):.6g}"
-        row["het_group_median_af"] = f"{median(float(item['median_af']) for item in evidence):.6g}"
-        distance_values = [item["nearest_indel_distance_bp"] for item in evidence if item["nearest_indel_distance_bp"] is not None]
-        delta_values = [item["best_indel_delta_af"] for item in evidence if item["best_indel_delta_af"] is not None]
-        row["het_group_nearest_indel_distance_bp"] = str(min(distance_values)) if distance_values else ""
-        row["het_group_best_indel_delta_af"] = f"{min(delta_values):.6g}" if delta_values else ""
-        row["het_group_n_indels_250bp"] = str(max(int(item["n_indels_250bp"]) for item in evidence))
-        row["het_group_n_low_snv_250bp"] = str(max(int(item["n_low_snv_250bp"]) for item in evidence))
+        group_evidence = group_evidence_by_variant.get(idx, [])
+        direct_evidence = direct_evidence_by_variant.get(idx)
+        group_rules = sorted({item["rule"] for item in group_evidence})
+
+        if direct_evidence is not None:
+            row["direct_indel_proximity"] = "YES"
+            row["direct_indel_nearest_distance_bp"] = str(direct_evidence["distance"])
+            row["direct_indel_positions"] = ",".join(str(x) for x in direct_evidence["indel_positions"])
+            row["direct_indel_best_delta_af"] = f"{direct_evidence['best_delta_af']:.6g}"
+        else:
+            row["direct_indel_proximity"] = "NO"
+
+        if group_evidence:
+            row["het_group_indel_filtered"] = "YES"
+            row["het_group_indel_rule"] = "+".join(group_rules)
+            row["het_group_indel_group_ids"] = ";".join(sorted({item["group_id"] for item in group_evidence}))
+            row["het_group_span_bp"] = str(min(int(item["span_bp"]) for item in group_evidence))
+            row["het_group_af_span"] = f"{min(float(item['af_span']) for item in group_evidence):.6g}"
+            row["het_group_median_af"] = f"{median(float(item['median_af']) for item in group_evidence):.6g}"
+            distance_values = [item["nearest_indel_distance_bp"] for item in group_evidence if item["nearest_indel_distance_bp"] is not None]
+            delta_values = [item["best_indel_delta_af"] for item in group_evidence if item["best_indel_delta_af"] is not None]
+            row["het_group_nearest_indel_distance_bp"] = str(min(distance_values)) if distance_values else ""
+            row["het_group_best_indel_delta_af"] = f"{min(delta_values):.6g}" if delta_values else ""
+            row["het_group_n_indels_250bp"] = str(max(int(item["n_indels_250bp"]) for item in group_evidence))
+            row["het_group_n_low_snv_250bp"] = str(max(int(item["n_low_snv_250bp"]) for item in group_evidence))
+        else:
+            row["het_group_indel_filtered"] = "NO"
+
+        all_rules = (["DIRECT_INDEL_PROXIMITY"] if direct_evidence is not None else []) + group_rules
         row["filter_action"] = "REMOVE"
-        row["filter_reason"] = primary_rule
+        if direct_evidence is not None:
+            row["filter_reason"] = "DIRECT_INDEL_PROXIMITY"
+        elif "COHERENT_INDEL_CLUSTER" in group_rules:
+            row["filter_reason"] = "COHERENT_INDEL_CLUSTER"
+        else:
+            row["filter_reason"] = "COMPLEX_INDEL_REGION"
+
+        # Legacy fields remain populated so older plotting/summary scripts still work.
         row["dense_indel_filtered"] = "YES"
-        row["dense_indel_rules"] = "+".join(rules)
-        row["dense_indel_min_distance_bp"] = row["het_group_nearest_indel_distance_bp"]
+        row["dense_indel_rules"] = "+".join(all_rules)
+        distance_candidates = []
+        if direct_evidence is not None:
+            distance_candidates.append(int(direct_evidence["distance"]))
+        distance_candidates.extend(
+            int(item["nearest_indel_distance_bp"])
+            for item in group_evidence
+            if item["nearest_indel_distance_bp"] is not None
+        )
+        row["dense_indel_min_distance_bp"] = str(min(distance_candidates)) if distance_candidates else ""
 
     variant_extra = [
         "pre_het_group_indel_filter_action",
         "pre_het_group_indel_filter_reason",
+        "direct_indel_proximity",
+        "direct_indel_nearest_distance_bp",
+        "direct_indel_positions",
+        "direct_indel_best_delta_af",
         "het_group_indel_filtered",
         "het_group_indel_rule",
         "het_group_indel_group_ids",
@@ -510,6 +606,7 @@ def main() -> int:
     if samples:
         samples = update_sample_summary(samples, variants)
         sample_fields = add_fields(list(samples[0]), [
+            "n_direct_indel_proximity_variants",
             "n_coherent_indel_cluster_variants",
             "n_complex_indel_region_variants",
             "n_het_group_indel_filtered_variants",
@@ -520,9 +617,13 @@ def main() -> int:
         ])
         write_tsv(sample_path, samples, sample_fields)
 
-    detail = [dict(row) for row in variants if yes(row.get("het_group_indel_filtered"))]
-    write_tsv(report_dir / "het_group_indel_variant_detail.tsv", detail, variant_fields)
-    write_tsv(report_dir / "dense_indel_overlap_variant_detail.tsv", detail, variant_fields)
+    group_detail = [dict(row) for row in variants if yes(row.get("het_group_indel_filtered"))]
+    all_detail = [dict(row) for row in variants if yes(row.get("dense_indel_filtered"))]
+    direct_detail = [dict(row) for row in variants if yes(row.get("direct_indel_proximity"))]
+    write_tsv(report_dir / "het_group_indel_variant_detail.tsv", group_detail, variant_fields)
+    write_tsv(report_dir / "direct_indel_proximity_variant_detail.tsv", direct_detail, variant_fields)
+    write_tsv(report_dir / "local_indel_artifact_variant_detail.tsv", all_detail, variant_fields)
+    write_tsv(report_dir / "dense_indel_overlap_variant_detail.tsv", all_detail, variant_fields)
 
     group_fields = [
         "group_id", "sample", "species", "rule", "n_het", "group_span_bp", "het_positions",
@@ -532,19 +633,32 @@ def main() -> int:
     ]
     write_tsv(report_dir / "het_group_indel_regions.tsv", group_report_rows, group_fields)
     write_tsv(report_dir / "dense_indel_overlap_windows.tsv", group_report_rows, group_fields)
+    write_tsv(
+        report_dir / "direct_indel_proximity.tsv",
+        direct_report_rows,
+        [
+            "sample", "species", "het_pos", "het_af", "nearest_indel_distance_bp",
+            "nearest_indel_positions", "best_indel_delta_af", "action",
+        ],
+    )
 
     removals = [dict(row) for row in variants if str(row.get("filter_action", "")).upper() == "REMOVE"]
     write_tsv(report_dir / "heteroplasmy_variants_to_remove.tsv", removals, variant_fields)
     write_tsv(report_dir / "numt_variants_to_remove.tsv", removals, variant_fields)
 
-    filtered_indices = [i for i, row in enumerate(variants) if yes(row.get("het_group_indel_filtered"))]
+    group_filtered_indices = [i for i, row in enumerate(variants) if yes(row.get("het_group_indel_filtered"))]
+    direct_filtered_indices = [i for i, row in enumerate(variants) if yes(row.get("direct_indel_proximity"))]
+    all_filtered_indices = [i for i, row in enumerate(variants) if yes(row.get("dense_indel_filtered"))]
     rule_variant_counts = Counter()
-    for i in filtered_indices:
+    for i in group_filtered_indices:
         for rule in str(variants[i].get("het_group_indel_rule", "")).split("+"):
             if rule:
                 rule_variant_counts[rule] += 1
 
     summary = [{
+        "direct_indel_max_distance_bp": direct_max_distance,
+        "n_direct_indel_proximity_variants": len(direct_filtered_indices),
+        "n_direct_indel_proximity_samples": len({str(variants[i].get("sample", "")) for i in direct_filtered_indices}),
         "het_group_max_span_bp": group_span,
         "het_group_min_residual_het": group_min_het,
         "nearby_indel_bp": nearby_indel_bp,
@@ -557,8 +671,9 @@ def main() -> int:
         "n_complex_indel_groups": rule_groups["COMPLEX_INDEL_REGION"],
         "n_coherent_indel_variant_memberships": rule_variant_counts["COHERENT_INDEL_CLUSTER"],
         "n_complex_indel_variant_memberships": rule_variant_counts["COMPLEX_INDEL_REGION"],
-        "n_unique_het_group_indel_filtered_variants": len(filtered_indices),
-        "n_samples_het_group_indel_filtered": len({str(variants[i].get("sample", "")) for i in filtered_indices}),
+        "n_unique_group_filtered_variants": len(group_filtered_indices),
+        "n_unique_local_indel_artifact_variants": len(all_filtered_indices),
+        "n_samples_local_indel_artifact_filtered": len({str(variants[i].get("sample", "")) for i in all_filtered_indices}),
         "n_samples_missing_vcf": len(missing_vcf),
         "n_total_heteroplasmy_removals": len(removals),
     }]
@@ -569,11 +684,12 @@ def main() -> int:
         write_tsv(report_dir / "dense_indel_overlap_missing_vcf.tsv", [{"sample": s} for s in missing_vcf], ["sample"])
 
     print(
-        "[het_group_indel_filter] "
+        "[local_indel_artifact_filter] "
+        f"direct={len(direct_filtered_indices)} "
         f"coherent_groups={rule_groups['COHERENT_INDEL_CLUSTER']} "
         f"complex_groups={rule_groups['COMPLEX_INDEL_REGION']} "
-        f"unique_removed={len(filtered_indices)} "
-        f"samples={len({str(variants[i].get('sample', '')) for i in filtered_indices})} "
+        f"unique_local_indel_removed={len(all_filtered_indices)} "
+        f"samples={len({str(variants[i].get('sample', '')) for i in all_filtered_indices})} "
         f"total_remove={len(removals)}",
         file=sys.stderr,
     )
