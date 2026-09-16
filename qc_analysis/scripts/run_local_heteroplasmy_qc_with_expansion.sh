@@ -13,10 +13,12 @@ PYTHON_BIN="${PYTHON:-python3}"
 "$PYTHON_BIN" qc_analysis/scripts/detect_indel_complex_regions.py \
   --config "$CONFIG"
 
-"$PYTHON_BIN" qc_analysis/scripts/apply_residual_artifact_rules.py \
+# Keep sensitivity diagnostics on the pre-production residual universe.
+"$PYTHON_BIN" qc_analysis/scripts/analyze_residual_artifact_sensitivity.py \
   --config "$CONFIG"
 
-"$PYTHON_BIN" qc_analysis/scripts/analyze_residual_artifact_sensitivity.py \
+# Apply only the validated production decisions after diagnostics are written.
+"$PYTHON_BIN" qc_analysis/scripts/apply_residual_artifact_rules.py \
   --config "$CONFIG"
 
 printf '[local_heteroplasmy_qc_with_expansion] complete config=%s\n' "$CONFIG" >&2
