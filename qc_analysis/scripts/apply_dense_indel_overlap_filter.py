@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-"""Apply direct dense indel-overlap filtering to residual HETs.
+"""Apply HET-group-centered indel artifact filtering to residual heteroplasmy.
 
 This production step runs after ``detect_indel_complex_regions.py`` and before
-later residual-artifact sensitivity / recurrent-block analyses.  It targets the
-visually obvious local pattern where several residual strict-HET SNVs sit very
-close to raw indels, without requiring AF concordance.
+later residual-artifact sensitivity / recurrent-block analyses. It replaces the
+previous same-indel +/-50/100-bp rule with a HET-group-centered design.
 
-Default rules:
+A local residual HET group is >=3 residual strict-HET SNVs whose minimum circular
+span is <=250 bp.
 
-A) DENSE_INDEL_OVERLAP
-   >=3 residual HETs within +/-50 bp of the same raw indel -> REMOVE those HETs.
+1) COHERENT_INDEL_CLUSTER
+   - AF span <=0.10
+   - nearest indel <=100 bp
+   - |group median AF - nearby indel AF| <=0.05
+   -> REMOVE whole group
 
-B) MULTI_INDEL_DENSE
-   >=3 residual HETs within +/-100 bp of an indel-centered window AND >=2 raw
-   indels in that same +/-100-bp window -> REMOVE those HETs.
+2) COMPLEX_INDEL_REGION
+   - AF span >0.10
+   - nearest indel <=100 bp
+   - and either >=2 indels within 250 bp of the group OR >=2 low-AF SNVs
+     within 250 bp of the group
+   -> REMOVE whole group
 
-The rules use each sample's native mitochondrial length from the raw VCF header.
-They are deliberately local and do not chain-expand.  A HET can satisfy both
-rules; the more spatially stringent DENSE_INDEL_OVERLAP reason takes priority
-for ``filter_reason`` while both evidence flags are retained.
+A narrow high-AF band near a low-AF indel is therefore protected unless the indel
+AF actually matches the HET group. Broad-AF/waterfall-like groups do not require
+AF matching, but do require additional local-complexity evidence.
 """
 from __future__ import annotations
 
@@ -27,6 +32,7 @@ import csv
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+from statistics import median
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -86,152 +92,211 @@ def yes(value) -> bool:
     return str(value).strip().upper() in {"YES", "TRUE", "T", "1"}
 
 
-def reset_previous_dense_calls(variants: list[dict]) -> None:
-    """Restore the pre-step decision so repeated full-pipeline runs are stable."""
+def reset_previous_calls(variants: list[dict]) -> None:
+    """Restore pre-step decisions from either old or new implementation."""
     for row in variants:
-        if not yes(row.get("dense_indel_filtered")):
+        previously_applied = yes(row.get("dense_indel_filtered")) or yes(row.get("het_group_indel_filtered"))
+        if not previously_applied:
             continue
-        row["filter_action"] = row.get("pre_dense_indel_filter_action", "KEEP") or "KEEP"
-        row["filter_reason"] = row.get("pre_dense_indel_filter_reason", "")
-        row["dense_indel_filtered"] = "NO"
+        row["filter_action"] = (
+            row.get("pre_het_group_indel_filter_action")
+            or row.get("pre_dense_indel_filter_action")
+            or "KEEP"
+        )
+        row["filter_reason"] = (
+            row.get("pre_het_group_indel_filter_reason")
+            if row.get("pre_het_group_indel_filter_reason") not in {None, ""}
+            else row.get("pre_dense_indel_filter_reason", "")
+        )
         for field in (
+            "dense_indel_filtered",
             "dense_indel_overlap",
             "multi_indel_dense",
             "dense_indel_rules",
             "dense_indel_trigger_positions",
             "dense_indel_min_distance_bp",
+            "het_group_indel_filtered",
+            "het_group_indel_rule",
+            "het_group_indel_group_ids",
+            "het_group_span_bp",
+            "het_group_af_span",
+            "het_group_median_af",
+            "het_group_nearest_indel_distance_bp",
+            "het_group_best_indel_delta_af",
+            "het_group_n_indels_250bp",
+            "het_group_n_low_snv_250bp",
         ):
             row[field] = ""
 
 
-def detect_dense_indel_windows(
+def minimum_circular_span(positions: list[int], mt_length: int | None) -> int:
+    if len(positions) <= 1:
+        return 0
+    positions = sorted(positions)
+    linear_span = positions[-1] - positions[0]
+    if mt_length is None or mt_length <= 0:
+        return linear_span
+    gaps = [positions[i + 1] - positions[i] for i in range(len(positions) - 1)]
+    gaps.append(positions[0] + mt_length - positions[-1])
+    return mt_length - max(gaps)
+
+
+def local_het_groups(
     residuals: list[dict],
-    indels: list[dict],
     mt_length: int | None,
-    dense_radius_bp: int = 50,
-    dense_min_het: int = 3,
-    multi_radius_bp: int = 100,
-    multi_min_het: int = 3,
-    multi_min_indels: int = 2,
+    max_span_bp: int = 250,
+    min_het: int = 3,
 ) -> list[dict]:
-    """Return qualifying indel-centered windows without mutating variants."""
-    windows = []
-    for center in indels:
-        center_pos = int(center["pos"])
+    """Enumerate maximal unique HET sets with minimum circular span <= max_span_bp."""
+    if len(residuals) < min_het:
+        return []
 
-        dense_hets = [
-            row for row in residuals
-            if circular_distance(int(row["pos"]), center_pos, mt_length) <= dense_radius_bp
-        ]
-        multi_hets = [
-            row for row in residuals
-            if circular_distance(int(row["pos"]), center_pos, mt_length) <= multi_radius_bp
-        ]
-        local_indels = [
-            row for row in indels
-            if circular_distance(int(row["pos"]), center_pos, mt_length) <= multi_radius_bp
-        ]
+    ordered = sorted(residuals, key=lambda row: (int(row["pos"]), int(row["variant_index"])))
+    n = len(ordered)
+    by_index = {int(row["variant_index"]): row for row in residuals}
+    candidate_sets = []
 
-        rules = []
-        remove_indices: set[int] = set()
-        if len(dense_hets) >= dense_min_het:
-            rules.append("DENSE_INDEL_OVERLAP")
-            remove_indices.update(int(row["variant_index"]) for row in dense_hets)
+    if mt_length is None or mt_length <= 0:
+        for i in range(n):
+            members = []
+            start = int(ordered[i]["pos"])
+            for j in range(i, n):
+                if int(ordered[j]["pos"]) - start > max_span_bp:
+                    break
+                members.append(ordered[j])
+            if len(members) >= min_het:
+                candidate_sets.append(members)
+    else:
+        doubled = ordered + [dict(row, pos=int(row["pos"]) + mt_length) for row in ordered]
+        for i in range(n):
+            start = int(doubled[i]["pos"])
+            member_indices = []
+            for j in range(i, i + n):
+                if int(doubled[j]["pos"]) - start > max_span_bp:
+                    break
+                idx = int(doubled[j]["variant_index"])
+                if idx not in member_indices:
+                    member_indices.append(idx)
+            if len(member_indices) >= min_het:
+                candidate_sets.append([by_index[idx] for idx in member_indices])
 
-        if len(multi_hets) >= multi_min_het and len(local_indels) >= multi_min_indels:
-            rules.append("MULTI_INDEL_DENSE")
-            remove_indices.update(int(row["variant_index"]) for row in multi_hets)
+    unique = {}
+    for members in candidate_sets:
+        key = frozenset(int(row["variant_index"]) for row in members)
+        unique[key] = members
 
-        if not rules:
+    ordered_candidates = sorted(
+        unique.items(),
+        key=lambda item: (-len(item[0]), min(int(row["pos"]) for row in item[1])),
+    )
+    accepted_sets = []
+    accepted_groups = []
+    for member_set, members in ordered_candidates:
+        if any(member_set < existing for existing in accepted_sets):
             continue
+        accepted_sets.append(member_set)
+        accepted_groups.append(members)
 
-        windows.append(
+    groups = []
+    for members in accepted_groups:
+        positions = [int(row["pos"]) for row in members]
+        afs = [float(row["af"]) for row in members]
+        groups.append(
             {
-                "sample": str(center.get("sample", "")),
-                "center_pos": center_pos,
-                "center_af": center.get("af", ""),
-                "rules": rules,
-                "dense_hets": dense_hets,
-                "multi_hets": multi_hets,
-                "local_indels": local_indels,
-                "remove_indices": remove_indices,
+                "members": members,
+                "positions": positions,
+                "n_het": len(members),
+                "span_bp": minimum_circular_span(positions, mt_length),
+                "median_af": median(afs),
+                "af_min": min(afs),
+                "af_max": max(afs),
+                "af_span": max(afs) - min(afs),
             }
         )
-    return windows
+    return groups
 
 
-def combine_window_evidence(
-    windows: list[dict],
-    residual_by_index: dict[int, dict],
+def distance_variant_to_group(pos: int, group_positions: list[int], mt_length: int | None) -> int:
+    return min(circular_distance(pos, gpos, mt_length) for gpos in group_positions)
+
+
+def classify_het_group(
+    group: dict,
+    indels: list[dict],
+    low_snvs: list[dict],
     mt_length: int | None,
-) -> tuple[dict[int, dict], list[dict]]:
-    """Collapse overlapping qualifying windows to per-HET evidence and report rows."""
-    evidence: dict[int, dict] = {}
-    report_rows = []
+    nearby_indel_bp: int = 100,
+    context_bp: int = 250,
+    coherent_max_af_span: float = 0.10,
+    coherent_max_delta_af: float = 0.05,
+    complex_min_indels: int = 2,
+    complex_min_low_snvs: int = 2,
+) -> dict:
+    group_positions = group["positions"]
 
-    for window_i, window in enumerate(windows, start=1):
-        rules_text = "+".join(window["rules"])
-        removed_positions = sorted(
-            int(residual_by_index[idx]["pos"])
-            for idx in window["remove_indices"]
-            if idx in residual_by_index
+    indel_context = []
+    for indel in indels:
+        distance = distance_variant_to_group(int(indel["pos"]), group_positions, mt_length)
+        if distance <= context_bp:
+            item = dict(indel)
+            item["distance_to_group"] = distance
+            item["delta_group_median_af"] = abs(float(indel["af"]) - float(group["median_af"]))
+            indel_context.append(item)
+
+    low_context = []
+    for snv in low_snvs:
+        distance = distance_variant_to_group(int(snv["pos"]), group_positions, mt_length)
+        if distance <= context_bp:
+            item = dict(snv)
+            item["distance_to_group"] = distance
+            low_context.append(item)
+
+    nearby_indels = [row for row in indel_context if int(row["distance_to_group"]) <= nearby_indel_bp]
+    nearest_indel_distance = min((int(row["distance_to_group"]) for row in indel_context), default=None)
+    best_delta_nearby = min((float(row["delta_group_median_af"]) for row in nearby_indels), default=None)
+
+    coherent = (
+        group["af_span"] <= coherent_max_af_span + 1e-12
+        and bool(nearby_indels)
+        and best_delta_nearby is not None
+        and best_delta_nearby <= coherent_max_delta_af + 1e-12
+    )
+
+    complex_region = (
+        group["af_span"] > coherent_max_af_span + 1e-12
+        and bool(nearby_indels)
+        and (
+            len(indel_context) >= complex_min_indels
+            or len(low_context) >= complex_min_low_snvs
         )
-        report_rows.append(
-            {
-                "sample": window["sample"],
-                "window_id": f"{window['sample']}_DIW{window_i:03d}",
-                "center_indel_pos": window["center_pos"],
-                "center_indel_af": window["center_af"],
-                "rules": rules_text,
-                "n_dense_het_50bp": len(window["dense_hets"]),
-                "n_het_100bp": len(window["multi_hets"]),
-                "n_indels_100bp": len(window["local_indels"]),
-                "n_unique_het_removed": len(window["remove_indices"]),
-                "removed_het_positions": ",".join(str(pos) for pos in removed_positions),
-            }
-        )
+    )
 
-        for idx in window["remove_indices"]:
-            row = residual_by_index.get(idx)
-            if row is None:
-                continue
-            item = evidence.setdefault(
-                idx,
-                {
-                    "rules": set(),
-                    "trigger_positions": set(),
-                    "min_distance": None,
-                },
-            )
-            for rule in window["rules"]:
-                # Only attribute the rule if this HET actually belongs to that rule's window.
-                distance = circular_distance(int(row["pos"]), int(window["center_pos"]), mt_length)
-                if rule == "DENSE_INDEL_OVERLAP" and distance <= 50:
-                    item["rules"].add(rule)
-                elif rule == "MULTI_INDEL_DENSE" and distance <= 100:
-                    item["rules"].add(rule)
-            item["trigger_positions"].add(int(window["center_pos"]))
-            distance = circular_distance(int(row["pos"]), int(window["center_pos"]), mt_length)
-            if item["min_distance"] is None or distance < item["min_distance"]:
-                item["min_distance"] = distance
-
-    return evidence, report_rows
+    rule = "COHERENT_INDEL_CLUSTER" if coherent else ("COMPLEX_INDEL_REGION" if complex_region else "")
+    return {
+        "rule": rule,
+        "nearest_indel_distance_bp": nearest_indel_distance,
+        "best_indel_delta_af": best_delta_nearby,
+        "n_indels_250bp": len(indel_context),
+        "n_low_snv_250bp": len(low_context),
+        "nearby_indel_positions": sorted({int(row["pos"]) for row in nearby_indels}),
+        "context_indel_positions": sorted({int(row["pos"]) for row in indel_context}),
+    }
 
 
 def update_sample_summary(samples: list[dict], variants: list[dict]) -> list[dict]:
-    dense_n = Counter()
-    multi_n = Counter()
+    coherent_n = Counter()
+    complex_n = Counter()
     filtered_n = Counter()
     total_remove = Counter()
     residual_n = Counter()
-
     for row in variants:
         sample = str(row.get("sample", ""))
-        if yes(row.get("dense_indel_overlap")):
-            dense_n[sample] += 1
-        if yes(row.get("multi_indel_dense")):
-            multi_n[sample] += 1
-        if yes(row.get("dense_indel_filtered")):
+        rule = str(row.get("het_group_indel_rule", ""))
+        if "COHERENT_INDEL_CLUSTER" in rule:
+            coherent_n[sample] += 1
+        if "COMPLEX_INDEL_REGION" in rule:
+            complex_n[sample] += 1
+        if yes(row.get("het_group_indel_filtered")):
             filtered_n[sample] += 1
         if str(row.get("filter_action", "")).upper() == "REMOVE":
             total_remove[sample] += 1
@@ -243,8 +308,9 @@ def update_sample_summary(samples: list[dict], variants: list[dict]) -> list[dic
         row = dict(raw)
         sample = str(row.get("sample", ""))
         n_het = inum(row.get("n_het")) or 0
-        row["n_dense_indel_overlap_variants"] = dense_n[sample]
-        row["n_multi_indel_dense_variants"] = multi_n[sample]
+        row["n_coherent_indel_cluster_variants"] = coherent_n[sample]
+        row["n_complex_indel_region_variants"] = complex_n[sample]
+        row["n_het_group_indel_filtered_variants"] = filtered_n[sample]
         row["n_dense_indel_filtered_variants"] = filtered_n[sample]
         row["n_heteroplasmy_variants_to_remove"] = total_remove[sample]
         row["n_het_after_local_artifact_filter"] = residual_n[sample]
@@ -263,7 +329,7 @@ def main() -> int:
     local_sec = cfg.get("local_heteroplasmy_qc", {})
     pre_sec = cfg.get("pre_liftover_variant_qc", {})
     if sec.get("enabled", True) is False:
-        print("[dense_indel_overlap] disabled", file=sys.stderr)
+        print("[het_group_indel_filter] disabled", file=sys.stderr)
         return 0
 
     report_dir = resolve(local_sec.get("output_dir", "results/qc/local_heteroplasmy_qc")) / "reports"
@@ -274,7 +340,7 @@ def main() -> int:
     if not variants:
         raise RuntimeError(f"No variant rows found: {variant_path}")
 
-    reset_previous_dense_calls(variants)
+    reset_previous_calls(variants)
 
     vcf_dir_value = sec.get("vcf_dir") or pre_sec.get("input_vcf_dir") or "results/qc/collected_variant_calling_results/collected_vcf"
     vcf_dir = resolve(vcf_dir_value)
@@ -287,15 +353,16 @@ def main() -> int:
     low_max = float(sec.get("low_snv_af_max", 0.10))
     indel_min = float(sec.get("indel_af_min", 0.01))
     indel_max = float(sec.get("indel_af_max", 0.95))
-
-    dense_radius = int(sec.get("dense_radius_bp", 50))
-    dense_min_het = int(sec.get("dense_min_residual_het", 3))
-    multi_radius = int(sec.get("multi_indel_radius_bp", 100))
-    multi_min_het = int(sec.get("multi_indel_min_residual_het", 3))
-    multi_min_indels = int(sec.get("multi_indel_min_indels", 2))
+    group_span = int(sec.get("het_group_max_span_bp", 250))
+    group_min_het = int(sec.get("het_group_min_residual_het", 3))
+    nearby_indel_bp = int(sec.get("het_group_nearby_indel_bp", 100))
+    context_bp = int(sec.get("het_group_context_bp", 250))
+    coherent_af_span = float(sec.get("coherent_max_af_span", 0.10))
+    coherent_delta = float(sec.get("coherent_max_indel_delta_af", 0.05))
+    complex_min_indels = int(sec.get("complex_min_indels", 2))
+    complex_min_low_snvs = int(sec.get("complex_min_low_snvs", 2))
 
     residual_by_sample = defaultdict(list)
-    residual_index_lookup = {}
     for i, row in enumerate(variants):
         if str(row.get("filter_action", "")).upper() == "REMOVE":
             continue
@@ -303,24 +370,23 @@ def main() -> int:
         af = fnum(row.get("source_af"))
         if pos is None or af is None:
             continue
-        item = {
+        residual_by_sample[str(row.get("sample", ""))].append({
             "variant_index": i,
             "sample": str(row.get("sample", "")),
             "species": str(row.get("species", "")),
             "chrom": str(row.get("source_chrom", "")),
             "pos": pos,
             "af": af,
-        }
-        residual_by_sample[item["sample"]].append(item)
-        residual_index_lookup[i] = item
+        })
 
-    all_window_rows = []
+    group_report_rows = []
+    evidence_by_variant = defaultdict(list)
     missing_vcf = []
-    total_rule_windows = Counter()
-    total_rule_variants = Counter()
+    group_counter = Counter()
+    rule_groups = Counter()
 
     for sample, residuals in sorted(residual_by_sample.items()):
-        if len(residuals) < min(dense_min_het, multi_min_het):
+        if len(residuals) < group_min_het:
             continue
         vcf = find_sample_vcf(vcf_dir, sample)
         if vcf is None:
@@ -338,61 +404,104 @@ def main() -> int:
             indel_af_max=indel_max,
         )
         indels = [row for row in context if row["variant_type"] == "INDEL"]
+        low_snvs = [row for row in context if row["variant_type"] == "LOW_AF_SNV"]
         if not indels:
             continue
+
         native_length, _, _ = choose_native_length(contig_lengths, residuals, context)
+        groups = local_het_groups(residuals, native_length, group_span, group_min_het)
 
-        windows = detect_dense_indel_windows(
-            residuals,
-            indels,
-            mt_length=native_length,
-            dense_radius_bp=dense_radius,
-            dense_min_het=dense_min_het,
-            multi_radius_bp=multi_radius,
-            multi_min_het=multi_min_het,
-            multi_min_indels=multi_min_indels,
-        )
-        evidence, window_rows = combine_window_evidence(
-            windows,
-            residual_index_lookup,
-            native_length,
-        )
-        all_window_rows.extend(window_rows)
-
-        for window in windows:
-            for rule in window["rules"]:
-                total_rule_windows[rule] += 1
-
-        for idx, item in evidence.items():
-            row = variants[idx]
-            if not row.get("pre_dense_indel_filter_action"):
-                row["pre_dense_indel_filter_action"] = row.get("filter_action", "KEEP") or "KEEP"
-                row["pre_dense_indel_filter_reason"] = row.get("filter_reason", "")
-
-            rules = sorted(item["rules"])
-            row["dense_indel_filtered"] = "YES"
-            row["dense_indel_overlap"] = "YES" if "DENSE_INDEL_OVERLAP" in rules else "NO"
-            row["multi_indel_dense"] = "YES" if "MULTI_INDEL_DENSE" in rules else "NO"
-            row["dense_indel_rules"] = "+".join(rules)
-            row["dense_indel_trigger_positions"] = ",".join(str(x) for x in sorted(item["trigger_positions"]))
-            row["dense_indel_min_distance_bp"] = "" if item["min_distance"] is None else str(item["min_distance"])
-            row["filter_action"] = "REMOVE"
-            row["filter_reason"] = (
-                "DENSE_INDEL_OVERLAP"
-                if "DENSE_INDEL_OVERLAP" in rules
-                else "MULTI_INDEL_DENSE"
+        for group in groups:
+            classification = classify_het_group(
+                group,
+                indels,
+                low_snvs,
+                native_length,
+                nearby_indel_bp,
+                context_bp,
+                coherent_af_span,
+                coherent_delta,
+                complex_min_indels,
+                complex_min_low_snvs,
             )
-            for rule in rules:
-                total_rule_variants[rule] += 1
+            rule = classification["rule"]
+            if not rule:
+                continue
+
+            group_counter[sample] += 1
+            group_id = f"{sample}_HIG{group_counter[sample]:03d}"
+            rule_groups[rule] += 1
+            for member in group["members"]:
+                evidence_by_variant[int(member["variant_index"])].append({
+                    "group_id": group_id,
+                    "rule": rule,
+                    "span_bp": group["span_bp"],
+                    "af_span": group["af_span"],
+                    "median_af": group["median_af"],
+                    **classification,
+                })
+
+            group_report_rows.append({
+                "group_id": group_id,
+                "sample": sample,
+                "species": group["members"][0].get("species", ""),
+                "rule": rule,
+                "n_het": group["n_het"],
+                "group_span_bp": group["span_bp"],
+                "het_positions": ",".join(str(x) for x in sorted(group["positions"])),
+                "het_median_af": f"{group['median_af']:.6g}",
+                "het_af_min": f"{group['af_min']:.6g}",
+                "het_af_max": f"{group['af_max']:.6g}",
+                "het_af_span": f"{group['af_span']:.6g}",
+                "nearest_indel_distance_bp": classification["nearest_indel_distance_bp"] if classification["nearest_indel_distance_bp"] is not None else "",
+                "best_indel_delta_af": f"{classification['best_indel_delta_af']:.6g}" if classification["best_indel_delta_af"] is not None else "",
+                "n_indels_250bp": classification["n_indels_250bp"],
+                "n_low_snv_250bp": classification["n_low_snv_250bp"],
+                "nearby_indel_positions": ",".join(str(x) for x in classification["nearby_indel_positions"]),
+                "context_indel_positions": ",".join(str(x) for x in classification["context_indel_positions"]),
+            })
+
+    for idx, evidence in evidence_by_variant.items():
+        row = variants[idx]
+        if not row.get("pre_het_group_indel_filter_action"):
+            row["pre_het_group_indel_filter_action"] = row.get("filter_action", "KEEP") or "KEEP"
+            row["pre_het_group_indel_filter_reason"] = row.get("filter_reason", "")
+
+        rules = sorted({item["rule"] for item in evidence})
+        primary_rule = "COHERENT_INDEL_CLUSTER" if "COHERENT_INDEL_CLUSTER" in rules else "COMPLEX_INDEL_REGION"
+        row["het_group_indel_filtered"] = "YES"
+        row["het_group_indel_rule"] = "+".join(rules)
+        row["het_group_indel_group_ids"] = ";".join(sorted({item["group_id"] for item in evidence}))
+        row["het_group_span_bp"] = str(min(int(item["span_bp"]) for item in evidence))
+        row["het_group_af_span"] = f"{min(float(item['af_span']) for item in evidence):.6g}"
+        row["het_group_median_af"] = f"{median(float(item['median_af']) for item in evidence):.6g}"
+        distance_values = [item["nearest_indel_distance_bp"] for item in evidence if item["nearest_indel_distance_bp"] is not None]
+        delta_values = [item["best_indel_delta_af"] for item in evidence if item["best_indel_delta_af"] is not None]
+        row["het_group_nearest_indel_distance_bp"] = str(min(distance_values)) if distance_values else ""
+        row["het_group_best_indel_delta_af"] = f"{min(delta_values):.6g}" if delta_values else ""
+        row["het_group_n_indels_250bp"] = str(max(int(item["n_indels_250bp"]) for item in evidence))
+        row["het_group_n_low_snv_250bp"] = str(max(int(item["n_low_snv_250bp"]) for item in evidence))
+        row["filter_action"] = "REMOVE"
+        row["filter_reason"] = primary_rule
+        row["dense_indel_filtered"] = "YES"
+        row["dense_indel_rules"] = "+".join(rules)
+        row["dense_indel_min_distance_bp"] = row["het_group_nearest_indel_distance_bp"]
 
     variant_extra = [
-        "pre_dense_indel_filter_action",
-        "pre_dense_indel_filter_reason",
+        "pre_het_group_indel_filter_action",
+        "pre_het_group_indel_filter_reason",
+        "het_group_indel_filtered",
+        "het_group_indel_rule",
+        "het_group_indel_group_ids",
+        "het_group_span_bp",
+        "het_group_af_span",
+        "het_group_median_af",
+        "het_group_nearest_indel_distance_bp",
+        "het_group_best_indel_delta_af",
+        "het_group_n_indels_250bp",
+        "het_group_n_low_snv_250bp",
         "dense_indel_filtered",
-        "dense_indel_overlap",
-        "multi_indel_dense",
         "dense_indel_rules",
-        "dense_indel_trigger_positions",
         "dense_indel_min_distance_bp",
     ]
     variant_fields = add_fields(list(variants[0]), variant_extra)
@@ -400,66 +509,71 @@ def main() -> int:
 
     if samples:
         samples = update_sample_summary(samples, variants)
-        sample_fields = add_fields(
-            list(samples[0]),
-            [
-                "n_dense_indel_overlap_variants",
-                "n_multi_indel_dense_variants",
-                "n_dense_indel_filtered_variants",
-                "n_heteroplasmy_variants_to_remove",
-                "n_het_after_local_artifact_filter",
-                "fraction_het_removed_all",
-            ],
-        )
+        sample_fields = add_fields(list(samples[0]), [
+            "n_coherent_indel_cluster_variants",
+            "n_complex_indel_region_variants",
+            "n_het_group_indel_filtered_variants",
+            "n_dense_indel_filtered_variants",
+            "n_heteroplasmy_variants_to_remove",
+            "n_het_after_local_artifact_filter",
+            "fraction_het_removed_all",
+        ])
         write_tsv(sample_path, samples, sample_fields)
 
-    detail = [dict(row) for row in variants if yes(row.get("dense_indel_filtered"))]
+    detail = [dict(row) for row in variants if yes(row.get("het_group_indel_filtered"))]
+    write_tsv(report_dir / "het_group_indel_variant_detail.tsv", detail, variant_fields)
     write_tsv(report_dir / "dense_indel_overlap_variant_detail.tsv", detail, variant_fields)
-    write_tsv(
-        report_dir / "dense_indel_overlap_windows.tsv",
-        all_window_rows,
-        [
-            "sample", "window_id", "center_indel_pos", "center_indel_af", "rules",
-            "n_dense_het_50bp", "n_het_100bp", "n_indels_100bp",
-            "n_unique_het_removed", "removed_het_positions",
-        ],
-    )
+
+    group_fields = [
+        "group_id", "sample", "species", "rule", "n_het", "group_span_bp", "het_positions",
+        "het_median_af", "het_af_min", "het_af_max", "het_af_span",
+        "nearest_indel_distance_bp", "best_indel_delta_af", "n_indels_250bp", "n_low_snv_250bp",
+        "nearby_indel_positions", "context_indel_positions",
+    ]
+    write_tsv(report_dir / "het_group_indel_regions.tsv", group_report_rows, group_fields)
+    write_tsv(report_dir / "dense_indel_overlap_windows.tsv", group_report_rows, group_fields)
 
     removals = [dict(row) for row in variants if str(row.get("filter_action", "")).upper() == "REMOVE"]
     write_tsv(report_dir / "heteroplasmy_variants_to_remove.tsv", removals, variant_fields)
     write_tsv(report_dir / "numt_variants_to_remove.tsv", removals, variant_fields)
 
-    filtered_variants = {i for i, row in enumerate(variants) if yes(row.get("dense_indel_filtered"))}
+    filtered_indices = [i for i, row in enumerate(variants) if yes(row.get("het_group_indel_filtered"))]
+    rule_variant_counts = Counter()
+    for i in filtered_indices:
+        for rule in str(variants[i].get("het_group_indel_rule", "")).split("+"):
+            if rule:
+                rule_variant_counts[rule] += 1
+
     summary = [{
-        "dense_radius_bp": dense_radius,
-        "dense_min_residual_het": dense_min_het,
-        "multi_indel_radius_bp": multi_radius,
-        "multi_indel_min_residual_het": multi_min_het,
-        "multi_indel_min_indels": multi_min_indels,
-        "n_dense_rule_windows": total_rule_windows["DENSE_INDEL_OVERLAP"],
-        "n_multi_indel_dense_windows": total_rule_windows["MULTI_INDEL_DENSE"],
-        "n_dense_rule_variant_memberships": total_rule_variants["DENSE_INDEL_OVERLAP"],
-        "n_multi_indel_dense_variant_memberships": total_rule_variants["MULTI_INDEL_DENSE"],
-        "n_unique_dense_indel_filtered_variants": len(filtered_variants),
-        "n_samples_dense_indel_filtered": len({str(variants[i].get("sample", "")) for i in filtered_variants}),
+        "het_group_max_span_bp": group_span,
+        "het_group_min_residual_het": group_min_het,
+        "nearby_indel_bp": nearby_indel_bp,
+        "context_bp": context_bp,
+        "coherent_max_af_span": f"{coherent_af_span:.6g}",
+        "coherent_max_indel_delta_af": f"{coherent_delta:.6g}",
+        "complex_min_indels": complex_min_indels,
+        "complex_min_low_snvs": complex_min_low_snvs,
+        "n_coherent_indel_groups": rule_groups["COHERENT_INDEL_CLUSTER"],
+        "n_complex_indel_groups": rule_groups["COMPLEX_INDEL_REGION"],
+        "n_coherent_indel_variant_memberships": rule_variant_counts["COHERENT_INDEL_CLUSTER"],
+        "n_complex_indel_variant_memberships": rule_variant_counts["COMPLEX_INDEL_REGION"],
+        "n_unique_het_group_indel_filtered_variants": len(filtered_indices),
+        "n_samples_het_group_indel_filtered": len({str(variants[i].get("sample", "")) for i in filtered_indices}),
         "n_samples_missing_vcf": len(missing_vcf),
         "n_total_heteroplasmy_removals": len(removals),
     }]
+    write_tsv(report_dir / "het_group_indel_summary.tsv", summary, list(summary[0]))
     write_tsv(report_dir / "dense_indel_overlap_summary.tsv", summary, list(summary[0]))
 
     if missing_vcf:
-        write_tsv(
-            report_dir / "dense_indel_overlap_missing_vcf.tsv",
-            [{"sample": sample} for sample in missing_vcf],
-            ["sample"],
-        )
+        write_tsv(report_dir / "dense_indel_overlap_missing_vcf.tsv", [{"sample": s} for s in missing_vcf], ["sample"])
 
     print(
-        "[dense_indel_overlap] "
-        f"dense_windows={total_rule_windows['DENSE_INDEL_OVERLAP']} "
-        f"multi_dense_windows={total_rule_windows['MULTI_INDEL_DENSE']} "
-        f"unique_removed={len(filtered_variants)} "
-        f"samples={len({str(variants[i].get('sample', '')) for i in filtered_variants})} "
+        "[het_group_indel_filter] "
+        f"coherent_groups={rule_groups['COHERENT_INDEL_CLUSTER']} "
+        f"complex_groups={rule_groups['COMPLEX_INDEL_REGION']} "
+        f"unique_removed={len(filtered_indices)} "
+        f"samples={len({str(variants[i].get('sample', '')) for i in filtered_indices})} "
         f"total_remove={len(removals)}",
         file=sys.stderr,
     )
