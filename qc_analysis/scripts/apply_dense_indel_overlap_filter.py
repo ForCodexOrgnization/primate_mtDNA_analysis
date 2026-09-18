@@ -6,14 +6,20 @@ later residual-artifact sensitivity / recurrent-block analyses.
 
 Three complementary rules are applied to the same pre-step residual HET universe:
 
-0) DIRECT_INDEL_PROXIMITY
-   - any residual strict-HET SNV whose position is <=10 bp from a raw PASS indel;
+0) Direct SNV-indel proximity, split into two evidence levels:
+
+   DIRECT_INDEL_OVERLAP
+   - residual strict-HET SNV is <=2 bp from a raw PASS indel;
    - no minimum HET count and no AF-matching requirement.
    -> REMOVE that HET only.
 
-   This deliberately targets the visually obvious case where an SNV and indel
-   essentially overlap.  The default 10-bp distance is intentionally much more
-   stringent than the group-level windows below.
+   NEAR_INDEL_AF_MATCHED
+   - residual strict-HET SNV is >2 and <=10 bp from a raw PASS indel;
+   - |HET AF - indel AF| <=0.05 for at least one indel in that distance range.
+   -> REMOVE that HET only.
+
+   HETs 3-10 bp from an indel with discordant AF are not removed by proximity
+   alone; they can still be removed by one of the group-level rules below.
 
 1) COHERENT_INDEL_CLUSTER
    - >=3 residual HETs with minimum circular span <=250 bp;
@@ -31,8 +37,8 @@ Three complementary rules are applied to the same pre-step residual HET universe
    -> REMOVE the whole group.
 
 A narrow high-AF band near a low-AF indel is therefore protected unless the indel
-AF actually matches the HET group, while a single HET that nearly coincides with
-an indel can still be removed by the much stricter DIRECT_INDEL_PROXIMITY rule.
+AF actually matches the HET group.  Isolated HETs are removed only for near-exact
+indel overlap (<=2 bp) or for a 3-10-bp indel with concordant AF.
 All rules use each sample's native mitochondrial length from the raw VCF header.
 """
 from __future__ import annotations
@@ -140,6 +146,7 @@ def reset_previous_calls(variants: list[dict]) -> None:
             "het_group_n_indels_250bp",
             "het_group_n_low_snv_250bp",
             "direct_indel_proximity",
+            "direct_indel_rule",
             "direct_indel_nearest_distance_bp",
             "direct_indel_positions",
             "direct_indel_best_delta_af",
@@ -303,6 +310,8 @@ def classify_het_group(
 
 def update_sample_summary(samples: list[dict], variants: list[dict]) -> list[dict]:
     direct_n = Counter()
+    direct_overlap_n = Counter()
+    near_matched_n = Counter()
     coherent_n = Counter()
     complex_n = Counter()
     filtered_n = Counter()
@@ -312,6 +321,11 @@ def update_sample_summary(samples: list[dict], variants: list[dict]) -> list[dic
         sample = str(row.get("sample", ""))
         if yes(row.get("direct_indel_proximity")):
             direct_n[sample] += 1
+            direct_rule = str(row.get("direct_indel_rule", ""))
+            if direct_rule == "DIRECT_INDEL_OVERLAP":
+                direct_overlap_n[sample] += 1
+            elif direct_rule == "NEAR_INDEL_AF_MATCHED":
+                near_matched_n[sample] += 1
         rule = str(row.get("het_group_indel_rule", ""))
         if "COHERENT_INDEL_CLUSTER" in rule:
             coherent_n[sample] += 1
@@ -330,6 +344,8 @@ def update_sample_summary(samples: list[dict], variants: list[dict]) -> list[dic
         sample = str(row.get("sample", ""))
         n_het = inum(row.get("n_het")) or 0
         row["n_direct_indel_proximity_variants"] = direct_n[sample]
+        row["n_direct_indel_overlap_variants"] = direct_overlap_n[sample]
+        row["n_near_indel_af_matched_variants"] = near_matched_n[sample]
         row["n_coherent_indel_cluster_variants"] = coherent_n[sample]
         row["n_complex_indel_region_variants"] = complex_n[sample]
         row["n_het_group_indel_filtered_variants"] = coherent_n[sample] + complex_n[sample]
@@ -376,7 +392,9 @@ def main() -> int:
     indel_min = float(sec.get("indel_af_min", 0.01))
     indel_max = float(sec.get("indel_af_max", 0.95))
 
-    direct_max_distance = int(sec.get("direct_indel_max_distance_bp", 10))
+    direct_overlap_max_distance = int(sec.get("direct_indel_overlap_max_distance_bp", 2))
+    near_indel_max_distance = int(sec.get("near_indel_max_distance_bp", 10))
+    near_indel_max_delta_af = float(sec.get("near_indel_max_delta_af", 0.05))
     group_span = int(sec.get("het_group_max_span_bp", 250))
     group_min_het = int(sec.get("het_group_min_residual_het", 3))
     nearby_indel_bp = int(sec.get("het_group_nearby_indel_bp", 100))
@@ -436,31 +454,69 @@ def main() -> int:
 
         # ----------------------------------------------------
         # Rule 0: direct SNV-indel proximity.
+        #
+        # A) <=2 bp: remove regardless of AF.
+        # B) 3-10 bp: remove only when at least one nearby indel
+        #    has |HET AF - indel AF| <=0.05.
+        #
         # Evaluate every residual HET independently, including isolated HETs.
         # ----------------------------------------------------
         for het in residuals:
-            distances = [
-                (circular_distance(int(het["pos"]), int(indel["pos"]), native_length), indel)
-                for indel in indels
+            candidates = []
+            for indel in indels:
+                distance = circular_distance(int(het["pos"]), int(indel["pos"]), native_length)
+                delta_af = abs(float(het["af"]) - float(indel["af"]))
+                candidates.append((distance, delta_af, indel))
+
+            overlap_hits = [
+                item for item in candidates
+                if item[0] <= direct_overlap_max_distance
             ]
-            nearest_distance = min(distance for distance, _ in distances)
-            if nearest_distance > direct_max_distance:
-                continue
-            nearest_indels = [indel for distance, indel in distances if distance == nearest_distance]
-            best_delta = min(abs(float(het["af"]) - float(indel["af"])) for indel in nearest_indels)
+
+            if overlap_hits:
+                direct_rule = "DIRECT_INDEL_OVERLAP"
+                chosen_distance, chosen_delta, chosen_indel = min(
+                    overlap_hits,
+                    key=lambda item: (item[0], item[1]),
+                )
+                qualifying_indels = [
+                    indel for distance, delta_af, indel in overlap_hits
+                    if distance == chosen_distance
+                ]
+                chosen_delta = min(
+                    abs(float(het["af"]) - float(indel["af"]))
+                    for indel in qualifying_indels
+                )
+            else:
+                matched_hits = [
+                    item for item in candidates
+                    if direct_overlap_max_distance < item[0] <= near_indel_max_distance
+                    and item[1] <= near_indel_max_delta_af + 1e-12
+                ]
+                if not matched_hits:
+                    continue
+                direct_rule = "NEAR_INDEL_AF_MATCHED"
+                chosen_distance, chosen_delta, chosen_indel = min(
+                    matched_hits,
+                    key=lambda item: (item[1], item[0]),
+                )
+                qualifying_indels = [chosen_indel]
+
             direct_evidence_by_variant[int(het["variant_index"])] = {
-                "distance": nearest_distance,
-                "indel_positions": sorted({int(indel["pos"]) for indel in nearest_indels}),
-                "best_delta_af": best_delta,
+                "rule": direct_rule,
+                "distance": chosen_distance,
+                "indel_positions": sorted({int(indel["pos"]) for indel in qualifying_indels}),
+                "best_delta_af": chosen_delta,
             }
             direct_report_rows.append({
                 "sample": sample,
                 "species": het.get("species", ""),
                 "het_pos": het["pos"],
                 "het_af": f"{float(het['af']):.6g}",
-                "nearest_indel_distance_bp": nearest_distance,
-                "nearest_indel_positions": ",".join(str(int(indel["pos"])) for indel in nearest_indels),
-                "best_indel_delta_af": f"{best_delta:.6g}",
+                "rule": direct_rule,
+                "nearest_indel_distance_bp": chosen_distance,
+                "nearest_indel_positions": ",".join(str(int(indel["pos"])) for indel in qualifying_indels),
+                "best_indel_delta_af": f"{chosen_delta:.6g}",
                 "action": "REMOVE",
             })
 
@@ -535,6 +591,7 @@ def main() -> int:
 
         if direct_evidence is not None:
             row["direct_indel_proximity"] = "YES"
+            row["direct_indel_rule"] = direct_evidence["rule"]
             row["direct_indel_nearest_distance_bp"] = str(direct_evidence["distance"])
             row["direct_indel_positions"] = ",".join(str(x) for x in direct_evidence["indel_positions"])
             row["direct_indel_best_delta_af"] = f"{direct_evidence['best_delta_af']:.6g}"
@@ -557,10 +614,10 @@ def main() -> int:
         else:
             row["het_group_indel_filtered"] = "NO"
 
-        all_rules = (["DIRECT_INDEL_PROXIMITY"] if direct_evidence is not None else []) + group_rules
+        all_rules = ([direct_evidence["rule"]] if direct_evidence is not None else []) + group_rules
         row["filter_action"] = "REMOVE"
         if direct_evidence is not None:
-            row["filter_reason"] = "DIRECT_INDEL_PROXIMITY"
+            row["filter_reason"] = direct_evidence["rule"]
         elif "COHERENT_INDEL_CLUSTER" in group_rules:
             row["filter_reason"] = "COHERENT_INDEL_CLUSTER"
         else:
@@ -583,6 +640,7 @@ def main() -> int:
         "pre_het_group_indel_filter_action",
         "pre_het_group_indel_filter_reason",
         "direct_indel_proximity",
+        "direct_indel_rule",
         "direct_indel_nearest_distance_bp",
         "direct_indel_positions",
         "direct_indel_best_delta_af",
@@ -607,6 +665,8 @@ def main() -> int:
         samples = update_sample_summary(samples, variants)
         sample_fields = add_fields(list(samples[0]), [
             "n_direct_indel_proximity_variants",
+            "n_direct_indel_overlap_variants",
+            "n_near_indel_af_matched_variants",
             "n_coherent_indel_cluster_variants",
             "n_complex_indel_region_variants",
             "n_het_group_indel_filtered_variants",
@@ -637,7 +697,7 @@ def main() -> int:
         report_dir / "direct_indel_proximity.tsv",
         direct_report_rows,
         [
-            "sample", "species", "het_pos", "het_af", "nearest_indel_distance_bp",
+            "sample", "species", "het_pos", "het_af", "rule", "nearest_indel_distance_bp",
             "nearest_indel_positions", "best_indel_delta_af", "action",
         ],
     )
@@ -655,9 +715,18 @@ def main() -> int:
             if rule:
                 rule_variant_counts[rule] += 1
 
+    direct_rule_counts = Counter(
+        str(variants[i].get("direct_indel_rule", ""))
+        for i in direct_filtered_indices
+    )
+
     summary = [{
-        "direct_indel_max_distance_bp": direct_max_distance,
+        "direct_indel_overlap_max_distance_bp": direct_overlap_max_distance,
+        "near_indel_max_distance_bp": near_indel_max_distance,
+        "near_indel_max_delta_af": f"{near_indel_max_delta_af:.6g}",
         "n_direct_indel_proximity_variants": len(direct_filtered_indices),
+        "n_direct_indel_overlap_variants": direct_rule_counts["DIRECT_INDEL_OVERLAP"],
+        "n_near_indel_af_matched_variants": direct_rule_counts["NEAR_INDEL_AF_MATCHED"],
         "n_direct_indel_proximity_samples": len({str(variants[i].get("sample", "")) for i in direct_filtered_indices}),
         "het_group_max_span_bp": group_span,
         "het_group_min_residual_het": group_min_het,
@@ -685,7 +754,8 @@ def main() -> int:
 
     print(
         "[local_indel_artifact_filter] "
-        f"direct={len(direct_filtered_indices)} "
+        f"direct_overlap={direct_rule_counts['DIRECT_INDEL_OVERLAP']} "
+        f"near_af_matched={direct_rule_counts['NEAR_INDEL_AF_MATCHED']} "
         f"coherent_groups={rule_groups['COHERENT_INDEL_CLUSTER']} "
         f"complex_groups={rule_groups['COMPLEX_INDEL_REGION']} "
         f"unique_local_indel_removed={len(all_filtered_indices)} "
