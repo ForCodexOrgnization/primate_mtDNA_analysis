@@ -74,7 +74,7 @@ local_heteroplasmy_qc:
 
   # Local AF-coherent cluster detection.
   mt_length: 16569
-  window_bp: 250
+  window_bp: 500
   af_span_max: 0.06
   min_seed_variants: 3
   simulations: 2000
