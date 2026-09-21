@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -469,6 +469,8 @@ def contamination_score_metrics(
     source_frac_adjusted,
     source_adjustment_basis,
     mt_high,
+    mt_high_mode,
+    n_depressed_anchor,
     occupied_bins,
     circular_span_bp,
     max_local_fraction,
@@ -557,17 +559,33 @@ def contamination_score_metrics(
     )
     source_total = round(4.0 * source_composite_index, 2)
 
+    # mt-high evidence is scoreable only when supported by >=3 depressed-high
+    # anchors. The fallback estimate (1-2 depressed anchors, or only generic
+    # 0.8-1.0 anchors) remains reported diagnostically but contributes 0 points
+    # because a single high-A variant can otherwise dominate this component.
     mt_value = as_float(mt_high)
-    if mt_value is None or mt_value < 0.01:
+    dep_n = int(n_depressed_anchor or 0)
+    mt_scoreable = str(mt_high_mode) == "depressed_anchors" and dep_n >= 3
+
+    if not mt_scoreable:
+        mt_high_basis = (
+            "fallback_not_scored"
+            if str(mt_high_mode) == "fallback_anchors"
+            else "insufficient_depressed_anchors_not_scored"
+        )
         mt_high_index = 0.0
-    elif mt_value < 0.03:
-        mt_high_index = 0.25
-    elif mt_value < 0.05:
-        mt_high_index = 0.50
-    elif mt_value < 0.07:
-        mt_high_index = 0.75
     else:
-        mt_high_index = 1.0
+        mt_high_basis = "depressed_anchors_scored"
+        if mt_value is None or mt_value < 0.01:
+            mt_high_index = 0.0
+        elif mt_value < 0.03:
+            mt_high_index = 0.25
+        elif mt_value < 0.05:
+            mt_high_index = 0.50
+        elif mt_value < 0.07:
+            mt_high_index = 0.75
+        else:
+            mt_high_index = 1.0
     mt_score = round(2.5 * mt_high_index, 2)
 
     bins = int(occupied_bins or 0)
@@ -669,7 +687,7 @@ def contamination_score_metrics(
     return {
         "best_overlap_circular_span_fraction": span_fraction,
         "contamination_score_gate_pass": gate,
-        "contamination_score_version": "v3_species_background_adjusted",
+        "contamination_score_version": "v4_strict_mt_high_support",
         "contamination_score_source_basis": source_basis,
         "contamination_score_source_overlap_input": round(overlap_for_score, 4),
         "contamination_score_source_fraction_input": (
@@ -679,6 +697,7 @@ def contamination_score_metrics(
         "contamination_score_source_fraction": source_fraction_score,
         "contamination_score_source_composite_index": round(source_composite_index, 4),
         "contamination_score_source_total": source_total,
+        "contamination_score_mt_high_basis": mt_high_basis,
         "contamination_score_mt_high_index": mt_high_index,
         "contamination_score_mt_high": mt_score,
         "contamination_score_dispersion_bins": bins_score,
@@ -818,7 +837,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             mirror_p99_threshold=p99, mirror_calibration_status=cal_status,
             mirror_support_candidate=False, mirror_support_highconf=False,
             contamination_score_gate_pass=False,
-            contamination_score_version="v3_species_background_adjusted",
+            contamination_score_version="v4_strict_mt_high_support",
             contamination_score_source_basis="not_scored",
             contamination_score_source_overlap_input=0.0,
             contamination_score_source_fraction_input=0.0,
@@ -826,6 +845,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             contamination_score_source_fraction=0.0,
             contamination_score_source_composite_index=0.0,
             contamination_score_source_total=0.0,
+            contamination_score_mt_high_basis="not_scored",
             contamination_score_mt_high_index=0.0,
             contamination_score_mt_high=0.0,
             contamination_score_dispersion_bins=0.0,
@@ -947,6 +967,8 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             source_frac_adjusted=donor_specificity.get("best_frac_lowA_in_highB_background_adjusted"),
             source_adjustment_basis=donor_specificity.get("best_overlap_background_adjustment_basis"),
             mt_high=est,
+            mt_high_mode=mode,
+            n_depressed_anchor=len(dep),
             occupied_bins=dispersion["best_overlap_occupied_bins"],
             circular_span_bp=dispersion["best_overlap_circular_span_bp"],
             max_local_fraction=dispersion["best_overlap_max_local_fraction"],
