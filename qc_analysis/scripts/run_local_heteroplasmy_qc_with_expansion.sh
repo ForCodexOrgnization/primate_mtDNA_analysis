@@ -7,6 +7,11 @@ PYTHON_BIN="${PYTHON:-python3}"
 "$PYTHON_BIN" qc_analysis/scripts/run_local_heteroplasmy_qc.py \
   --config "$CONFIG"
 
+# Propagate exact NUMT-supported native mtDNA positions to other samples from
+# the same species/reference coordinate system before downstream expansion.
+"$PYTHON_BIN" qc_analysis/scripts/propagate_species_numt_positions.py \
+  --config "$CONFIG"
+
 "$PYTHON_BIN" qc_analysis/scripts/expand_numt_seed_variants.py \
   --config "$CONFIG"
 
