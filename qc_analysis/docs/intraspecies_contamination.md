@@ -38,6 +38,37 @@ have `Sample_A`, `Sample_B`, and `negative_control_tier`; tier 2 calibration use
 `tier2_location_and_batch_different`. The default mirror tolerance is zero,
 meaning an exact complementary VAF sum, retained for compatibility.
 
+## Report-only contamination evidence score
+
+The report also includes a **0-10 weighted evidence score** for ranking and
+sensitivity review. It does **not** change the validated candidate/high-confidence
+flags, `contamination_status`, or `qc_status`.
+
+A score is reported only when the minimum evidence gate passes:
+`n_lowA >= min_n_lowA`, `best_overlap >= min_overlap`, and a best same-species
+source sample is available.
+
+Weights are:
+
+- donor/source matching: **4.0** total
+  - overlap count: up to 1.5
+  - overlap fraction: up to 2.5
+- mt-high-hets: **2.0**
+- genome-wide dispersion: **2.0**
+  - occupied 1-kb bins: up to 0.75
+  - circular span / configured mtDNA length: up to 0.75
+  - max local fraction in a 1-kb window: up to 0.50
+- AF coherence (overlap MAD): **1.5**; when overlap <5, this component is capped
+  at 1.0 because very small overlap sets can appear artificially coherent
+- mirror support: **0.5**
+  - use calibrated normalized mirror support when p95/p99 controls are available
+  - otherwise use raw mirror fraction as a provisional supporting metric
+
+Initial report-only interpretations are:
+`>=7 strong_evidence`, `5-6.99 candidate_evidence`,
+`3-4.99 weak_ambiguous_evidence`, and `<3 little_evidence`.
+These bins are exploratory and are not production FAIL/PASS cutoffs.
+
 ## Configuration and usage
 
 Set `intraspecies_contamination.enabled: true`. Choose exactly one mode:
