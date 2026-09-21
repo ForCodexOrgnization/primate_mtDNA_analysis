@@ -438,11 +438,11 @@ def contamination_score_metrics(
     dispersion_total = bins_score + span_score + local_score
 
     mad = as_float(af_mad)
-    if mad is None or mad > 0.03:
+    if mad is None or mad > 0.02:
         af_score = 0.0
-    elif mad <= 0.01:
+    elif mad <= 0.005:
         af_score = 1.5
-    elif mad <= 0.02:
+    elif mad <= 0.01:
         af_score = 1.0
     else:
         af_score = 0.5
@@ -451,7 +451,7 @@ def contamination_score_metrics(
         af_score = min(af_score, 1.0)
 
     mirror_score = 0.0
-    mirror_basis = "raw_mirror_fraction_uncalibrated"
+    mirror_basis = "uncalibrated_not_scored"
     norm = as_float(normalized_mirror_support)
     p95 = as_float(mirror_p95)
     p99 = as_float(mirror_p99)
@@ -461,12 +461,6 @@ def contamination_score_metrics(
         if norm is not None and norm >= p99:
             mirror_score = 0.5
         elif norm is not None and norm >= p95:
-            mirror_score = 0.25
-    else:
-        mirror_fraction = as_float(mirror_low_fraction, 0.0) or 0.0
-        if mirror_fraction >= 0.30:
-            mirror_score = 0.5
-        elif mirror_fraction >= 0.10:
             mirror_score = 0.25
 
     total = (
