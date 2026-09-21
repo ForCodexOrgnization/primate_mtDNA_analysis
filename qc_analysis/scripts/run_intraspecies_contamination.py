@@ -9,9 +9,12 @@ Target and source cohorts are deliberately asymmetric:
 Low-A target evidence uses the original VCF calls (before local-cluster removal)
 so local artifact filtering cannot erase a real contamination signal.
 
-Genome-wide dispersion and AF-coherence metrics are diagnostic only. If a
-downstream local-heteroplasmy report already exists, the script also recomputes
-source matching after excluding detected local-cluster variants. This
+Genome-wide dispersion and AF-coherence metrics are diagnostic only. A report-only
+0-10 contamination evidence score combines donor matching, mt-high-hets,
+genome-wide dispersion, AF coherence, and mirror support. The score does NOT
+change the validated contamination flags, contamination_status, or qc_status.
+If a downstream local-heteroplasmy report already exists, the script also
+recomputes source matching after excluding detected local-cluster variants. This
 ALL-vs-NONCLUSTER comparison is a sensitivity analysis only and does not yet
 alter the primary contamination classification.
 """
@@ -31,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_total contamination_score_mt_high contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -325,6 +328,191 @@ def best_source_match(lowkeys, otherhigh):
     return best_source, best_overlap, frac, best_keys
 
 
+def contamination_score_metrics(
+    *,
+    n_lowA,
+    best_source,
+    best_overlap,
+    frac,
+    mt_high,
+    occupied_bins,
+    circular_span_bp,
+    max_local_fraction,
+    af_mad,
+    mirror_low_fraction,
+    normalized_mirror_support,
+    mirror_p95,
+    mirror_p99,
+    mirror_calibration_status,
+    p,
+):
+    """Return a report-only 0-10 contamination evidence score.
+
+    Weighting:
+      donor/source matching 4.0
+      mt-high-hets          2.0
+      genome-wide spread   2.0
+      AF coherence         1.5
+      mirror support       0.5
+
+    Scoring is gated by the existing minimum evidence requirements
+    (n_lowA >= min_n_lowA, overlap >= min_overlap, and a best source).
+    The score never changes the production contamination classification.
+    """
+    gate = (
+        int(n_lowA or 0) >= int(p["min_n_lowA"])
+        and int(best_overlap or 0) >= int(p["min_overlap"])
+        and bool(best_source)
+    )
+
+    overlap = int(best_overlap or 0)
+    if overlap < 3:
+        source_overlap_score = 0.0
+    elif overlap <= 4:
+        source_overlap_score = 0.5
+    elif overlap <= 9:
+        source_overlap_score = 0.75
+    elif overlap <= 29:
+        source_overlap_score = 1.0
+    elif overlap <= 99:
+        source_overlap_score = 1.25
+    else:
+        source_overlap_score = 1.5
+
+    frac_value = as_float(frac)
+    if frac_value is None or frac_value < 0.10:
+        source_fraction_score = 0.0
+    elif frac_value < 0.20:
+        source_fraction_score = 0.5
+    elif frac_value < 0.30:
+        source_fraction_score = 1.0
+    elif frac_value < 0.50:
+        source_fraction_score = 1.5
+    else:
+        source_fraction_score = 2.5
+    source_total = source_overlap_score + source_fraction_score
+
+    mt_value = as_float(mt_high)
+    if mt_value is None or mt_value < 0.01:
+        mt_score = 0.0
+    elif mt_value < 0.03:
+        mt_score = 0.5
+    elif mt_value < 0.05:
+        mt_score = 1.0
+    elif mt_value < 0.07:
+        mt_score = 1.5
+    else:
+        mt_score = 2.0
+
+    bins = int(occupied_bins or 0)
+    if bins >= 10:
+        bins_score = 0.75
+    elif bins >= 6:
+        bins_score = 0.50
+    elif bins >= 3:
+        bins_score = 0.25
+    else:
+        bins_score = 0.0
+
+    mt_length = as_float(p.get("mt_length"))
+    span_bp = as_float(circular_span_bp, 0.0) or 0.0
+    span_fraction = span_bp / mt_length if mt_length and mt_length > 0 else None
+    if span_fraction is None or span_fraction < 0.10:
+        span_score = 0.0
+    elif span_fraction < 0.25:
+        span_score = 0.25
+    elif span_fraction < 0.50:
+        span_score = 0.50
+    else:
+        span_score = 0.75
+
+    local_fraction = as_float(max_local_fraction)
+    if local_fraction is None:
+        local_score = 0.0
+    elif local_fraction <= 0.25:
+        local_score = 0.50
+    elif local_fraction <= 0.40:
+        local_score = 0.25
+    else:
+        local_score = 0.0
+    dispersion_total = bins_score + span_score + local_score
+
+    mad = as_float(af_mad)
+    if mad is None or mad > 0.03:
+        af_score = 0.0
+    elif mad <= 0.01:
+        af_score = 1.5
+    elif mad <= 0.02:
+        af_score = 1.0
+    else:
+        af_score = 0.5
+    # Three or four overlapping markers can look artificially coherent.
+    if overlap < 5:
+        af_score = min(af_score, 1.0)
+
+    mirror_score = 0.0
+    mirror_basis = "raw_mirror_fraction_uncalibrated"
+    norm = as_float(normalized_mirror_support)
+    p95 = as_float(mirror_p95)
+    p99 = as_float(mirror_p99)
+    calibrated = str(mirror_calibration_status) == "calibrated" and p95 is not None and p99 is not None
+    if calibrated:
+        mirror_basis = "normalized_mirror_support_calibrated"
+        if norm is not None and norm >= p99:
+            mirror_score = 0.5
+        elif norm is not None and norm >= p95:
+            mirror_score = 0.25
+    else:
+        mirror_fraction = as_float(mirror_low_fraction, 0.0) or 0.0
+        if mirror_fraction >= 0.30:
+            mirror_score = 0.5
+        elif mirror_fraction >= 0.10:
+            mirror_score = 0.25
+
+    total = (
+        source_total
+        + mt_score
+        + dispersion_total
+        + af_score
+        + mirror_score
+    )
+    total = round(total, 2)
+
+    if not gate:
+        interpretation = "insufficient_evidence_gate"
+        reported_total = None
+    elif total >= 7.0:
+        interpretation = "strong_evidence"
+        reported_total = total
+    elif total >= 5.0:
+        interpretation = "candidate_evidence"
+        reported_total = total
+    elif total >= 3.0:
+        interpretation = "weak_ambiguous_evidence"
+        reported_total = total
+    else:
+        interpretation = "little_evidence"
+        reported_total = total
+
+    return {
+        "best_overlap_circular_span_fraction": span_fraction,
+        "contamination_score_gate_pass": gate,
+        "contamination_score_source_overlap": source_overlap_score,
+        "contamination_score_source_fraction": source_fraction_score,
+        "contamination_score_source_total": source_total,
+        "contamination_score_mt_high": mt_score,
+        "contamination_score_dispersion_bins": bins_score,
+        "contamination_score_dispersion_span": span_score,
+        "contamination_score_dispersion_local": local_score,
+        "contamination_score_dispersion_total": dispersion_total,
+        "contamination_score_af_coherence": af_score,
+        "contamination_score_mirror": mirror_score,
+        "contamination_score_mirror_basis": mirror_basis,
+        "contamination_score": reported_total,
+        "contamination_score_interpretation": interpretation,
+    }
+
+
 def mirror_stats(rows, p):
     lows = [r for r in rows if p["mirror_low_vaf_min"] <= num(r, "VAF") <= p["mirror_low_vaf_max"]]
     highs = [r for r in rows if p["mirror_high_vaf_min"] <= num(r, "VAF") <= p["mirror_high_vaf_max"]]
@@ -411,6 +599,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             best_frac_lowA_in_highB=None,
             best_overlap_positions="", best_overlap_occupied_bins=0,
             best_overlap_linear_span_bp=0, best_overlap_circular_span_bp=0,
+            best_overlap_circular_span_fraction=None,
             best_overlap_max_in_window=0, best_overlap_max_local_fraction=None,
             best_overlap_af_median=None, best_overlap_af_mad=None,
             best_overlap_af_iqr=None, best_overlap_af_cv=None,
@@ -435,6 +624,20 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             normalized_mirror_support=0., mirror_p95_threshold=p95,
             mirror_p99_threshold=p99, mirror_calibration_status=cal_status,
             mirror_support_candidate=False, mirror_support_highconf=False,
+            contamination_score_gate_pass=False,
+            contamination_score_source_overlap=0.0,
+            contamination_score_source_fraction=0.0,
+            contamination_score_source_total=0.0,
+            contamination_score_mt_high=0.0,
+            contamination_score_dispersion_bins=0.0,
+            contamination_score_dispersion_span=0.0,
+            contamination_score_dispersion_local=0.0,
+            contamination_score_dispersion_total=0.0,
+            contamination_score_af_coherence=0.0,
+            contamination_score_mirror=0.0,
+            contamination_score_mirror_basis="not_scored",
+            contamination_score=None,
+            contamination_score_interpretation="not_tested",
             contamination_flag_candidate=False, contamination_flag_highconf=False,
         )
         if not eligible:
@@ -507,6 +710,23 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             level = "weak_anchor_support"
 
         npair, nmir, mfrac, norm = mirror_stats(own, p)
+        score = contamination_score_metrics(
+            n_lowA=len(lowkeys),
+            best_source=best_source,
+            best_overlap=best_overlap,
+            frac=frac,
+            mt_high=est,
+            occupied_bins=dispersion["best_overlap_occupied_bins"],
+            circular_span_bp=dispersion["best_overlap_circular_span_bp"],
+            max_local_fraction=dispersion["best_overlap_max_local_fraction"],
+            af_mad=af_stats["best_overlap_af_mad"],
+            mirror_low_fraction=mfrac,
+            normalized_mirror_support=norm,
+            mirror_p95=p95,
+            mirror_p99=p99,
+            mirror_calibration_status=cal_status,
+            p=p,
+        )
         overlap_candidate = (
             len(lowkeys) >= p["min_n_lowA"]
             and best_overlap >= p["min_overlap"]
@@ -553,6 +773,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             n_mirror_pairs=npair, n_low_variants_with_mirror=nmir,
             mirror_low_fraction=mfrac, normalized_mirror_support=norm,
             mirror_support_candidate=mcand, mirror_support_highconf=mhigh,
+            **score,
             contamination_status=status, contamination_flag_candidate=candidate,
             contamination_flag_highconf=highconf, qc_status=qc, qc_reason=status,
         )
