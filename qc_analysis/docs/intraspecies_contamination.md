@@ -64,6 +64,10 @@ Weights are:
   - if donor background cannot be estimated because only one source candidate is
     available, the score falls back to raw overlap/fraction and reports this basis
 - mt-high-hets: **2.5**
+  - scored only when `mt_high_hets_mode == depressed_anchors` with at least
+    3 depressed-high anchors
+  - fallback estimates from fewer than 3 depressed anchors remain reported
+    diagnostically but contribute 0 points
 - genome-wide dispersion: **2.0**
   - occupied 1-kb bins, circular span, and max local fraction are normalized to
     0-1 strengths and combined by their median; the three highly correlated
@@ -83,7 +87,7 @@ Weights are:
 
 `n_lowA` is retained as an evidence-sufficiency gate rather than an additive
 score component. The report records `contamination_score_version =
-v3_species_background_adjusted` and includes the source and dispersion composite indices
+v4_strict_mt_high_support` and includes the source and dispersion composite indices
 for auditability.
 
 Initial report-only interpretations are:
