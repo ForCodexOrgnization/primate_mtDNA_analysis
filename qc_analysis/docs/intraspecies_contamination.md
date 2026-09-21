@@ -51,8 +51,18 @@ source sample is available.
 Weights are:
 
 - donor/source matching: **4.0**
-  - overlap count and overlap fraction are first converted to 0-1 strengths and
-    combined by their geometric mean; they are not added as independent evidence
+  - each best-source matched allele is first down-weighted by how common that
+    high-A allele is among same-species source candidates:
+    - <=5% frequency: weight 1.00
+    - 5-10%: 0.75
+    - 10-25%: 0.50
+    - 25-50%: 0.25
+    - >=50%: 0.00
+  - the resulting background-adjusted overlap count and adjusted overlap fraction
+    are converted to 0-1 strengths and combined by their geometric mean; they are
+    not added as independent evidence
+  - if donor background cannot be estimated because only one source candidate is
+    available, the score falls back to raw overlap/fraction and reports this basis
 - mt-high-hets: **2.5**
 - genome-wide dispersion: **2.0**
   - occupied 1-kb bins, circular span, and max local fraction are normalized to
@@ -73,7 +83,7 @@ Weights are:
 
 `n_lowA` is retained as an evidence-sufficiency gate rather than an additive
 score component. The report records `contamination_score_version =
-v2_correlation_reduced` and includes the source and dispersion composite indices
+v3_species_background_adjusted` and includes the source and dispersion composite indices
 for auditability.
 
 Initial report-only interpretations are:
@@ -83,9 +93,11 @@ These bins are exploratory and are not production FAIL/PASS cutoffs.
 
 ## Same-species donor specificity diagnostics
 
-The report now also quantifies whether best-source-matched low-A alleles are
+The report also quantifies whether best-source-matched low-A alleles are
 specific to the nominated donor or common across same-species source candidates.
-These diagnostics are **report-only** and do not yet change the 0-10 score.
+These diagnostics remain visible for audit, and the same-species background
+frequency is now used to background-adjust the source-matching component of the
+report-only 0-10 score.
 
 For every allele in the best-source overlap, the analysis counts how many
 same-species source candidates carry that allele at source-high AF. It then
@@ -112,7 +124,16 @@ reports:
 Per-variant details are written to
 `reports/donor_specificity_variant_detail.tsv`, including the matched allele,
 target low VAF, number/fraction of high-A source carriers, normalized donor
-specificity, and the source samples carrying that allele.
+specificity, the background weight used for scoring, and the source samples
+carrying that allele.
+
+The main report additionally includes
+`best_overlap_background_adjusted`,
+`best_frac_lowA_in_highB_background_adjusted`, and
+`best_overlap_background_adjustment_basis`. The score records
+`contamination_score_source_overlap_input`,
+`contamination_score_source_fraction_input`, and
+`contamination_score_source_basis`.
 
 ## Configuration and usage
 
