@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_total contamination_score_mt_high contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_total contamination_score_mt_high contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -328,6 +328,91 @@ def best_source_match(lowkeys, otherhigh):
     return best_source, best_overlap, frac, best_keys
 
 
+def donor_specificity_metrics(best_overlap_keys, otherhigh):
+    """Quantify whether best-source-matched markers are donor-specific.
+
+    For each best-overlap allele, count how many same-species source candidates
+    (all samples except tested A) carry that allele at source-high AF.
+
+    Per-marker normalized donor specificity is:
+        (N - k) / (N - 1)
+    where N is the number of source candidates and k is the number with the
+    high-A allele. Thus k=1 gives specificity=1 and k=N gives specificity=0.
+
+    These are report-only diagnostics and do not alter the contamination score
+    or production classification.
+    """
+    keys = sorted(best_overlap_keys)
+    n_sources = len(otherhigh)
+    if not keys:
+        return {
+            "best_overlap_n_unique_to_best_source": 0,
+            "best_overlap_unique_to_best_source_fraction": None,
+            "best_overlap_mean_source_high_fraction": None,
+            "best_overlap_median_source_high_fraction": None,
+            "best_overlap_mean_donor_specificity": None,
+            "best_overlap_effective_specific_overlap": None,
+            "best_overlap_fraction_common_ge50": None,
+            "donor_specificity_assessable": False,
+        }, {}
+
+    per_key = {}
+    source_fractions = []
+    specificities = []
+    unique_n = 0
+    common_ge50_n = 0
+
+    for k in keys:
+        carriers = sorted(s for s, highkeys in otherhigh.items() if k in highkeys)
+        carrier_n = len(carriers)
+        source_fraction = carrier_n / n_sources if n_sources else None
+        if carrier_n == 1:
+            unique_n += 1
+        if source_fraction is not None and source_fraction >= 0.50:
+            common_ge50_n += 1
+
+        specificity = (
+            (n_sources - carrier_n) / (n_sources - 1)
+            if n_sources > 1 else None
+        )
+        if source_fraction is not None:
+            source_fractions.append(source_fraction)
+        if specificity is not None:
+            specificities.append(specificity)
+
+        per_key[k] = {
+            "n_high_sources": carrier_n,
+            "source_high_fraction": source_fraction,
+            "donor_specificity": specificity,
+            "high_source_samples": carriers,
+            "unique_to_best_source": carrier_n == 1,
+        }
+
+    assessable = n_sources > 1
+    metrics = {
+        "best_overlap_n_unique_to_best_source": unique_n,
+        "best_overlap_unique_to_best_source_fraction": unique_n / len(keys),
+        "best_overlap_mean_source_high_fraction": (
+            sum(source_fractions) / len(source_fractions)
+            if source_fractions else None
+        ),
+        "best_overlap_median_source_high_fraction": (
+            statistics.median(source_fractions)
+            if source_fractions else None
+        ),
+        "best_overlap_mean_donor_specificity": (
+            sum(specificities) / len(specificities)
+            if specificities else None
+        ),
+        "best_overlap_effective_specific_overlap": (
+            sum(specificities) if specificities else None
+        ),
+        "best_overlap_fraction_common_ge50": common_ge50_n / len(keys),
+        "donor_specificity_assessable": assessable,
+    }
+    return metrics, per_key
+
+
 def contamination_score_metrics(
     *,
     n_lowA,
@@ -564,6 +649,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
     min_target_het = int(p["min_target_het"])
     out = []
     eligibility = []
+    donor_variant_details = []
 
     for species, sample in sorted(source_pairs):
         sample_qc = qc_status.get(sample, "MISSING")
@@ -591,6 +677,14 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             n_usable_variants=len(own), n_lowA=0, best_source_sample="",
             best_source_qc_status="", best_overlap=0,
             best_frac_lowA_in_highB=None,
+            best_overlap_n_unique_to_best_source=0,
+            best_overlap_unique_to_best_source_fraction=None,
+            best_overlap_mean_source_high_fraction=None,
+            best_overlap_median_source_high_fraction=None,
+            best_overlap_mean_donor_specificity=None,
+            best_overlap_effective_specific_overlap=None,
+            best_overlap_fraction_common_ge50=None,
+            donor_specificity_assessable=False,
             best_overlap_positions="", best_overlap_occupied_bins=0,
             best_overlap_linear_span_bp=0, best_overlap_circular_span_bp=0,
             best_overlap_circular_span_fraction=None,
@@ -647,8 +741,33 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             for s in others
         }
         best_source, best_overlap, frac, best_overlap_keys = best_source_match(lowkeys, otherhigh)
+        donor_specificity, donor_per_key = donor_specificity_metrics(best_overlap_keys, otherhigh)
         dispersion = overlap_dispersion(best_overlap_keys, p)
         af_stats = overlap_af_stats(low, best_overlap_keys)
+
+        low_vaf_by_key = defaultdict(list)
+        for r in low:
+            low_vaf_by_key[key(r)].append(num(r, "VAF"))
+        for allele_key in sorted(best_overlap_keys):
+            chrom, pos, ref, alt = allele_key
+            d = donor_per_key.get(allele_key, {})
+            target_vaf_values = low_vaf_by_key.get(allele_key, [])
+            donor_variant_details.append({
+                "sample": sample,
+                "species": species,
+                "best_source_sample": best_source,
+                "chrom": chrom,
+                "pos": pos,
+                "ref": ref,
+                "alt": alt,
+                "target_low_vaf": statistics.median(target_vaf_values) if target_vaf_values else None,
+                "n_source_candidates": len(otherhigh),
+                "n_high_sources": d.get("n_high_sources"),
+                "source_high_fraction": d.get("source_high_fraction"),
+                "donor_specificity": d.get("donor_specificity"),
+                "unique_to_best_source": d.get("unique_to_best_source"),
+                "high_source_samples": ",".join(d.get("high_source_samples", [])),
+            })
 
         sensitivity = {}
         if cluster_sensitivity_available:
@@ -757,6 +876,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             n_lowA=len(lowkeys), best_source_sample=best_source,
             best_source_qc_status=qc_status.get(best_source, "MISSING") if best_source else "",
             best_overlap=best_overlap, best_frac_lowA_in_highB=frac,
+            **donor_specificity,
             **dispersion,
             **af_stats,
             **sensitivity,
@@ -772,7 +892,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             contamination_flag_highconf=highconf, qc_status=qc, qc_reason=status,
         )
         out.append(base)
-    return out, eligibility
+    return out, eligibility, donor_variant_details
 
 
 def main():
@@ -853,7 +973,7 @@ def main():
         raise ValueError("build_variant_table=false requires variant_table")
 
     nc = a.negative_control_pairs or sec.get("negative_control_pairs")
-    findings, eligibility = analyse(
+    findings, eligibility, donor_variant_details = analyse(
         load_rows(path(table)), p, source_pairs, qc_status, het_counts,
         clustered_keys=clustered_keys,
         cluster_sensitivity_available=cluster_sensitivity_available,
@@ -861,6 +981,16 @@ def main():
     )
     write_rows(report, findings, REPORT_COLUMNS)
     write_rows(out / "reports/target_sample_eligibility.tsv", eligibility, ELIGIBILITY_COLUMNS)
+    write_rows(
+        out / "reports/donor_specificity_variant_detail.tsv",
+        donor_variant_details,
+        [
+            "sample", "species", "best_source_sample", "chrom", "pos", "ref", "alt",
+            "target_low_vaf", "n_source_candidates", "n_high_sources",
+            "source_high_fraction", "donor_specificity", "unique_to_best_source",
+            "high_source_samples",
+        ],
+    )
 
     with (out / "run_parameters.tsv").open("w", newline="", encoding="utf-8") as h:
         w = csv.writer(h, delimiter="\t")
