@@ -76,6 +76,39 @@ Initial report-only interpretations are:
 `3-4.99 weak_ambiguous_evidence`, and `<3 little_evidence`.
 These bins are exploratory and are not production FAIL/PASS cutoffs.
 
+## Same-species donor specificity diagnostics
+
+The report now also quantifies whether best-source-matched low-A alleles are
+specific to the nominated donor or common across same-species source candidates.
+These diagnostics are **report-only** and do not yet change the 0-10 score.
+
+For every allele in the best-source overlap, the analysis counts how many
+same-species source candidates carry that allele at source-high AF. It then
+reports:
+
+- `best_overlap_n_unique_to_best_source`: number of overlap alleles present at
+  source-high AF in only one candidate source sample.
+- `best_overlap_unique_to_best_source_fraction`: unique-to-best-source alleles
+  divided by total best overlap.
+- `best_overlap_mean_source_high_fraction` and
+  `best_overlap_median_source_high_fraction`: how common the matched alleles are
+  across same-species source candidates.
+- `best_overlap_mean_donor_specificity`: mean normalized specificity, where an
+  allele carried by only one source has specificity 1 and an allele carried by
+  all source candidates has specificity 0.
+- `best_overlap_effective_specific_overlap`: sum of per-marker specificity
+  across the best overlap; this acts like an overlap count discounted for
+  same-species background frequency.
+- `best_overlap_fraction_common_ge50`: fraction of best-overlap alleles carried
+  at source-high AF by at least half of same-species source candidates.
+- `donor_specificity_assessable`: false when there is only one source candidate,
+  because donor specificity cannot be estimated relative to background.
+
+Per-variant details are written to
+`reports/donor_specificity_variant_detail.tsv`, including the matched allele,
+target low VAF, number/fraction of high-A source carriers, normalized donor
+specificity, and the source samples carrying that allele.
+
 ## Configuration and usage
 
 Set `intraspecies_contamination.enabled: true`. Choose exactly one mode:
