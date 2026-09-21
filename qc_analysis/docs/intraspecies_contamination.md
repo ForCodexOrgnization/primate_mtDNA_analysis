@@ -58,11 +58,18 @@ Weights are:
   - occupied 1-kb bins: up to 0.75
   - circular span / configured mtDNA length: up to 0.75
   - max local fraction in a 1-kb window: up to 0.50
-- AF coherence (overlap MAD): **1.5**; when overlap <5, this component is capped
-  at 1.0 because very small overlap sets can appear artificially coherent
+- AF coherence (overlap MAD): **1.5**
+  - MAD <=0.005: 1.5
+  - 0.005-0.01: 1.0
+  - 0.01-0.02: 0.5
+  - >0.02: 0
+  - when overlap <5, this component is capped at 1.0 because very small overlap
+    sets can appear artificially coherent
 - mirror support: **0.5**
-  - use calibrated normalized mirror support when p95/p99 controls are available
-  - otherwise use raw mirror fraction as a provisional supporting metric
+  - use calibrated normalized mirror support only when p95/p99 negative-control
+    thresholds are available
+  - uncalibrated raw mirror fraction remains reported diagnostically but
+    contributes **0 points** to the score
 
 Initial report-only interpretations are:
 `>=7 strong_evidence`, `5-6.99 candidate_evidence`,
