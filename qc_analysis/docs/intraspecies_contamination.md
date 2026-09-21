@@ -50,26 +50,31 @@ source sample is available.
 
 Weights are:
 
-- donor/source matching: **4.0** total
-  - overlap count: up to 1.5
-  - overlap fraction: up to 2.5
-- mt-high-hets: **2.0**
+- donor/source matching: **4.0**
+  - overlap count and overlap fraction are first converted to 0-1 strengths and
+    combined by their geometric mean; they are not added as independent evidence
+- mt-high-hets: **2.5**
 - genome-wide dispersion: **2.0**
-  - occupied 1-kb bins: up to 0.75
-  - circular span / configured mtDNA length: up to 0.75
-  - max local fraction in a 1-kb window: up to 0.50
-- AF coherence (overlap MAD): **1.5**
-  - MAD <=0.005: 1.5
-  - 0.005-0.01: 1.0
-  - 0.01-0.02: 0.5
+  - occupied 1-kb bins, circular span, and max local fraction are normalized to
+    0-1 strengths and combined by their median; the three highly correlated
+    spatial metrics therefore contribute only one dispersion component
+- AF coherence (overlap MAD): **1.0**
+  - MAD <=0.005: 1.0
+  - 0.005-0.01: 0.67
+  - 0.01-0.02: 0.33
   - >0.02: 0
-  - when overlap <5, this component is capped at 1.0 because very small overlap
+  - when overlap <5, this component is capped at 0.67 because very small overlap
     sets can appear artificially coherent
 - mirror support: **0.5**
   - use calibrated normalized mirror support only when p95/p99 negative-control
     thresholds are available
   - uncalibrated raw mirror fraction remains reported diagnostically but
     contributes **0 points** to the score
+
+`n_lowA` is retained as an evidence-sufficiency gate rather than an additive
+score component. The report records `contamination_score_version =
+v2_correlation_reduced` and includes the source and dispersion composite indices
+for auditability.
 
 Initial report-only interpretations are:
 `>=7 strong_evidence`, `5-6.99 candidate_evidence`,
