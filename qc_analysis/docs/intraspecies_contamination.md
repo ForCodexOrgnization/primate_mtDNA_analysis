@@ -40,7 +40,7 @@ meaning an exact complementary VAF sum, retained for compatibility.
 
 ## Report-only contamination evidence score
 
-The report also includes a **0-10 weighted evidence score** for ranking and
+The report also includes a **0-1 weighted evidence score** for ranking and
 sensitivity review. It does **not** change the validated candidate/high-confidence
 flags, `contamination_status`, or `qc_status`.
 
@@ -96,13 +96,13 @@ Weights are:
 
 `n_lowA` is retained as an evidence-sufficiency gate rather than an additive
 score component. The report records `contamination_score_version =
-v5_entropy_dispersion` and includes the source and dispersion composite indices
+v6_normalized_0_1` and includes the source and dispersion composite indices
 for auditability.
 
 Initial report-only interpretations are:
 `>=7 strong_evidence`, `5-6.99 candidate_evidence`,
 `3-4.99 weak_ambiguous_evidence`, and `<3 little_evidence`.
-These bins are exploratory and are not production FAIL/PASS cutoffs.
+These bins are exploratory and are not production FAIL/PASS cutoffs. The normalized score uses 0.70, 0.50, and 0.30 as the corresponding evidence boundaries.
 
 ## Same-species donor specificity diagnostics
 
@@ -110,7 +110,7 @@ The report also quantifies whether best-source-matched low-A alleles are
 specific to the nominated donor or common across same-species source candidates.
 These diagnostics remain visible for audit, and the same-species background
 frequency is now used to background-adjust the source-matching component of the
-report-only 0-10 score.
+report-only 0-1 score.
 
 For every allele in the best-source overlap, the analysis counts how many
 same-species source candidates carry that allele at source-high AF. It then
