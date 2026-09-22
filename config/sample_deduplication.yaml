@@ -10,6 +10,14 @@ sample_deduplication:
   canonical_sample_id_column: canonical_sample_id
   species_column: pipeline_species
 
+  # Optional provenance metadata carried into QC outputs. If project_column or
+  # cohort_column is left unset, the first matching alias present in the master
+  # metadata is used automatically.
+  project_column:
+  project_column_aliases: bioproject,bioproject_accession,study_accession,project_accession,project,study,ena_study,sra_study
+  cohort_column:
+  cohort_column_aliases: cohort,cohort_id,cohort_name,study_cohort,dataset,dataset_id,source_cohort
+
   archive_duplicate_flag_column: archive_duplicate_flag
   archive_duplicate_group_column: archive_duplicate_group
   archive_duplicate_group_size_column: archive_duplicate_group_size
