@@ -10,7 +10,7 @@ Low-A target evidence uses the original VCF calls (before local-cluster removal)
 so local artifact filtering cannot erase a real contamination signal.
 
 Genome-wide dispersion and AF-coherence metrics are diagnostic only. A report-only
-0-10 contamination evidence score combines donor matching, mt-high-hets,
+0-1 contamination evidence score combines donor matching, mt-high-hets,
 genome-wide dispersion, AF coherence, and mirror support. The score does NOT
 change the validated contamination flags, contamination_status, or qc_status.
 If a downstream local-heteroplasmy report already exists, the script also
@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable best_overlap_positions best_overlap_occupied_bins best_overlap_occupied_bin_fraction best_overlap_bin_entropy best_overlap_bin_entropy_normalized best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_occupied_bin_fraction_noncluster best_overlap_bin_entropy_noncluster best_overlap_bin_entropy_normalized_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_basis contamination_score_dispersion_entropy contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable best_overlap_positions best_overlap_occupied_bins best_overlap_occupied_bin_fraction best_overlap_bin_entropy best_overlap_bin_entropy_normalized best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_occupied_bin_fraction_noncluster best_overlap_bin_entropy_noncluster best_overlap_bin_entropy_normalized_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_basis contamination_score_dispersion_entropy contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score_raw_10 contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -504,7 +504,7 @@ def contamination_score_metrics(
     mirror_calibration_status,
     p,
 ):
-    """Return a report-only 0-10 contamination evidence score.
+    """Return a report-only 0-1 contamination evidence score.
 
     Correlation-reduced weighting (total 10 points):
       donor/source matching 4.0
@@ -690,35 +690,36 @@ def contamination_score_metrics(
         elif norm is not None and norm >= p95:
             mirror_score = 0.25
 
-    total = (
+    raw_total_10 = (
         source_total
         + mt_score
         + dispersion_total
         + af_score
         + mirror_score
     )
-    total = round(total, 2)
+    raw_total_10 = round(raw_total_10, 2)
+    normalized_total = round(raw_total_10 / 10.0, 3)
 
     if not gate:
         interpretation = "insufficient_evidence_gate"
         reported_total = None
-    elif total >= 7.0:
+    elif normalized_total >= 0.70:
         interpretation = "strong_evidence"
-        reported_total = total
-    elif total >= 5.0:
+        reported_total = normalized_total
+    elif normalized_total >= 0.50:
         interpretation = "candidate_evidence"
-        reported_total = total
-    elif total >= 3.0:
+        reported_total = normalized_total
+    elif normalized_total >= 0.30:
         interpretation = "weak_ambiguous_evidence"
-        reported_total = total
+        reported_total = normalized_total
     else:
         interpretation = "little_evidence"
-        reported_total = total
+        reported_total = normalized_total
 
     return {
         "best_overlap_circular_span_fraction": span_fraction,
         "contamination_score_gate_pass": gate,
-        "contamination_score_version": "v5_entropy_dispersion",
+        "contamination_score_version": "v6_normalized_0_1",
         "contamination_score_source_basis": source_basis,
         "contamination_score_source_overlap_input": round(overlap_for_score, 4),
         "contamination_score_source_fraction_input": (
@@ -741,6 +742,7 @@ def contamination_score_metrics(
         "contamination_score_af_coherence": af_score,
         "contamination_score_mirror": mirror_score,
         "contamination_score_mirror_basis": mirror_basis,
+        "contamination_score_raw_10": raw_total_10,
         "contamination_score": reported_total,
         "contamination_score_interpretation": interpretation,
     }
@@ -876,7 +878,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             mirror_p99_threshold=p99, mirror_calibration_status=cal_status,
             mirror_support_candidate=False, mirror_support_highconf=False,
             contamination_score_gate_pass=False,
-            contamination_score_version="v5_entropy_dispersion",
+            contamination_score_version="v6_normalized_0_1",
             contamination_score_source_basis="not_scored",
             contamination_score_source_overlap_input=0.0,
             contamination_score_source_fraction_input=0.0,
@@ -897,6 +899,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             contamination_score_af_coherence=0.0,
             contamination_score_mirror=0.0,
             contamination_score_mirror_basis="not_scored",
+            contamination_score_raw_10=None,
             contamination_score=None,
             contamination_score_interpretation="not_tested",
             contamination_flag_candidate=False, contamination_flag_highconf=False,
