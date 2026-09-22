@@ -911,7 +911,10 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
         own = by[species, sample]
         others = [s for sp, s in source_pairs if sp == species and s != sample]
         base = dict(
-            sample=sample, species=species, sample_qc_status=sample_qc,
+            sample=sample, species=species,
+            target_project=provenance.get(sample, {}).get("project", "") or "NA",
+            target_cohort=provenance.get(sample, {}).get("cohort", "") or "NA",
+            sample_qc_status=sample_qc,
             n_strict_het=n_het, target_eligible=eligible,
             target_ineligible_reason=ineligible_reason,
             n_species_samples=counts[species], n_source_candidates=len(others),
