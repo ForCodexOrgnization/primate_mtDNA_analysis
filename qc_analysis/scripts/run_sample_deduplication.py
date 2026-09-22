@@ -59,6 +59,27 @@ def clean(value) -> str:
     return "" if value.upper() == "NA" else value
 
 
+def first_existing_column(fields: list[str], explicit, aliases: str) -> str | None:
+    """Resolve an optional metadata column without making old metadata fail.
+
+    An explicit configured column wins. Otherwise the first case-insensitive
+    alias present in the metadata header is used. Missing optional provenance
+    fields are represented as NA downstream rather than raising an error.
+    """
+    if explicit:
+        requested = str(explicit).strip()
+        if requested not in fields:
+            raise RuntimeError(
+                f"configured optional metadata column not found: {requested}"
+            )
+        return requested
+    by_lower = {f.lower(): f for f in fields}
+    for alias in (x.strip() for x in aliases.split(",")):
+        if alias and alias.lower() in by_lower:
+            return by_lower[alias.lower()]
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", type=Path, required=True)
@@ -97,6 +118,27 @@ def main() -> int:
     exclude_roles = split_csv(sec.get("exclude_roles"), "archive_alias_row")
 
     rows, fields = read_rows(metadata_path)
+
+    # Optional provenance metadata used later by intra-species contamination.
+    # These are deliberately optional because older FINAL metadata tables may
+    # not yet contain study/project or cohort annotations.
+    project_col = first_existing_column(
+        fields,
+        sec.get("project_column"),
+        str(sec.get(
+            "project_column_aliases",
+            "bioproject,bioproject_accession,study_accession,project_accession,project,study,ena_study,sra_study",
+        )),
+    )
+    cohort_col = first_existing_column(
+        fields,
+        sec.get("cohort_column"),
+        str(sec.get(
+            "cohort_column_aliases",
+            "cohort,cohort_id,cohort_name,study_cohort,dataset,dataset_id,source_cohort",
+        )),
+    )
+
     required = {
         accession_col, canonical_col, species_col, role_col,
         duplicate_flag_col, group_col, group_size_col, alias_col,
@@ -159,6 +201,8 @@ def main() -> int:
             "biological_duplicate_evidence_type": clean(row.get(bio_evidence_type_col)) or "NA",
             "biological_duplicate_evidence_value": clean(row.get(bio_evidence_value_col)) or "NA",
             "biological_duplicate_candidate_class": bio_class or "NA",
+            "project": clean(row.get(project_col)) or "NA" if project_col else "NA",
+            "cohort": clean(row.get(cohort_col)) or "NA" if cohort_col else "NA",
         }
 
         if bio_flag.lower() == "true":
@@ -211,6 +255,7 @@ def main() -> int:
         "biological_duplicate_evidence_type",
         "biological_duplicate_evidence_value",
         "biological_duplicate_candidate_class",
+        "project", "cohort",
     ]
 
     write_tsv(reports / "deduplicated_samples.tsv", kept, detail_fields)
@@ -242,6 +287,10 @@ def main() -> int:
         "biological_duplicate_candidate_rows": len(bio_candidates),
         "archive_alias_only_candidate_rows": bio_class_counts.get("ARCHIVE_ALIAS_ONLY", 0),
         "cross_biosample_candidate_rows": len(cross_biosample),
+        "project_metadata_column": project_col or "NA",
+        "cohort_metadata_column": cohort_col or "NA",
+        "rows_with_project": sum(r["project"] != "NA" for r in kept),
+        "rows_with_cohort": sum(r["cohort"] != "NA" for r in kept),
     }]
     write_tsv(
         reports / "sample_deduplication_summary.tsv",
@@ -251,7 +300,8 @@ def main() -> int:
             "excluded_archive_alias_accessions", "archive_duplicate_groups",
             "unique_input_rows", "canonical_id_rows", "archive_alias_rows",
             "biological_duplicate_candidate_rows", "archive_alias_only_candidate_rows",
-            "cross_biosample_candidate_rows",
+            "cross_biosample_candidate_rows", "project_metadata_column",
+            "cohort_metadata_column", "rows_with_project", "rows_with_cohort",
         ],
     )
 
