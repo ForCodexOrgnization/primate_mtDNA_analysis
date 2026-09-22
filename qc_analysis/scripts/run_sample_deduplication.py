@@ -263,8 +263,13 @@ def main() -> int:
     write_tsv(reports / "biological_duplicate_candidates.tsv", bio_candidates, detail_fields)
     write_tsv(
         reports / "deduplicated_sample_ref_file.tsv",
-        [{"sample": r["sample"], "species": r["species"]} for r in kept],
-        ["sample", "species"],
+        [{
+            "sample": r["sample"],
+            "species": r["species"],
+            "project": r["project"],
+            "cohort": r["cohort"],
+        } for r in kept],
+        ["sample", "species", "project", "cohort"],
     )
 
     # CROSS_BIOSAMPLE_CANDIDATE is intentionally report-only. It is evidence for
