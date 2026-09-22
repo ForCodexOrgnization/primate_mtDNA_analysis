@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable best_overlap_positions best_overlap_occupied_bins best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable best_overlap_positions best_overlap_occupied_bins best_overlap_occupied_bin_fraction best_overlap_bin_entropy best_overlap_bin_entropy_normalized best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_occupied_bin_fraction_noncluster best_overlap_bin_entropy_noncluster best_overlap_bin_entropy_normalized_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_basis contamination_score_dispersion_entropy contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -240,6 +240,9 @@ def overlap_dispersion(overlap_keys, p, suffix=""):
         return {
             name("positions"): "",
             name("occupied_bins"): 0,
+            name("occupied_bin_fraction"): 0.0,
+            name("bin_entropy"): 0.0,
+            name("bin_entropy_normalized"): 0.0,
             name("linear_span_bp"): 0,
             name("circular_span_bp"): 0,
             name("max_in_window"): 0,
@@ -250,7 +253,22 @@ def overlap_dispersion(overlap_keys, p, suffix=""):
     window_bp = int(p["dispersion_window_bp"])
     if mt_length <= 0 or bin_bp <= 0 or window_bp <= 0:
         raise ValueError("mt_length, dispersion_bin_bp and dispersion_window_bp must be positive")
-    occupied_bins = len({(pos - 1) // bin_bp for pos in positions})
+    n_bins = math.ceil(mt_length / bin_bp)
+    bin_counts = Counter((pos - 1) // bin_bp for pos in positions)
+    occupied_bins = len(bin_counts)
+    occupied_bin_fraction = occupied_bins / n_bins if n_bins else None
+
+    # Shannon entropy of the overlap distribution across fixed native-coordinate
+    # bins. Normalizing by log(total bins) gives 0 for a single-bin cluster and
+    # 1 only for an even distribution across the full mitochondrial genome.
+    if n > 0 and n_bins > 1:
+        bin_probs = [count / n for count in bin_counts.values()]
+        bin_entropy = -sum(prob * math.log(prob) for prob in bin_probs)
+        bin_entropy_normalized = bin_entropy / math.log(n_bins)
+    else:
+        bin_entropy = 0.0
+        bin_entropy_normalized = 0.0
+
     linear_span = positions[-1] - positions[0] if n > 1 else 0
     if n > 1:
         gaps = [positions[i + 1] - positions[i] for i in range(n - 1)]
@@ -271,6 +289,9 @@ def overlap_dispersion(overlap_keys, p, suffix=""):
     return {
         name("positions"): ",".join(str(x) for x in positions),
         name("occupied_bins"): occupied_bins,
+        name("occupied_bin_fraction"): occupied_bin_fraction,
+        name("bin_entropy"): bin_entropy,
+        name("bin_entropy_normalized"): bin_entropy_normalized,
         name("linear_span_bp"): linear_span,
         name("circular_span_bp"): circular_span,
         name("max_in_window"): max_in_window,
@@ -472,6 +493,7 @@ def contamination_score_metrics(
     mt_high_mode,
     n_depressed_anchor,
     occupied_bins,
+    bin_entropy_normalized,
     circular_span_bp,
     max_local_fraction,
     af_mad,
@@ -496,8 +518,9 @@ def contamination_score_metrics(
     Correlated metrics are consolidated within latent evidence axes:
     - species-background-adjusted overlap count and adjusted overlap fraction
       form one source-matching composite;
-    - occupied bins, circular span, and max-local fraction form one dispersion
-      composite rather than contributing independent additive evidence.
+    - genome-wide dispersion is scored from normalized Shannon entropy across
+      fixed mtDNA bins. Occupied bins, circular span, and max-local fraction
+      remain diagnostic only and do not add independent score points.
 
     Scoring is gated by the existing minimum evidence requirements
     (n_lowA >= min_n_lowA, overlap >= min_overlap, and a best source).
@@ -588,6 +611,7 @@ def contamination_score_metrics(
             mt_high_index = 1.0
     mt_score = round(2.5 * mt_high_index, 2)
 
+    # Legacy spatial sub-scores remain reported for diagnostics only.
     bins = int(occupied_bins or 0)
     if bins >= 10:
         bins_score = 0.75
@@ -619,18 +643,25 @@ def contamination_score_metrics(
         local_score = 0.25
     else:
         local_score = 0.0
-    # These three spatial metrics were strongly correlated in the cohort.
-    # Treat them as repeated measurements of one latent dispersion property:
-    # normalize each to 0-1 and use their median, then assign a single 2-point
-    # dispersion contribution. The individual sub-scores remain in the report
-    # for diagnostics but are not added independently.
-    bins_strength = bins_score / 0.75
-    span_strength = span_score / 0.75
-    local_strength = local_score / 0.50
-    dispersion_composite_index = statistics.median(
-        [bins_strength, span_strength, local_strength]
-    )
-    dispersion_total = round(2.0 * dispersion_composite_index, 2)
+
+    # Primary dispersion evidence: normalized Shannon entropy across fixed
+    # native-coordinate mtDNA bins. This directly penalizes block-like or highly
+    # uneven distributions even when the overall circular span is long.
+    entropy = as_float(bin_entropy_normalized, 0.0) or 0.0
+    if entropy >= 0.90:
+        dispersion_total = 2.0
+    elif entropy >= 0.85:
+        dispersion_total = 1.5
+    elif entropy >= 0.75:
+        dispersion_total = 1.0
+    elif entropy >= 0.65:
+        dispersion_total = 0.5
+    else:
+        dispersion_total = 0.0
+
+    dispersion_basis = "normalized_bin_shannon_entropy"
+    dispersion_entropy_score = dispersion_total
+    dispersion_composite_index = entropy
 
     mad = as_float(af_mad)
     if mad is None or mad > 0.02:
@@ -687,7 +718,7 @@ def contamination_score_metrics(
     return {
         "best_overlap_circular_span_fraction": span_fraction,
         "contamination_score_gate_pass": gate,
-        "contamination_score_version": "v4_strict_mt_high_support",
+        "contamination_score_version": "v5_entropy_dispersion",
         "contamination_score_source_basis": source_basis,
         "contamination_score_source_overlap_input": round(overlap_for_score, 4),
         "contamination_score_source_fraction_input": (
@@ -700,6 +731,8 @@ def contamination_score_metrics(
         "contamination_score_mt_high_basis": mt_high_basis,
         "contamination_score_mt_high_index": mt_high_index,
         "contamination_score_mt_high": mt_score,
+        "contamination_score_dispersion_basis": dispersion_basis,
+        "contamination_score_dispersion_entropy": dispersion_entropy_score,
         "contamination_score_dispersion_bins": bins_score,
         "contamination_score_dispersion_span": span_score,
         "contamination_score_dispersion_local": local_score,
@@ -810,6 +843,9 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             best_overlap_fraction_common_ge50=None,
             donor_specificity_assessable=False,
             best_overlap_positions="", best_overlap_occupied_bins=0,
+            best_overlap_occupied_bin_fraction=0.0,
+            best_overlap_bin_entropy=0.0,
+            best_overlap_bin_entropy_normalized=0.0,
             best_overlap_linear_span_bp=0, best_overlap_circular_span_bp=0,
             best_overlap_circular_span_fraction=None,
             best_overlap_max_in_window=0, best_overlap_max_local_fraction=None,
@@ -821,6 +857,9 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             best_source_sample_noncluster="", best_overlap_noncluster=0,
             best_frac_lowA_in_highB_noncluster=None,
             best_overlap_positions_noncluster="", best_overlap_occupied_bins_noncluster=0,
+            best_overlap_occupied_bin_fraction_noncluster=0.0,
+            best_overlap_bin_entropy_noncluster=0.0,
+            best_overlap_bin_entropy_normalized_noncluster=0.0,
             best_overlap_circular_span_bp_noncluster=0,
             best_overlap_max_local_fraction_noncluster=None,
             best_overlap_af_median_noncluster=None, best_overlap_af_mad_noncluster=None,
@@ -837,7 +876,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             mirror_p99_threshold=p99, mirror_calibration_status=cal_status,
             mirror_support_candidate=False, mirror_support_highconf=False,
             contamination_score_gate_pass=False,
-            contamination_score_version="v4_strict_mt_high_support",
+            contamination_score_version="v5_entropy_dispersion",
             contamination_score_source_basis="not_scored",
             contamination_score_source_overlap_input=0.0,
             contamination_score_source_fraction_input=0.0,
@@ -848,6 +887,8 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             contamination_score_mt_high_basis="not_scored",
             contamination_score_mt_high_index=0.0,
             contamination_score_mt_high=0.0,
+            contamination_score_dispersion_basis="not_scored",
+            contamination_score_dispersion_entropy=0.0,
             contamination_score_dispersion_bins=0.0,
             contamination_score_dispersion_span=0.0,
             contamination_score_dispersion_local=0.0,
@@ -970,6 +1011,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             mt_high_mode=mode,
             n_depressed_anchor=len(dep),
             occupied_bins=dispersion["best_overlap_occupied_bins"],
+            bin_entropy_normalized=dispersion["best_overlap_bin_entropy_normalized"],
             circular_span_bp=dispersion["best_overlap_circular_span_bp"],
             max_local_fraction=dispersion["best_overlap_max_local_fraction"],
             af_mad=af_stats["best_overlap_af_mad"],
