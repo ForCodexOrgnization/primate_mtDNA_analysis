@@ -69,9 +69,18 @@ Weights are:
   - fallback estimates from fewer than 3 depressed anchors remain reported
     diagnostically but contribute 0 points
 - genome-wide dispersion: **2.0**
-  - occupied 1-kb bins, circular span, and max local fraction are normalized to
-    0-1 strengths and combined by their median; the three highly correlated
-    spatial metrics therefore contribute only one dispersion component
+  - scored from normalized Shannon entropy of best-source-overlap variants across
+    fixed native-coordinate mtDNA bins
+  - entropy is normalized by log(total bins), so 0 indicates concentration in
+    one bin and 1 indicates an even distribution across the full mtDNA
+  - scoring:
+    - >=0.90: 2.0
+    - 0.85-0.90: 1.5
+    - 0.75-0.85: 1.0
+    - 0.65-0.75: 0.5
+    - <0.65: 0
+  - occupied bins, circular span, and max-local fraction remain in the report
+    for diagnostics only and no longer add score points
 - AF coherence (overlap MAD): **1.0**
   - MAD <=0.005: 1.0
   - 0.005-0.01: 0.67
@@ -87,7 +96,7 @@ Weights are:
 
 `n_lowA` is retained as an evidence-sufficiency gate rather than an additive
 score component. The report records `contamination_score_version =
-v4_strict_mt_high_support` and includes the source and dispersion composite indices
+v5_entropy_dispersion` and includes the source and dispersion composite indices
 for auditability.
 
 Initial report-only interpretations are:
