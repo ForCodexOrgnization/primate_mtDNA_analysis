@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable best_overlap_positions best_overlap_occupied_bins best_overlap_occupied_bin_fraction best_overlap_bin_entropy best_overlap_bin_entropy_normalized best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_occupied_bin_fraction_noncluster best_overlap_bin_entropy_noncluster best_overlap_bin_entropy_normalized_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_basis contamination_score_dispersion_entropy contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score_raw_10 contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species target_project target_cohort sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_project best_source_cohort target_source_same_project target_source_same_cohort provenance_relationship_basis provenance_source_factor best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable best_overlap_positions best_overlap_occupied_bins best_overlap_occupied_bin_fraction best_overlap_bin_entropy best_overlap_bin_entropy_normalized best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_occupied_bin_fraction_noncluster best_overlap_bin_entropy_noncluster best_overlap_bin_entropy_normalized_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total_pre_provenance contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_basis contamination_score_dispersion_entropy contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score_raw_10 contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -70,6 +70,11 @@ DEFAULTS = dict(
     source_bg_freq_three_quarter_max=.10,
     source_bg_freq_half_weight_max=.25,
     source_bg_freq_zero_weight_min=.50,
+    provenance_same_cohort_factor=1.00,
+    provenance_same_project_factor=.90,
+    provenance_different_cohort_factor=.75,
+    provenance_different_project_factor=.60,
+    provenance_unknown_factor=1.00,
 )
 
 
@@ -145,6 +150,74 @@ def read_sample_pairs(p: Path) -> set[tuple[str, str]]:
     if not out:
         raise ValueError(f"could not parse sample/species pairs from: {p}")
     return out
+
+
+def read_sample_provenance(p: Path) -> dict[str, dict[str, str]]:
+    """Read optional project/cohort provenance for deduplicated samples."""
+    if not p.is_file():
+        return {}
+    rows = load_rows(p)
+    if rows and "sample" not in rows[0]:
+        raise ValueError(f"sample provenance report must contain sample: {p}")
+
+    def clean_meta(v):
+        x = str(v or "").strip()
+        return "" if not x or x.upper() == "NA" else x
+
+    return {
+        str(r.get("sample", "")).strip(): {
+            "project": clean_meta(r.get("project")),
+            "cohort": clean_meta(r.get("cohort")),
+        }
+        for r in rows if str(r.get("sample", "")).strip()
+    }
+
+
+def provenance_relationship(target_sample, source_sample, provenance, p):
+    """Return provenance metadata and a source-evidence plausibility factor.
+
+    Provenance modifies only the donor/source-matching score. Missing metadata is
+    neutral rather than punitive. A same-cohort source retains full donor
+    evidence; different-project matches are conservatively down-weighted.
+    """
+    t = provenance.get(target_sample, {})
+    s = provenance.get(source_sample, {}) if source_sample else {}
+    tp, tc = t.get("project", ""), t.get("cohort", "")
+    sp, sc = s.get("project", ""), s.get("cohort", "")
+
+    same_project = None if not tp or not sp else tp == sp
+    same_cohort = None if not tc or not sc else tc == sc
+
+    if same_project is False:
+        basis = "different_project"
+        factor = float(p["provenance_different_project_factor"])
+    elif same_cohort is False:
+        basis = "same_project_different_cohort" if same_project is True else "different_cohort_project_unknown"
+        factor = float(p["provenance_different_cohort_factor"])
+    elif same_cohort is True:
+        basis = "same_cohort"
+        factor = float(p["provenance_same_cohort_factor"])
+    elif same_project is True:
+        basis = "same_project_cohort_unknown"
+        factor = float(p["provenance_same_project_factor"])
+    else:
+        basis = "provenance_unknown_neutral"
+        factor = float(p["provenance_unknown_factor"])
+
+    return {
+        "target_project": tp or "NA",
+        "target_cohort": tc or "NA",
+        "best_source_project": sp or "NA",
+        "best_source_cohort": sc or "NA",
+        "target_source_same_project": (
+            "YES" if same_project is True else "NO" if same_project is False else "NA"
+        ),
+        "target_source_same_cohort": (
+            "YES" if same_cohort is True else "NO" if same_cohort is False else "NA"
+        ),
+        "provenance_relationship_basis": basis,
+        "provenance_source_factor": factor,
+    }
 
 
 def read_sample_qc(p: Path) -> dict[str, str]:
@@ -489,6 +562,7 @@ def contamination_score_metrics(
     source_overlap_adjusted,
     source_frac_adjusted,
     source_adjustment_basis,
+    provenance_source_factor,
     mt_high,
     mt_high_mode,
     n_depressed_anchor,
@@ -580,7 +654,12 @@ def contamination_score_metrics(
     source_composite_index = math.sqrt(
         source_overlap_strength * source_fraction_strength
     )
-    source_total = round(4.0 * source_composite_index, 2)
+    source_total_pre_provenance = round(4.0 * source_composite_index, 2)
+    provenance_factor = as_float(provenance_source_factor, 1.0)
+    if provenance_factor is None:
+        provenance_factor = 1.0
+    provenance_factor = max(0.0, min(1.0, provenance_factor))
+    source_total = round(source_total_pre_provenance * provenance_factor, 2)
 
     # mt-high evidence is scoreable only when supported by >=3 depressed-high
     # anchors. The fallback estimate (1-2 depressed anchors, or only generic
@@ -719,7 +798,7 @@ def contamination_score_metrics(
     return {
         "best_overlap_circular_span_fraction": span_fraction,
         "contamination_score_gate_pass": gate,
-        "contamination_score_version": "v6_normalized_0_1",
+        "contamination_score_version": "v7_project_cohort_adjusted",
         "contamination_score_source_basis": source_basis,
         "contamination_score_source_overlap_input": round(overlap_for_score, 4),
         "contamination_score_source_fraction_input": (
@@ -728,6 +807,7 @@ def contamination_score_metrics(
         "contamination_score_source_overlap": source_overlap_score,
         "contamination_score_source_fraction": source_fraction_score,
         "contamination_score_source_composite_index": round(source_composite_index, 4),
+        "contamination_score_source_total_pre_provenance": source_total_pre_provenance,
         "contamination_score_source_total": source_total,
         "contamination_score_mt_high_basis": mt_high_basis,
         "contamination_score_mt_high_index": mt_high_index,
@@ -783,10 +863,12 @@ def calibration(rows, p, nc_path):
     return quantile7(vals, .95), quantile7(vals, .99), "calibrated", len(vals)
 
 
-def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
-            cluster_sensitivity_available=False, negative_control_pairs=None):
+def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
+            clustered_keys=None, cluster_sensitivity_available=False,
+            negative_control_pairs=None):
     source_pairs = set(source_pairs)
     clustered_keys = clustered_keys or {}
+    provenance = provenance or {}
     source_samples = {s for _, s in source_pairs}
     usable = [
         r for r in rows
@@ -818,7 +900,10 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
         else:
             ineligible_reason = ""
         eligibility.append(dict(
-            sample=sample, species=species, sample_qc_status=sample_qc,
+            sample=sample, species=species,
+            target_project=provenance.get(sample, {}).get("project", "") or "NA",
+            target_cohort=provenance.get(sample, {}).get("cohort", "") or "NA",
+            sample_qc_status=sample_qc,
             n_strict_het=n_het, min_target_het=min_target_het,
             target_eligible=eligible, target_ineligible_reason=ineligible_reason,
         ))
@@ -831,6 +916,10 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             target_ineligible_reason=ineligible_reason,
             n_species_samples=counts[species], n_source_candidates=len(others),
             n_usable_variants=len(own), n_lowA=0, best_source_sample="",
+            best_source_project="NA", best_source_cohort="NA",
+            target_source_same_project="NA", target_source_same_cohort="NA",
+            provenance_relationship_basis="not_tested",
+            provenance_source_factor=float(p["provenance_unknown_factor"]),
             best_source_qc_status="", best_overlap=0,
             best_frac_lowA_in_highB=None,
             best_overlap_background_adjusted=0.0,
@@ -878,13 +967,14 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             mirror_p99_threshold=p99, mirror_calibration_status=cal_status,
             mirror_support_candidate=False, mirror_support_highconf=False,
             contamination_score_gate_pass=False,
-            contamination_score_version="v6_normalized_0_1",
+            contamination_score_version="v7_project_cohort_adjusted",
             contamination_score_source_basis="not_scored",
             contamination_score_source_overlap_input=0.0,
             contamination_score_source_fraction_input=0.0,
             contamination_score_source_overlap=0.0,
             contamination_score_source_fraction=0.0,
             contamination_score_source_composite_index=0.0,
+            contamination_score_source_total_pre_provenance=0.0,
             contamination_score_source_total=0.0,
             contamination_score_mt_high_basis="not_scored",
             contamination_score_mt_high_index=0.0,
@@ -919,6 +1009,9 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
         best_source, best_overlap, frac, best_overlap_keys = best_source_match(lowkeys, otherhigh)
         donor_specificity, donor_per_key = donor_specificity_metrics(
             best_overlap_keys, otherhigh, len(lowkeys), p
+        )
+        provenance_metrics = provenance_relationship(
+            sample, best_source, provenance, p
         )
         dispersion = overlap_dispersion(best_overlap_keys, p)
         af_stats = overlap_af_stats(low, best_overlap_keys)
@@ -1010,6 +1103,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             source_overlap_adjusted=donor_specificity.get("best_overlap_background_adjusted"),
             source_frac_adjusted=donor_specificity.get("best_frac_lowA_in_highB_background_adjusted"),
             source_adjustment_basis=donor_specificity.get("best_overlap_background_adjustment_basis"),
+            provenance_source_factor=provenance_metrics.get("provenance_source_factor"),
             mt_high=est,
             mt_high_mode=mode,
             n_depressed_anchor=len(dep),
@@ -1061,6 +1155,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, clustered_keys=None,
             n_lowA=len(lowkeys), best_source_sample=best_source,
             best_source_qc_status=qc_status.get(best_source, "MISSING") if best_source else "",
             best_overlap=best_overlap, best_frac_lowA_in_highB=frac,
+            **provenance_metrics,
             **donor_specificity,
             **dispersion,
             **af_stats,
@@ -1133,6 +1228,12 @@ def main():
     ))
     het_counts = count_strict_hets(source_qc_path, allowed_samples, p)
 
+    provenance_path = path(sec.get(
+        "sample_provenance_report",
+        "results/qc/sample_deduplication/reports/deduplicated_samples.tsv",
+    ))
+    provenance = read_sample_provenance(provenance_path)
+
     cluster_report = path(sec.get(
         "local_cluster_variant_report",
         "results/qc/local_heteroplasmy_qc/reports/local_heteroplasmy_variant_detail.tsv",
@@ -1160,6 +1261,7 @@ def main():
     nc = a.negative_control_pairs or sec.get("negative_control_pairs")
     findings, eligibility, donor_variant_details = analyse(
         load_rows(path(table)), p, source_pairs, qc_status, het_counts,
+        provenance=provenance,
         clustered_keys=clustered_keys,
         cluster_sensitivity_available=cluster_sensitivity_available,
         negative_control_pairs=nc,
@@ -1184,6 +1286,9 @@ def main():
         w.writerow(("source_sample_ref_file", source_list))
         w.writerow(("sample_qc_report", sample_qc_path))
         w.writerow(("source_variant_qc_report", source_qc_path))
+        w.writerow(("sample_provenance_report", provenance_path))
+        w.writerow(("samples_with_project_metadata", sum(bool(v.get("project")) for v in provenance.values())))
+        w.writerow(("samples_with_cohort_metadata", sum(bool(v.get("cohort")) for v in provenance.values())))
         w.writerow(("local_cluster_variant_report", cluster_report))
         w.writerow(("local_cluster_sensitivity_available", cluster_sensitivity_available))
         w.writerow(("variant_table", table))
