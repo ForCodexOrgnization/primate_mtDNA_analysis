@@ -50,7 +50,7 @@ source sample is available.
 
 Weights are:
 
-- donor/source matching: **4.0**
+- donor/source matching: **up to 4.0**
   - each best-source matched allele is first down-weighted by how common that
     high-A allele is among same-species source candidates:
     - <=5% frequency: weight 1.00
@@ -63,6 +63,14 @@ Weights are:
     not added as independent evidence
   - if donor background cannot be estimated because only one source candidate is
     available, the score falls back to raw overlap/fraction and reports this basis
+  - the resulting source component is then adjusted by target-source provenance:
+    - same cohort: x1.00
+    - same project with cohort unknown: x0.90
+    - different cohort (without a known project mismatch): x0.75
+    - different project: x0.60
+    - missing project/cohort metadata: x1.00 (neutral; missing metadata is not penalized)
+  - provenance therefore changes only how plausible the nominated donor/source is;
+    it does not independently create contamination evidence
 - mt-high-hets: **2.5**
   - scored only when `mt_high_hets_mode == depressed_anchors` with at least
     3 depressed-high anchors
@@ -96,13 +104,13 @@ Weights are:
 
 `n_lowA` is retained as an evidence-sufficiency gate rather than an additive
 score component. The report records `contamination_score_version =
-v6_normalized_0_1` and includes the source and dispersion composite indices
-for auditability.
+v7_project_cohort_adjusted` and includes the source and dispersion composite
+indices plus project/cohort provenance fields for auditability.
 
-Initial report-only interpretations are:
-`>=7 strong_evidence`, `5-6.99 candidate_evidence`,
-`3-4.99 weak_ambiguous_evidence`, and `<3 little_evidence`.
-These bins are exploratory and are not production FAIL/PASS cutoffs. The normalized score uses 0.70, 0.50, and 0.30 as the corresponding evidence boundaries.
+Initial report-only interpretations on the normalized 0-1 scale are:
+`>=0.70 strong_evidence`, `0.50-0.699 candidate_evidence`,
+`0.30-0.499 weak_ambiguous_evidence`, and `<0.30 little_evidence`.
+These bins are exploratory and are not production FAIL/PASS cutoffs.
 
 ## Same-species donor specificity diagnostics
 
@@ -133,6 +141,14 @@ reports:
   at source-high AF by at least half of same-species source candidates.
 - `donor_specificity_assessable`: false when there is only one source candidate,
   because donor specificity cannot be estimated relative to background.
+
+The main report also records:
+- `target_project`, `target_cohort`
+- `best_source_project`, `best_source_cohort`
+- `target_source_same_project`, `target_source_same_cohort`
+- `provenance_relationship_basis`, `provenance_source_factor`
+- `contamination_score_source_total_pre_provenance` and the provenance-adjusted
+  `contamination_score_source_total`
 
 Per-variant details are written to
 `reports/donor_specificity_variant_detail.tsv`, including the matched allele,
