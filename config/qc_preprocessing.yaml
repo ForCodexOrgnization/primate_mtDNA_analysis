@@ -323,19 +323,26 @@ coordinate_liftover:
   #     cov: /path/to/sample.coverage.tsv
   samples_by_name: {}
 
-# Cohort-level, report-only screening of canonical post-liftover alleles.
+# Cohort-level screening of canonical post-liftover alleles.
+# Historical PASS/WARN/FAIL thresholds remain unchanged. The additional 0-1
+# evidence score is report-only and is intended for ranking/calibration.
 interspecies_contamination:
   enabled: true
   paths:
     input_vcf_dir: results/qc/coordinate_liftover/vcf_lifted_raw
     input_vcf_pattern: "{sample}.lifted.raw.vcf"
     sample_ref_file: config/sample_ref_file.tsv
+    # Preferred provenance source when the deduplicated workflow is used.
+    # Missing files/metadata are neutral rather than punitive.
+    sample_provenance_file: results/qc/sample_deduplication/reports/deduplicated_sample_ref_file.tsv
     output_dir: results/qc/interspecies_contamination
   settings:
     dp_min: 100
     low_vaf_min: 0.01
     low_vaf_max: 0.20
     high_vaf_min: 0.99
+
+    # Production classification: preserve the historical inter-species rules.
     min_overlap: 3
     min_overlap_fraction: 0.50
     min_informative_low_variants: 5
@@ -343,6 +350,32 @@ interspecies_contamination:
     min_source_sample_fraction: 0.50
     vaf_coherence_tolerance: 0.03
     min_vaf_coherence: 0.70
+
+    # Report-only cross-species source-specificity weighting.
+    # Frequency is the fraction of eligible non-recipient species carrying the
+    # matched allele at high AF; species, not sample, is the unit to avoid
+    # over-weighting densely sampled taxa.
+    source_bg_freq_full_weight_max: 0.05
+    source_bg_freq_three_quarter_max: 0.10
+    source_bg_freq_half_weight_max: 0.25
+    source_bg_freq_zero_weight_min: 0.50
+
+    # Source matching contributes up to 4/10 points. Adjusted overlap and
+    # adjusted overlap fraction are combined geometrically rather than added.
+    score_source_overlap_saturation: 5
+    score_source_fraction_saturation: 0.70
+
+    # Genome-wide distribution of source-matched alleles.
+    human_mt_length: 16569
+    dispersion_bin_bp: 1000
+    dispersion_window_bp: 1000
+
+    # Target/source provenance modifies only source-matching evidence.
+    provenance_same_cohort_factor: 1.00
+    provenance_same_project_factor: 0.90
+    provenance_different_cohort_factor: 0.75
+    provenance_different_project_factor: 0.60
+    provenance_unknown_factor: 1.00
 
 # Non-destructive consolidation of existing codon/tRNA/rRNA annotations. This
 # step does not consume Human or inter-species contamination reports.
