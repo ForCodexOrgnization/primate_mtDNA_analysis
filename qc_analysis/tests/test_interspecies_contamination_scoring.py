@@ -1,4 +1,8 @@
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 from qc_analysis.scripts.run_interspecies_contamination import (
     provenance_relationship,
@@ -45,9 +49,8 @@ def test_score_interpretation_bins():
 
 
 def test_production_wrapper_wires_full_native_artifact_workflow():
-    root = Path(__file__).resolve().parents[2]
-    wrapper = (root / "qc_analysis/scripts/run_qc_preprocessing.sh").read_text()
-    dedup = (root / "qc_analysis/scripts/run_qc_preprocessing_deduplicated.sh").read_text()
+    wrapper = (ROOT / "qc_analysis/scripts/run_qc_preprocessing.sh").read_text()
+    dedup = (ROOT / "qc_analysis/scripts/run_qc_preprocessing_deduplicated.sh").read_text()
 
     assert 'LOCAL_HET_QC_SCRIPT="qc_analysis/scripts/run_local_heteroplasmy_qc_with_expansion.sh"' in wrapper
     assert 'FINAL_FILTER_SCRIPT="qc_analysis/scripts/run_final_filter_with_heteroplasmy.py"' in wrapper
