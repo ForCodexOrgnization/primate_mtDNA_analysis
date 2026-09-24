@@ -1,4 +1,9 @@
 import unittest
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 from qc_analysis.scripts.propagate_species_numt_positions import (
     apply_species_numt_position_propagation,
