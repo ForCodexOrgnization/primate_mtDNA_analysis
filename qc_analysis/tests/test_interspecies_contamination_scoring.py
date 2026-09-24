@@ -8,6 +8,7 @@ from qc_analysis.scripts.run_interspecies_contamination import (
     provenance_relationship,
     score_interpretation,
     specificity_weight,
+    species_separation_points,
 )
 
 
@@ -38,6 +39,13 @@ def test_provenance_only_modifies_source_plausibility():
     assert provenance_relationship("A", "C", provenance, settings)["provenance_source_factor"] == 0.75
     assert provenance_relationship("A", "D", provenance, settings)["provenance_source_factor"] == 0.60
     assert provenance_relationship("A", "MISSING", provenance, settings)["provenance_source_factor"] == 1.00
+
+
+def test_species_separation_points():
+    assert species_separation_points(0.19) == 0.0
+    assert species_separation_points(0.20) == 0.33
+    assert species_separation_points(0.40) == 0.67
+    assert species_separation_points(0.60) == 1.0
 
 
 def test_score_interpretation_bins():
