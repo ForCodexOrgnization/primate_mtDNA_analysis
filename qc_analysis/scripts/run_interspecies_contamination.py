@@ -5,7 +5,7 @@ Production PASS/WARN/FAIL classification intentionally preserves the historical
 hard-threshold logic. In parallel, this module reports a 0-1 evidence score that
 mirrors the intraspecies framework while accounting for cross-species allele
 specificity, genome-wide dispersion, AF coherence, source-sample concentration,
-source-species separation, and project/cohort provenance.
+source-species separation, source-genus background correction, and project/cohort provenance.
 
 Project/cohort provenance modifies only the source-matching component. It never
 creates contamination evidence by itself.
@@ -33,8 +33,11 @@ matched_low_vaf_mad vaf_coherence source_species_count source_sample_count
 target_project target_cohort best_source_project best_source_cohort
 target_source_same_project target_source_same_cohort provenance_relationship_basis
 provenance_source_factor source_specificity_assessable
+target_genus best_source_genus source_genus_specificity_assessable best_source_genus_species_n
 best_overlap_background_adjusted best_fraction_background_adjusted
 best_overlap_mean_cross_species_frequency best_overlap_mean_source_specificity
+best_overlap_mean_source_genus_frequency best_overlap_mean_source_genus_specificity
+best_overlap_mean_effective_source_specificity
 best_overlap_effective_specific_overlap best_source_sample_effective_overlap
 best_source_sample_concentration best_source_species_adjusted_overlap
 second_source_species second_source_species_adjusted_overlap best_source_species_separation
@@ -274,6 +277,26 @@ def specificity_weight(freq: float, settings: dict) -> float:
     return 0.0
 
 
+def genus_name(species: str) -> str:
+    """Return the genus token from normalized or whitespace-delimited species labels."""
+    text = str(species or "").strip().replace(" ", "_")
+    return text.split("_", 1)[0] if text else ""
+
+
+def genus_specificity(carrier_n: int, eligible_n: int) -> float:
+    """Return 1 for source-species-unique alleles and 0 for genus-wide alleles.
+
+    The normalization makes an allele present in exactly one of the eligible
+    source-genus species retain full specificity even when the genus contains
+    only a few sampled species:
+        (eligible_n - carrier_n) / (eligible_n - 1)
+    """
+    if eligible_n < 2:
+        return 1.0
+    carrier_n = max(1, min(int(carrier_n), int(eligible_n)))
+    return max(0.0, min(1.0, (eligible_n - carrier_n) / (eligible_n - 1)))
+
+
 def median_abs_deviation(values: list[float]) -> float | None:
     if not values:
         return None
@@ -437,6 +460,7 @@ def main() -> int:
     window_bp = int(settings.get("dispersion_window_bp", 1000))
     source_overlap_saturation = float(settings.get("score_source_overlap_saturation", 5.0))
     source_fraction_saturation = float(settings.get("score_source_fraction_saturation", .70))
+    min_genus_species = int(settings.get("min_source_genus_species_for_specificity", 3))
 
     calls = {sample: alleles(path, dp_min) for sample, path in vcfs.items()}
     species_samples = defaultdict(set)
@@ -508,43 +532,92 @@ def main() -> int:
         else:
             status, classification, reason = "FAIL", "INTERSPECIES_CONTAMINATION", "coherent low-VAF alleles match a different-species homoplasmic source"
 
-        # Cross-species specificity is measured at the species level to avoid
-        # overweighting species that happen to have many samples.
+        # Global specificity is measured at the species level to avoid
+        # overweighting taxa with many samples. V3 additionally applies a
+        # source-genus background correction when that genus contains enough
+        # independently represented species in the current cohort.
         eligible_other_species = all_species - {species}
         specificity_assessable = len(eligible_other_species) >= 2
-        key_freq = {}
-        key_weight = {}
-        for key in overlap_keys:
+        target_genus = genus_name(species)
+
+        def source_genus_context(source_species):
+            source_genus = genus_name(source_species)
+            eligible_genus_species = {
+                sp for sp in eligible_other_species if genus_name(sp) == source_genus
+            }
+            assessable = len(eligible_genus_species) >= min_genus_species
+            return source_genus, eligible_genus_species, assessable
+
+        def effective_key_weight(key, source_species):
             carrying_species = {
                 metadata[source] for source, _ in high_index.get(key, ())
                 if source != recipient and metadata[source] != species
             }
-            freq = len(carrying_species) / len(eligible_other_species) if eligible_other_species else 1.0
-            key_freq[key] = freq
-            key_weight[key] = specificity_weight(freq, settings) if specificity_assessable else 1.0
+            global_freq = (
+                len(carrying_species) / len(eligible_other_species)
+                if eligible_other_species else 1.0
+            )
+            global_weight = (
+                specificity_weight(global_freq, settings)
+                if specificity_assessable else 1.0
+            )
+
+            source_genus, eligible_genus_species, genus_assessable = source_genus_context(source_species)
+            genus_carriers = carrying_species & eligible_genus_species
+            genus_freq = (
+                len(genus_carriers) / len(eligible_genus_species)
+                if genus_assessable else None
+            )
+            genus_weight = (
+                genus_specificity(len(genus_carriers), len(eligible_genus_species))
+                if genus_assessable else 1.0
+            )
+            effective_weight = min(global_weight, genus_weight) if genus_assessable else global_weight
+            return {
+                "global_freq": global_freq,
+                "global_weight": global_weight,
+                "source_genus": source_genus,
+                "eligible_genus_species_n": len(eligible_genus_species),
+                "genus_assessable": genus_assessable,
+                "genus_freq": genus_freq,
+                "genus_weight": genus_weight,
+                "effective_weight": effective_weight,
+            }
+
+        best_source_genus, best_source_genus_species, genus_assessable = source_genus_context(best_species)
+        best_key_metrics = {
+            key: effective_key_weight(key, best_species) for key in overlap_keys
+        }
+        key_freq = {key: m["global_freq"] for key, m in best_key_metrics.items()}
+        key_global_weight = {key: m["global_weight"] for key, m in best_key_metrics.items()}
+        key_weight = {key: m["effective_weight"] for key, m in best_key_metrics.items()}
+        genus_freq_values = [
+            m["genus_freq"] for m in best_key_metrics.values()
+            if m["genus_freq"] is not None
+        ]
+        genus_specificity_values = [
+            m["genus_weight"] for m in best_key_metrics.values()
+            if m["genus_assessable"]
+        ]
 
         adjusted_overlap = sum(key_weight.get(key, 1.0) for key in overlap_keys)
         adjusted_fraction = adjusted_overlap / denominator if denominator else 0.0
-        mean_cross_species_frequency = (
-            statistics.mean(key_freq.values()) if key_freq else 0.0
-        )
-        mean_specificity = (
-            statistics.mean(key_weight.values()) if key_weight else 0.0
-        )
+        mean_cross_species_frequency = statistics.mean(key_freq.values()) if key_freq else 0.0
+        mean_specificity = statistics.mean(key_global_weight.values()) if key_global_weight else 0.0
+        mean_genus_frequency = statistics.mean(genus_freq_values) if genus_freq_values else None
+        mean_genus_specificity = statistics.mean(genus_specificity_values) if genus_specificity_values else None
+        mean_effective_specificity = statistics.mean(key_weight.values()) if key_weight else 0.0
+
         best_sample_effective = sum(key_weight.get(key, 1.0) for key in sample_keys)
         sample_concentration = best_sample_effective / adjusted_overlap if adjusted_overlap > 0 else 0.0
 
         adjusted_by_species = {}
         for source_species, source_rows in by_species.items():
-            total = 0.0
-            for key in source_rows:
-                carrying_species = {
-                    metadata[source] for source, _ in high_index.get(key, ())
-                    if source != recipient and metadata[source] != species
-                }
-                freq = len(carrying_species) / len(eligible_other_species) if eligible_other_species else 1.0
-                total += specificity_weight(freq, settings) if specificity_assessable else 1.0
-            adjusted_by_species[source_species] = total
+            adjusted_by_species[source_species] = sum(
+                effective_key_weight(key, source_species)["effective_weight"]
+                for key in source_rows
+            )
+
         ranked_adjusted_species = sorted(
             adjusted_by_species,
             key=lambda source_species: (-adjusted_by_species[source_species], source_species),
@@ -577,7 +650,9 @@ def main() -> int:
             score_separation = species_separation_points(species_separation)
             raw_10 = source_total + score_dispersion + score_af + score_concentration + score_separation
             score = raw_10 / 10.0
-            score_basis = "cross_species_specificity_adjusted" if specificity_assessable else "raw_overlap_specificity_unassessable"
+            score_basis = ("global_plus_source_genus_specificity_adjusted" if genus_assessable else
+                           "global_cross_species_specificity_adjusted" if specificity_assessable else
+                           "raw_overlap_specificity_unassessable")
         else:
             source_index = source_pre = source_total = 0.0
             score_dispersion = score_af = score_concentration = score_separation = 0.0
@@ -608,10 +683,17 @@ def main() -> int:
             source_species_count=len(by_species),
             source_sample_count=len(by_sample),
             source_specificity_assessable="YES" if specificity_assessable else "NO",
+            target_genus=target_genus,
+            best_source_genus=best_source_genus,
+            source_genus_specificity_assessable="YES" if genus_assessable else "NO",
+            best_source_genus_species_n=len(best_source_genus_species),
             best_overlap_background_adjusted=f"{adjusted_overlap:.6f}",
             best_fraction_background_adjusted=f"{adjusted_fraction:.6f}",
             best_overlap_mean_cross_species_frequency=f"{mean_cross_species_frequency:.6f}",
             best_overlap_mean_source_specificity=f"{mean_specificity:.6f}",
+            best_overlap_mean_source_genus_frequency="NA" if mean_genus_frequency is None else f"{mean_genus_frequency:.6f}",
+            best_overlap_mean_source_genus_specificity="NA" if mean_genus_specificity is None else f"{mean_genus_specificity:.6f}",
+            best_overlap_mean_effective_source_specificity=f"{mean_effective_specificity:.6f}",
             best_overlap_effective_specific_overlap=f"{adjusted_overlap:.6f}",
             best_source_sample_effective_overlap=f"{best_sample_effective:.6f}",
             best_source_sample_concentration=f"{sample_concentration:.6f}",
@@ -620,7 +702,7 @@ def main() -> int:
             second_source_species_adjusted_overlap=f"{second_adjusted_overlap:.6f}",
             best_source_species_separation=f"{species_separation:.6f}",
             contamination_score_gate_pass="YES" if score_gate else "NO",
-            contamination_score_version="v2_cross_species_separation_project_cohort",
+            contamination_score_version="v3_genus_corrected_cross_species_project_cohort",
             contamination_score_source_basis=score_basis,
             contamination_score_source_composite_index=f"{source_index:.6f}",
             contamination_score_source_total_pre_provenance=f"{source_pre:.6f}",
