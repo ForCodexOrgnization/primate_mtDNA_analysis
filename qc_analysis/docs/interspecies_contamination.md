@@ -42,7 +42,7 @@ cross-species thresholds remain `PASS`.
 
 ## Report-only evidence score
 
-The 0-1 score is `v1_cross_species_specificity_project_cohort`. It is
+The 0-1 score is `v2_cross_species_separation_project_cohort`. It is
 calculated only when the minimum evidence gate passes
 (`n_lowA_after_species_background >= 5`, best-source overlap >= 3, and a best
 source species exists).
@@ -86,9 +86,12 @@ The score contains five components totaling 10 points before normalization:
    - This distinguishes a plausible individual donor from a signal broadly
      distributed across the source species.
 
-5. **Best-source-species dominance: up to 1.0 point**
-   - Measures how much of the specificity-adjusted cross-species signal belongs
-     to the nominated best source species versus all candidate source species.
+5. **Best-vs-runner-up source-species separation: up to 1.0 point**
+   - Rank source species by specificity-adjusted overlap.
+   - Define separation as `(best - second_best) / best`.
+   - This avoids denominator inflation from counting the same shared allele in
+     many candidate species.
+   - Separation >=0.60: 1.0 point; >=0.40: 0.67; >=0.20: 0.33; <0.20: 0.
 
 The normalized score is `raw_10 / 10`. Initial report-only interpretation bins
 mirror the intraspecies framework:
@@ -129,7 +132,8 @@ In addition to the historical columns, the report now contains:
   `provenance_relationship_basis`, `provenance_source_factor`;
 - specificity-adjusted source overlap/fraction and cross-species allele
   prevalence;
-- best-source-sample concentration and source-species dominance;
+- best-source-sample concentration, best/second adjusted overlaps, and
+  best-vs-runner-up source-species separation;
 - dispersion and AF-MAD diagnostics;
 - score component fields, raw 10-point score, normalized score, and
   interpretation.
