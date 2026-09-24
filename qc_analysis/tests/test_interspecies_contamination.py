@@ -22,12 +22,35 @@ def run_cohort(tmp_path, samples, calls, *, headered=True,
                         "".join(f"{s}\t{sp}\n" for s, sp in samples.items()))
     for sample, rows in calls.items():
         write_vcf(vcfs / input_vcf_pattern.format(sample=sample), rows)
+
+    # Production interspecies QC deliberately ignores stale VCFs. Synthetic
+    # tests therefore need to construct the same currentness evidence as the
+    # real workflow: collection status OK plus completed liftover QC.
+    collection = tmp_path / "collection"
+    (collection / "reports").mkdir(parents=True)
+    with (collection / "reports/variant_calling_collection_summary.tsv").open("w") as handle:
+        handle.write("sample\tstatus\n")
+        for sample in samples:
+            handle.write(f"{sample}\tOK\n")
+
+    liftover = tmp_path / "liftover_qc"
+    (liftover / "reports").mkdir(parents=True)
+    for sample in samples:
+        (liftover / "reports" / f"{sample}.coordinate_liftover_qc.tsv").write_text(
+            "metric\tvalue\nstatus\tcompleted\n"
+        )
+
     output = tmp_path / "out"
     defaults = dict(min_overlap=3, min_overlap_fraction=.5, vaf_coherence_tolerance=.03,
                     min_vaf_coherence=.7)
     defaults.update(settings)
     config = tmp_path / "qc.yaml"
     config.write_text(
+        "collect_variant_calling:\n"
+        f"  outdir: {collection}\n"
+        "coordinate_liftover:\n"
+        "  paths:\n"
+        f"    output_dir: {liftover}\n"
         "interspecies_contamination:\n  paths:\n"
         f"    input_vcf_dir: {vcfs}\n    input_vcf_pattern: \"{input_vcf_pattern}\"\n"
         f"    sample_ref_file: {metadata}\n    output_dir: {output}\n"
