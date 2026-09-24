@@ -6,10 +6,24 @@ sys.path.insert(0, str(ROOT))
 
 from qc_analysis.scripts.run_interspecies_contamination import (
     provenance_relationship,
+    genus_name,
+    genus_specificity,
     score_interpretation,
     specificity_weight,
     species_separation_points,
 )
+
+
+def test_genus_helpers_and_specificity():
+    assert genus_name("Papio_anubis") == "Papio"
+    assert genus_name("Papio anubis") == "Papio"
+    assert genus_specificity(1, 4) == 1.0
+    assert genus_specificity(2, 4) == 2 / 3
+    assert genus_specificity(3, 4) == 1 / 3
+    assert genus_specificity(4, 4) == 0.0
+    # Genus correction is intentionally neutral when fewer than two species are
+    # available; the caller only activates production correction at >=3 species.
+    assert genus_specificity(1, 1) == 1.0
 
 
 def test_cross_species_specificity_weights():
