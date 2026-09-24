@@ -68,8 +68,9 @@ pre_liftover_variant_qc:
   heteroplasmy_af_min: 0.10
   homoplasmy_af_min: 0.95
 
-# Report-only native-coordinate local heteroplasmy clustering, sample/species
-# NUMT annotation, and same-species recurrence classification.
+# Native-coordinate local heteroplasmy/NUMT/indel artifact workflow. Detection and
+# annotation occur before liftover; the generated SOURCE-keyed removal list is
+# applied only by terminal final_filter.
 local_heteroplasmy_qc:
   enabled: true
   source_report: results/qc/pre_liftover_variant_qc/reports/source_variant_qc.tsv
