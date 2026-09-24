@@ -34,18 +34,20 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 
 | 顺序 | wrapper step | 作用 | 主要下游依赖 |
 |---:|---|---|---|
-| 1 | `collect_variant_calling_results` | 收集并标准化 variant-calling 的 VCF、coverage 和 mtCN 结果 | 坐标转换输入 |
-| 2 | `intraspecies_contamination` | 在原始物种坐标上生成样本级种内污染报告（不修改 VCF） | 最终样本判定 |
-| 3 | `discover_global_anchor` | 对参考线粒体序列做全局比对并生成经过验证的 anchor 表 | 坐标转换 anchor |
-| 4 | `coordinate_liftover` | 将每个样本的原始物种坐标转换到人 chrM 坐标 | 后续 VCF 注释 |
-| 4a | `interspecies_contamination` | lifted 人坐标的 cohort 跨物种污染报告 | `final_filter` 输入；不修改 VCF |
-| 5 | `mitos2_prepare_tasks` | 生成每个目标参考序列一条记录的 MITOS2 任务表 | 仅 `--submit all` 中的显式节点 |
-| 6 | `mitos2_annotation` | 按参考序列运行 MITOS2 | MITOS2 合并结果 |
-| 7 | `mitos2_merge` | 合并并严格质控 MITOS2 结果，生成生产密码子表和样本映射 | `codon_match_validate` |
-| 8 | `compare_genbank_mitos2` | 可选：按相同序列 SHA256 比较独立 GenBank 与 MITOS2 注释 | 验证证据（不阻塞生产流程） |
-| 9 | `codon_match_validate` | 在读取 VCF 前校验并建立密码子输入索引 | 仅 `--submit all` 中的显式校验节点 |
-| 10 | `codon_match` | 给 lifted VCF 添加密码子匹配注释 | tRNA 注释输入 |
-| 11 | `codon_match_merge` | 原子合并每个样本的密码子汇总 | cohort 汇总 |
+| 1 | `collect_variant_calling_results` | 收集并标准化 variant-calling 的 VCF、coverage 和 mtCN 结果 | native-coordinate QC |
+| 2 | `sample_variant_filtering` | 五项样本 QC，report-only | 最终样本判定 |
+| 3 | `pre_liftover_variant_qc` | 在物种原始坐标中冻结 SOURCE_* call identity/QC | local artifact QC、liftover |
+| 4 | `intraspecies_contamination` | 原始物种坐标的种内污染分析，report-only | 最终样本判定 |
+| 5 | `local_heteroplasmy_qc` | 完整 native-coordinate NUMT/indel artifact workflow：local HET clustering → species NUMT propagation → NUMT seed expansion → indel complex/dense-overlap detection → residual production rules；生成 SOURCE-keyed removal list | liftover、terminal removal |
+| 6 | `discover_global_anchor` | 对参考线粒体序列做全局比对并生成经过验证的 anchor 表 | 坐标转换 anchor |
+| 7 | `coordinate_liftover` | 将样本变异转换到人 chrM 坐标，同时保留 SOURCE_* identity | 后续污染/功能注释 |
+| 8 | `interspecies_contamination` | lifted 人坐标的跨物种污染报告；保留历史 PASS/WARN/FAIL，并新增 cross-species specificity + project/cohort report-only score | `final_filter` 输入 |
+| 9 | `mitos2_prepare_tasks` | 生成每个目标参考序列一条记录的 MITOS2 任务表 | `mitos2_annotation` |
+| 10 | `mitos2_annotation` | 按参考序列运行 MITOS2 | MITOS2 合并结果 |
+| 11 | `mitos2_merge` | 合并并严格质控 MITOS2 结果，生成生产密码子表和样本映射 | `codon_match_validate` |
+| 12 | `codon_match_validate` | 在读取 VCF 前校验并建立密码子输入索引 | `codon_match` |
+| 13 | `codon_match` | 给 lifted VCF 添加密码子匹配注释 | tRNA 注释输入 |
+| 14 | `codon_match_merge` | 原子合并每个样本的密码子汇总 | cohort 汇总 |
 
 MITOS2 annotations of the exact variant-calling FASTAs are the only production
 CDS/codon source. GenBank remains an independent sequence-hash-matched benchmark;
@@ -55,9 +57,13 @@ biological similarity alone is insufficient.
 
 Codon matching retains overlapping CDS genes and evaluates all compatible source ×
 human gene/phase candidate pairs instead of collapsing a position to one gene.
-| 12 | `trna_match` | 给 VCF 添加 tRNA 匹配和结构相关注释 | rRNA 注释输入 |
-| 13 | `rrna_match` | 给 VCF 添加 rRNA 区域/可选结构注释 | 最终注释报告 |
-| 14 | `final_filter` | 汇总所有样本级和变异级报告并一次性生成最终文件 | `final_vcf/final_cov/final_mtcn` |
+| 15 | `build_trna_indexes` | 为唯一参考序列构建 tRNAscan 索引 | `trna_match` |
+| 16 | `trna_match` | 给 VCF 添加 tRNA 匹配和结构相关注释 | rRNA 注释输入 |
+| 17 | `trna_match_merge` | 合并 tRNA 汇总 | cohort 汇总 |
+| 18 | `rrna_match` | 给 VCF 添加 rRNA 区域/结构注释 | 最终注释报告 |
+| 19 | `rrna_match_merge` | 合并 rRNA 汇总 | cohort 汇总 |
+| 20 | `build_primate_homo_background` | 汇总 orthology PASS homoplasmic background | Human contamination calibration |
+| 21 | `final_filter` | 先执行 terminal sample/variant QC，再按 immutable SOURCE_* identity 应用 NUMT/indel removal list，生成最终文件 | `final_vcf/final_cov/final_mtcn` |
 
 上表是 `--submit all` 创建的完整依赖图。直接运行 `all` 时，wrapper 会在单一进程中完成相同
 的主要生物学步骤，但任务准备、输入校验和部分合并操作会由相应步骤内部处理，而不是作为
@@ -68,8 +74,7 @@ human gene/phase candidate pairs instead of collapsing a position to one gene.
 样本由 metadata 表提供；两个 coverage 文件以 `(chrom, pos, target)` 为键逐位取最大深度，
 并写入稳定的 `collected_cov/{sample}.merged.max_depth.per_base_coverage.tsv` 下游接口。
 
-`intraspecies_contamination` 现在紧跟收集步骤并属于 `all`；它只写样本级报告。
-`final_filter` 是唯一执行最终排除的终端步骤。详见
+`sample_variant_filtering`、`pre_liftover_variant_qc`、`intraspecies_contamination` 和完整的 `local_heteroplasmy_qc` 都在 liftover 前运行。`local_heteroplasmy_qc` 现在调用 `run_local_heteroplasmy_qc_with_expansion.sh`，因此 species-level NUMT propagation、NUMT seed expansion、indel complex/dense-overlap filtering 和 residual artifact rules 都属于 production `all`。\n\n`final_filter` 调用 `run_final_filter_with_heteroplasmy.py`：先执行基础 terminal filtering，再读取 `local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv`，使用 immutable `SOURCE_CHROM/SOURCE_POS/SOURCE_REF/SOURCE_ALT` 精确移除 native-coordinate NUMT/indel artifacts。详见
 [`docs/intraspecies_contamination.md`](docs/intraspecies_contamination.md)。
 
 ## 分步骤运行
@@ -80,7 +85,10 @@ human gene/phase candidate pairs instead of collapsing a position to one gene.
 CONFIG=config/qc_preprocessing.yaml
 
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit collect_variant_calling_results "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit sample_variant_filtering "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit pre_liftover_variant_qc "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit intraspecies_contamination "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit local_heteroplasmy_qc "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit discover_global_anchor "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit mitos2_annotation "$CONFIG"
