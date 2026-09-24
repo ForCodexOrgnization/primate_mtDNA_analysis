@@ -42,7 +42,7 @@ cross-species thresholds remain `PASS`.
 
 ## Report-only evidence score
 
-The 0-1 score is `v2_cross_species_separation_project_cohort`. It is
+The 0-1 score is `v3_genus_corrected_cross_species_project_cohort`. It is
 calculated only when the minimum evidence gate passes
 (`n_lowA_after_species_background >= 5`, best-source overlap >= 3, and a best
 source species exists).
@@ -60,10 +60,20 @@ The score contains five components totaling 10 points before normalization:
      - >10-25%: 0.50
      - >25-50%: 0.25
      - >=50%: 0
+   - V3 additionally applies a **source-genus background correction** when the
+     nominated source genus has at least 3 represented species in the current
+     cohort. Within that genus, an allele present in only one species keeps full
+     specificity; an allele shared by all represented genus species receives 0.
+     Intermediate sharing is scaled as `(eligible_genus_species - carrier_species) /
+     (eligible_genus_species - 1)`.
+   - The effective allele specificity is the more conservative of global and
+     source-genus specificity. This is designed to suppress genus/clade-wide
+     background such as systematic Papio signals without penalizing genera that
+     have too few represented species to estimate a genus background.
    - Adjusted overlap and adjusted overlap fraction are converted to strengths
      and combined by geometric mean.
-   - If fewer than two other species are available, specificity is reported as
-     unassessable and raw overlap is used rather than inventing specificity.
+   - If fewer than two other species are available, global specificity is
+     reported as unassessable and raw overlap is used rather than inventing specificity.
 
 2. **Genome-wide dispersion: up to 2.0 points**
    - Uses normalized Shannon entropy of best-source matched positions across
@@ -130,8 +140,10 @@ In addition to the historical columns, the report now contains:
   `best_source_cohort`;
 - `target_source_same_project`, `target_source_same_cohort`,
   `provenance_relationship_basis`, `provenance_source_factor`;
-- specificity-adjusted source overlap/fraction and cross-species allele
-  prevalence;
+- specificity-adjusted source overlap/fraction, global cross-species allele
+  prevalence, source-genus frequency/specificity, and effective specificity;
+- `target_genus`, `best_source_genus`, whether genus specificity is assessable,
+  and the number of represented species in that source genus;
 - best-source-sample concentration, best/second adjusted overlaps, and
   best-vs-runner-up source-species separation;
 - dispersion and AF-MAD diagnostics;
