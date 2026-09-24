@@ -74,7 +74,9 @@ human gene/phase candidate pairs instead of collapsing a position to one gene.
 样本由 metadata 表提供；两个 coverage 文件以 `(chrom, pos, target)` 为键逐位取最大深度，
 并写入稳定的 `collected_cov/{sample}.merged.max_depth.per_base_coverage.tsv` 下游接口。
 
-`sample_variant_filtering`、`pre_liftover_variant_qc`、`intraspecies_contamination` 和完整的 `local_heteroplasmy_qc` 都在 liftover 前运行。`local_heteroplasmy_qc` 现在调用 `run_local_heteroplasmy_qc_with_expansion.sh`，因此 species-level NUMT propagation、NUMT seed expansion、indel complex/dense-overlap filtering 和 residual artifact rules 都属于 production `all`。\n\n`final_filter` 调用 `run_final_filter_with_heteroplasmy.py`：先执行基础 terminal filtering，再读取 `local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv`，使用 immutable `SOURCE_CHROM/SOURCE_POS/SOURCE_REF/SOURCE_ALT` 精确移除 native-coordinate NUMT/indel artifacts。详见
+`sample_variant_filtering`、`pre_liftover_variant_qc`、`intraspecies_contamination` 和完整的 `local_heteroplasmy_qc` 都在 liftover 前运行。`local_heteroplasmy_qc` 现在调用 `run_local_heteroplasmy_qc_with_expansion.sh`，因此 species-level NUMT propagation、NUMT seed expansion、indel complex/dense-overlap filtering 和 residual artifact rules 都属于 production `all`。
+
+`final_filter` 调用 `run_final_filter_with_heteroplasmy.py`：先执行基础 terminal filtering，再读取 `local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv`，使用 immutable `SOURCE_CHROM/SOURCE_POS/SOURCE_REF/SOURCE_ALT` 精确移除 native-coordinate NUMT/indel artifacts。详见
 [`docs/intraspecies_contamination.md`](docs/intraspecies_contamination.md)。
 
 ## 分步骤运行
@@ -297,8 +299,10 @@ coordinate_liftover
   -> MITOS2/reference preparation
   -> codon_match -> trna_match -> rrna_match
   -> build_primate_homo_background
-  -> human_contamination
   -> final_filter
+
+# human_contamination is currently paused from production `all` and remains
+# available as a standalone step when it is resumed.
 ```
 
 Codon/tRNA/rRNA matching generates QC annotations and reports; variants are not
