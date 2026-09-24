@@ -361,6 +361,11 @@ interspecies_contamination:
     source_bg_freq_half_weight_max: 0.25
     source_bg_freq_zero_weight_min: 0.50
 
+    # V3 close-relative correction. When the nominated source genus has at least
+    # this many represented species, within-genus sharing further down-weights
+    # alleles that look genus/clade-wide rather than source-species-specific.
+    min_source_genus_species_for_specificity: 3
+
     # Source matching contributes up to 4/10 points. Adjusted overlap and
     # adjusted overlap fraction are combined geometrically rather than added.
     score_source_overlap_saturation: 5
