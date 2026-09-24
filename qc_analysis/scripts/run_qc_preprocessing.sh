@@ -19,7 +19,7 @@ Steps:
   intraspecies_contamination       Write original-coordinate sample contamination QC report.
   sample_variant_filtering         Write the five-criterion biological sample QC report.
   pre_liftover_variant_qc          Annotate native VCFs with immutable source-call QC.
-  local_heteroplasmy_qc            Report native-coordinate local HET clustering.
+  local_heteroplasmy_qc            Run native-coordinate NUMT/indel local-artifact QC and removal-list generation.
   discover_global_anchor           Discover reference-level global MSA anchors only.
   coordinate_liftover              Run coordinate liftover only.
   interspecies_contamination       Report cross-species contamination in lifted alleles.
@@ -38,7 +38,7 @@ Steps:
   trna_gene_qc                     Compare lifted source and human tRNA genes.
   rrna_match                       Annotate VCFs with rRNA matching.
   rrna_match_merge                 Atomically merge per-sample rRNA summaries.
-  final_filter                     Combine QC reports and materialize final filtered files.
+  final_filter                     Materialize final files and apply SOURCE-keyed NUMT/indel removals.
   all                              Run production preprocessing/annotation steps, currently excluding human_contamination.
 
 Run modes:
@@ -247,10 +247,10 @@ TRNA_INDEX_SCRIPT="qc_analysis/scripts/build_all_trna_indexes.py"
 RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
 RRNA_MERGE_SCRIPT="qc_analysis/scripts/merge_rrna_match_summaries.py"
 INTRASPECIES_SCRIPT="qc_analysis/scripts/run_intraspecies_contamination.py"
-FINAL_FILTER_SCRIPT="qc_analysis/scripts/run_final_filter.py"
+FINAL_FILTER_SCRIPT="qc_analysis/scripts/run_final_filter_with_heteroplasmy.py"
 SAMPLE_FILTER_SCRIPT="qc_analysis/scripts/run_sample_variant_filtering.py"
 PRE_LIFTOVER_QC_SCRIPT="qc_analysis/scripts/run_pre_liftover_variant_qc.py"
-LOCAL_HET_QC_SCRIPT="qc_analysis/scripts/run_local_heteroplasmy_qc.py"
+LOCAL_HET_QC_SCRIPT="qc_analysis/scripts/run_local_heteroplasmy_qc_with_expansion.sh"
 GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
 HUMAN_CONTAMINATION_SCRIPT="qc_analysis/scripts/run_human_contamination.py"
 PRIMATE_BACKGROUND_SCRIPT="qc_analysis/scripts/build_primate_homo_background.py"
@@ -581,7 +581,7 @@ case "$STEP" in
   intraspecies_contamination) "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG" ;;
   sample_variant_filtering) "$BASE_PYTHON" "$SAMPLE_FILTER_SCRIPT" --config "$CONFIG" ;;
   pre_liftover_variant_qc) "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" --config "$CONFIG" ${SAMPLE:+--sample "$SAMPLE"} ;;
-  local_heteroplasmy_qc) "$BASE_PYTHON" "$LOCAL_HET_QC_SCRIPT" --config "$CONFIG" ;;
+  local_heteroplasmy_qc) PYTHON="$BASE_PYTHON" bash "$LOCAL_HET_QC_SCRIPT" "$CONFIG" ;;
   final_filter) "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG" ;;
   all)
     run_collect_variant_calling_results
