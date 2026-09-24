@@ -334,7 +334,11 @@ REF/ALT flip can therefore change target AF from 0.03 to 0.97, but it never chan
 `SOURCE_CALL_CLASS`. LOW_AF records remain in intermediate VCFs for contamination
 work and are excluded from final biological calls by default.
 
-`local_heteroplasmy_qc` is report-only (not a NUMT classifier) and writes
-`local_heteroplasmy_sample_summary.tsv` and `local_heteroplasmy_variant_detail.tsv`.
-It assesses samples with more than ten eligible source HETs using 2,000 recurrence-
-weighted simulations of a 250-bp circular native-coordinate window.
+`local_heteroplasmy_qc` now runs the full native-coordinate local-artifact workflow through
+`run_local_heteroplasmy_qc_with_expansion.sh`. The base clustering step still writes
+`local_heteroplasmy_sample_summary.tsv` and `local_heteroplasmy_variant_detail.tsv`,
+but production then propagates exact NUMT-supported positions within species/reference,
+expands validated NUMT seeds, detects indel-centered complex/dense-overlap artifacts,
+runs residual sensitivity diagnostics, and applies validated residual production rules.
+The resulting combined `numt_variants_to_remove.tsv` is a SOURCE-coordinate removal list;
+variants are not physically removed from lifted intermediates until terminal `final_filter`.
