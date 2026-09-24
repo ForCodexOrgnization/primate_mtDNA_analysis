@@ -5,7 +5,7 @@ Production PASS/WARN/FAIL classification intentionally preserves the historical
 hard-threshold logic. In parallel, this module reports a 0-1 evidence score that
 mirrors the intraspecies framework while accounting for cross-species allele
 specificity, genome-wide dispersion, AF coherence, source-sample concentration,
-source-species dominance, and project/cohort provenance.
+source-species separation, and project/cohort provenance.
 
 Project/cohort provenance modifies only the source-matching component. It never
 creates contamination evidence by itself.
@@ -36,14 +36,15 @@ provenance_source_factor source_specificity_assessable
 best_overlap_background_adjusted best_fraction_background_adjusted
 best_overlap_mean_cross_species_frequency best_overlap_mean_source_specificity
 best_overlap_effective_specific_overlap best_source_sample_effective_overlap
-best_source_sample_concentration best_source_species_dominance
+best_source_sample_concentration best_source_species_adjusted_overlap
+second_source_species second_source_species_adjusted_overlap best_source_species_separation
 overlap_positions overlap_occupied_bins overlap_bin_entropy_normalized
 overlap_circular_span_bp overlap_max_local_fraction
 contamination_score_gate_pass contamination_score_version
 contamination_score_source_basis contamination_score_source_composite_index
 contamination_score_source_total_pre_provenance contamination_score_source_total
 contamination_score_dispersion contamination_score_af_coherence
-contamination_score_source_concentration contamination_score_species_dominance
+contamination_score_source_concentration contamination_score_species_separation
 contamination_score_raw_10 contamination_score contamination_score_interpretation""".split()
 
 
@@ -355,12 +356,13 @@ def concentration_points(value: float) -> float:
     return 0.0
 
 
-def dominance_points(value: float) -> float:
-    if value >= .80:
+def species_separation_points(value: float) -> float:
+    """Score how clearly the best source species exceeds the runner-up."""
+    if value >= .60:
         return 1.0
-    if value >= .65:
+    if value >= .40:
         return .67
-    if value >= .50:
+    if value >= .20:
         return .33
     return 0.0
 
@@ -543,8 +545,20 @@ def main() -> int:
                 freq = len(carrying_species) / len(eligible_other_species) if eligible_other_species else 1.0
                 total += specificity_weight(freq, settings) if specificity_assessable else 1.0
             adjusted_by_species[source_species] = total
-        adjusted_total = sum(adjusted_by_species.values())
-        dominance = adjusted_by_species.get(best_species, 0.0) / adjusted_total if adjusted_total > 0 else 0.0
+        ranked_adjusted_species = sorted(
+            adjusted_by_species,
+            key=lambda source_species: (-adjusted_by_species[source_species], source_species),
+        )
+        best_adjusted_overlap = adjusted_by_species.get(best_species, 0.0)
+        second_species = next(
+            (source_species for source_species in ranked_adjusted_species if source_species != best_species),
+            "",
+        )
+        second_adjusted_overlap = adjusted_by_species.get(second_species, 0.0) if second_species else 0.0
+        species_separation = (
+            max(0.0, best_adjusted_overlap - second_adjusted_overlap) / best_adjusted_overlap
+            if best_adjusted_overlap > 0 else 0.0
+        )
 
         dispersion = overlap_dispersion(overlap_keys, mt_length, bin_bp, window_bp)
         provenance_fields = provenance_relationship(recipient, best_sample, provenance, settings)
@@ -560,13 +574,13 @@ def main() -> int:
             score_dispersion = dispersion_points(float(dispersion["overlap_bin_entropy_normalized"]))
             score_af = af_coherence_points(mad, overlap)
             score_concentration = concentration_points(sample_concentration)
-            score_dominance = dominance_points(dominance)
-            raw_10 = source_total + score_dispersion + score_af + score_concentration + score_dominance
+            score_separation = species_separation_points(species_separation)
+            raw_10 = source_total + score_dispersion + score_af + score_concentration + score_separation
             score = raw_10 / 10.0
             score_basis = "cross_species_specificity_adjusted" if specificity_assessable else "raw_overlap_specificity_unassessable"
         else:
             source_index = source_pre = source_total = 0.0
-            score_dispersion = score_af = score_concentration = score_dominance = 0.0
+            score_dispersion = score_af = score_concentration = score_separation = 0.0
             raw_10 = 0.0
             score = None
             score_basis = "not_scored_gate_failed"
@@ -601,9 +615,12 @@ def main() -> int:
             best_overlap_effective_specific_overlap=f"{adjusted_overlap:.6f}",
             best_source_sample_effective_overlap=f"{best_sample_effective:.6f}",
             best_source_sample_concentration=f"{sample_concentration:.6f}",
-            best_source_species_dominance=f"{dominance:.6f}",
+            best_source_species_adjusted_overlap=f"{best_adjusted_overlap:.6f}",
+            second_source_species=second_species,
+            second_source_species_adjusted_overlap=f"{second_adjusted_overlap:.6f}",
+            best_source_species_separation=f"{species_separation:.6f}",
             contamination_score_gate_pass="YES" if score_gate else "NO",
-            contamination_score_version="v1_cross_species_specificity_project_cohort",
+            contamination_score_version="v2_cross_species_separation_project_cohort",
             contamination_score_source_basis=score_basis,
             contamination_score_source_composite_index=f"{source_index:.6f}",
             contamination_score_source_total_pre_provenance=f"{source_pre:.6f}",
@@ -611,7 +628,7 @@ def main() -> int:
             contamination_score_dispersion=f"{score_dispersion:.6f}",
             contamination_score_af_coherence=f"{score_af:.6f}",
             contamination_score_source_concentration=f"{score_concentration:.6f}",
-            contamination_score_species_dominance=f"{score_dominance:.6f}",
+            contamination_score_species_separation=f"{score_separation:.6f}",
             contamination_score_raw_10=f"{raw_10:.6f}",
             contamination_score="NA" if score is None else f"{score:.6f}",
             contamination_score_interpretation=score_interpretation(score),
