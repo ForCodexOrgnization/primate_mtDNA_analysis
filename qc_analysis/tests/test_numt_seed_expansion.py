@@ -1,5 +1,10 @@
 import copy
 import unittest
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 from qc_analysis.scripts.expand_numt_seed_variants import apply_expansion
 
