@@ -92,7 +92,8 @@ def test_background_requires_homoplasmy_depth_filter_snv_and_match(tmp_path,monk
     provenance=json.loads((out/"primate_homo_background_metadata.json").read_text())
     assert provenance["accepted_rrna_match_tiers"]==["HIGH_CONF_LOOP","HIGH_CONF_STEM"]
 
-def test_workflow_places_background_before_human():
+def test_workflow_places_background_before_final_filter_while_human_is_paused():
     text=(Path(__file__).parents[1]/"scripts/run_qc_preprocessing.sh").read_text()
     graph=text[text.index("local steps=("):text.index("for s in",text.index("local steps=("))]
-    assert graph.index("rrna_match") < graph.index("build_primate_homo_background") < graph.index("human_contamination") < graph.index("final_filter")
+    assert graph.index("rrna_match") < graph.index("build_primate_homo_background") < graph.index("final_filter")
+    assert "human_contamination" not in graph
