@@ -37,8 +37,8 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 | 1 | `collect_variant_calling_results` | 收集并标准化 variant-calling 的 VCF、coverage 和 mtCN 结果 | native-coordinate QC |
 | 2 | `sample_variant_filtering` | 五项样本 QC，report-only | 最终样本判定 |
 | 3 | `pre_liftover_variant_qc` | 在物种原始坐标中冻结 SOURCE_* call identity/QC | local artifact QC、liftover |
-| 4 | `intraspecies_contamination` | 原始物种坐标的种内污染分析，report-only | 最终样本判定 |
-| 5 | `local_heteroplasmy_qc` | 完整 native-coordinate NUMT/indel artifact workflow：local HET clustering → species NUMT propagation → NUMT seed expansion → indel complex/dense-overlap detection → residual production rules；生成 SOURCE-keyed removal list | liftover、terminal removal |
+| 4 | `local_heteroplasmy_qc` | 完整 native-coordinate NUMT/indel artifact workflow：local HET clustering → species NUMT propagation → NUMT seed expansion → indel complex/dense-overlap detection → residual production rules；生成 SOURCE-keyed removal list | intra/inter contamination、liftover、terminal removal |
+| 5 | `intraspecies_contamination` | 原始物种坐标的种内污染分析；先排除 SOURCE-keyed NUMT/indel artifacts，再按原有规则/score 计算 | 最终样本判定 |
 | 6 | `discover_global_anchor` | 对参考线粒体序列做全局比对并生成经过验证的 anchor 表 | 坐标转换 anchor |
 | 7 | `coordinate_liftover` | 将样本变异转换到人 chrM 坐标，同时保留 SOURCE_* identity | 后续污染/功能注释 |
 | 8 | `interspecies_contamination` | lifted 人坐标的跨物种污染报告；保留历史 PASS/WARN/FAIL，并新增 cross-species specificity + project/cohort report-only score | `final_filter` 输入 |
@@ -74,7 +74,7 @@ human gene/phase candidate pairs instead of collapsing a position to one gene.
 样本由 metadata 表提供；两个 coverage 文件以 `(chrom, pos, target)` 为键逐位取最大深度，
 并写入稳定的 `collected_cov/{sample}.merged.max_depth.per_base_coverage.tsv` 下游接口。
 
-`sample_variant_filtering`、`pre_liftover_variant_qc`、`intraspecies_contamination` 和完整的 `local_heteroplasmy_qc` 都在 liftover 前运行。`local_heteroplasmy_qc` 现在调用 `run_local_heteroplasmy_qc_with_expansion.sh`，因此 species-level NUMT propagation、NUMT seed expansion、indel complex/dense-overlap filtering 和 residual artifact rules 都属于 production `all`。
+`sample_variant_filtering`、`pre_liftover_variant_qc`、完整的 `local_heteroplasmy_qc` 和 `intraspecies_contamination` 都在 liftover 前运行。`local_heteroplasmy_qc` 先生成 SOURCE-keyed NUMT/indel artifact removal list；随后 intra contamination 使用过滤后的 native-coordinate variants 计算。liftover 后的 interspecies contamination 通过 immutable `SOURCE_*` tags 应用同一 removal list，再按原有 inter score 公式计算。
 
 `final_filter` 调用 `run_final_filter_with_heteroplasmy.py`：先执行基础 terminal filtering，再读取 `local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv`，使用 immutable `SOURCE_CHROM/SOURCE_POS/SOURCE_REF/SOURCE_ALT` 精确移除 native-coordinate NUMT/indel artifacts。详见
 [`docs/intraspecies_contamination.md`](docs/intraspecies_contamination.md)。
@@ -324,8 +324,8 @@ remains supplementary (`quality_required_for_fail: false`).
 ## Native-coordinate PRE-LIFTOVER QC
 
 The production order is collection, report-only sample QC, `pre_liftover_variant_qc`,
-original-coordinate contamination and `local_heteroplasmy_qc`, anchor discovery and
-coordinate liftover, followed by human-coordinate contamination/functional QC and,
+`local_heteroplasmy_qc`, artifact-filtered original-coordinate contamination, anchor discovery and
+coordinate liftover, followed by artifact-filtered human-coordinate interspecies contamination/functional QC and,
 last, `final_filter`. Native-coordinate QC precedes liftover; cross-species and human-
 coordinate QC follows it; irreversible filtering occurs only after all evidence is
 integrated.
