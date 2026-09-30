@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Report cohort-level cross-species contamination from current lifted mtDNA VCFs.
 
-Production PASS/WARN/FAIL classification intentionally preserves the historical
-hard-threshold logic. In parallel, this module reports a 0-1 evidence score that
-mirrors the intraspecies framework while accounting for cross-species allele
-specificity, genome-wide dispersion, AF coherence, source-sample concentration,
-source-species separation, source-genus background correction, and project/cohort provenance.
+Production PASS/WARN/FAIL classification preserves the historical hard-threshold
+logic, but both classification and the report-only 0-1 evidence score are now
+calculated after excluding native-coordinate NUMT and indel/local-artifact
+variants listed by local_heteroplasmy_qc. Exact SOURCE_CHROM/SOURCE_POS/SOURCE_REF/
+SOURCE_ALT identity is used after liftover, so artifact removal remains tied to
+the original species-coordinate call.
 
-Project/cohort provenance modifies only the source-matching component. It never
-creates contamination evidence by itself.
+The score weights themselves are unchanged and account for cross-species allele
+specificity, genome-wide dispersion, AF coherence, source-sample concentration,
+source-species separation, source-genus background correction, and project/cohort
+provenance. Project/cohort provenance modifies only the source-matching component.
+It never creates contamination evidence by itself.
 """
 from __future__ import annotations
 
@@ -230,8 +234,39 @@ def discover(directory: Path, pattern: str) -> dict[str, Path]:
     return found
 
 
-def alleles(path: Path, dp_min: float) -> list[tuple[tuple[str, int, str, str], float]]:
+def load_artifact_removal_keys(path: Path) -> tuple[dict[str, set[tuple[str, str, str, str]]], bool]:
+    """Load exact native-coordinate variants removed by NUMT/indel artifact QC."""
+    if not path.is_file():
+        return {}, False
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    required = {"sample", "source_chrom", "source_pos", "source_ref", "source_alt", "filter_action"}
+    if rows and not required.issubset(rows[0]):
+        raise ValueError(f"invalid artifact-removal report: {path}")
+    out = defaultdict(set)
+    for row in rows:
+        if str(row.get("filter_action", "")).upper() != "REMOVE":
+            continue
+        sample = str(row.get("sample", "")).strip()
+        if not sample:
+            continue
+        out[sample].add((
+            str(row.get("source_chrom", "")),
+            str(row.get("source_pos", "")),
+            str(row.get("source_ref", "")),
+            str(row.get("source_alt", "")),
+        ))
+    return dict(out), True
+
+
+def alleles(
+    path: Path,
+    dp_min: float,
+    sample: str,
+    removed_keys: dict[str, set[tuple[str, str, str, str]]] | None = None,
+) -> list[tuple[tuple[str, int, str, str], float]]:
     opener = gzip.open if path.suffix == ".gz" else open
+    removed_keys = removed_keys or {}
     result = []
     with opener(path, "rt", encoding="utf-8") as handle:
         for line in handle:
@@ -245,6 +280,16 @@ def alleles(path: Path, dp_min: float) -> list[tuple[tuple[str, int, str, str], 
                 continue
             fmt = dict(zip(fields[8].split(":"), fields[9].split(":")))
             info = dict(x.split("=", 1) for x in fields[7].split(";") if "=" in x)
+
+            source_key = (
+                str(info.get("SOURCE_CHROM", "")),
+                str(info.get("SOURCE_POS", "")),
+                str(info.get("SOURCE_REF", "")),
+                str(info.get("SOURCE_ALT", "")),
+            )
+            if source_key in removed_keys.get(sample, set()):
+                continue
+
             dp = number(fmt.get("DP", ""))
             if dp is None:
                 dp = number(info.get("DP", ""))
@@ -418,6 +463,18 @@ def main() -> int:
     vcf_dir = resolve(paths.get("input_vcf_dir", "results/qc/coordinate_liftover/vcf_lifted_raw"))
     metadata_path = resolve(paths.get("sample_ref_file", "config/sample_ref_file.tsv"))
     output_dir = resolve(paths.get("output_dir", "results/qc/interspecies_contamination"))
+    artifact_removal_report = resolve(paths.get(
+        "artifact_removal_report",
+        "results/qc/local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv",
+    ))
+    artifact_removed_keys, artifact_filter_available = load_artifact_removal_keys(
+        artifact_removal_report
+    )
+    if not artifact_filter_available:
+        raise ValueError(
+            f"artifact-removal report is required before interspecies contamination: "
+            f"{artifact_removal_report}"
+        )
     output = output_dir / "reports/interspecies_contamination_report.tsv"
     if output.exists():
         print(f"[interspecies_contamination] replacing existing report: {output}", file=sys.stderr)
@@ -462,7 +519,15 @@ def main() -> int:
     source_fraction_saturation = float(settings.get("score_source_fraction_saturation", .70))
     min_genus_species = int(settings.get("min_source_genus_species_for_specificity", 3))
 
-    calls = {sample: alleles(path, dp_min) for sample, path in vcfs.items()}
+    calls = {
+        sample: alleles(
+            path,
+            dp_min,
+            sample,
+            removed_keys=artifact_removed_keys,
+        )
+        for sample, path in vcfs.items()
+    }
     species_samples = defaultdict(set)
     high_index = defaultdict(list)
     for sample, rows in calls.items():
@@ -702,7 +767,7 @@ def main() -> int:
             second_source_species_adjusted_overlap=f"{second_adjusted_overlap:.6f}",
             best_source_species_separation=f"{species_separation:.6f}",
             contamination_score_gate_pass="YES" if score_gate else "NO",
-            contamination_score_version="v3_genus_corrected_cross_species_project_cohort",
+            contamination_score_version="v4_artifact_filtered_genus_corrected_cross_species_project_cohort",
             contamination_score_source_basis=score_basis,
             contamination_score_source_composite_index=f"{source_index:.6f}",
             contamination_score_source_total_pre_provenance=f"{source_pre:.6f}",
@@ -729,7 +794,11 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(report)
     temporary.replace(output)
-    print(f"Wrote {output} ({len(report)} samples)")
+    print(
+        f"Wrote {output} ({len(report)} samples); "
+        f"artifact_filter={artifact_removal_report} "
+        f"removed_keys={sum(len(v) for v in artifact_removed_keys.values())}"
+    )
     return 0
 
 
