@@ -587,8 +587,8 @@ case "$STEP" in
     run_collect_variant_calling_results
     "$BASE_PYTHON" "$SAMPLE_FILTER_SCRIPT" --config "$CONFIG"
     "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" --config "$CONFIG"
-    "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG"
     PYTHON="$BASE_PYTHON" bash "$LOCAL_HET_QC_SCRIPT" "$CONFIG"
+    "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG"
     run_discover_global_anchor
     run_coordinate_liftover
     "$BASE_PYTHON" "$INTERSPECIES_SCRIPT" --config "$CONFIG"
