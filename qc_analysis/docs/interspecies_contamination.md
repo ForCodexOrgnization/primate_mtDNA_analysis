@@ -13,9 +13,12 @@ currently change production classification.
 ## Production classification
 
 Only biallelic canonical SNVs with `FILTER=PASS`, `DP >= 100`, and a usable
-AF are indexed. Recipient alleles use `0.01 <= AF <= 0.20`; potential source
-alleles use `AF >= 0.99`. Allele identity is exact post-liftover
-`CHROM/POS/REF/ALT`.
+AF are indexed. Before indexing, variants listed as `REMOVE` by
+`local_heteroplasmy_qc` are excluded using the lifted VCF's immutable
+`SOURCE_CHROM/SOURCE_POS/SOURCE_REF/SOURCE_ALT` tags. Recipient alleles then use
+`0.01 <= AF <= 0.20`; potential source alleles use `AF >= 0.99`. Matching
+between recipient and source remains exact in post-liftover `CHROM/POS/REF/ALT`
+coordinates.
 
 Before cross-species matching, a recipient low-VAF allele is removed if another
 sample of the recipient species carries the same allele at high AF. This
@@ -42,7 +45,7 @@ cross-species thresholds remain `PASS`.
 
 ## Report-only evidence score
 
-The 0-1 score is `v3_genus_corrected_cross_species_project_cohort`. It is
+The 0-1 score is `v4_artifact_filtered_genus_corrected_cross_species_project_cohort`; its component weights are unchanged from v3. It is
 calculated only when the minimum evidence gate passes
 (`n_lowA_after_species_background >= 5`, best-source overlap >= 3, and a best
 source species exists).
