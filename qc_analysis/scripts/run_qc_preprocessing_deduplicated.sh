@@ -68,8 +68,8 @@ case "$STEP" in
     run_collect_dedup
     run_step sample_variant_filtering
     run_step pre_liftover_variant_qc
-    run_step intraspecies_contamination
     run_step local_heteroplasmy_qc
+    run_step intraspecies_contamination
     run_step discover_global_anchor
     run_step coordinate_liftover
     run_step interspecies_contamination
