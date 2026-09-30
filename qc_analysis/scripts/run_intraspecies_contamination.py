@@ -6,17 +6,16 @@ Target and source cohorts are deliberately asymmetric:
   is PASS and the sample has at least ``min_target_het`` strict HET calls.
 - SOURCES are *all* deduplicated same-species samples, irrespective of sample QC.
 
-Low-A target evidence uses the original VCF calls (before local-cluster removal)
-so local artifact filtering cannot erase a real contamination signal.
+Primary intra-species contamination evidence is calculated only after removing
+native-coordinate NUMT and indel/local-artifact variants listed by
+local_heteroplasmy_qc in numt_variants_to_remove.tsv. The filtering is exact and
+sample-specific by native CHROM/POS/REF/ALT identity. Score weights and validated
+candidate/high-confidence thresholds are otherwise unchanged.
 
 Genome-wide dispersion and AF-coherence metrics are diagnostic only. A report-only
 0-1 contamination evidence score combines donor matching, mt-high-hets,
 genome-wide dispersion, AF coherence, and mirror support. The score does NOT
 change the validated contamination flags, contamination_status, or qc_status.
-If a downstream local-heteroplasmy report already exists, the script also
-recomputes source matching after excluding detected local-cluster variants. This
-ALL-vs-NONCLUSTER comparison is a sensitivity analysis only and does not yet
-alter the primary contamination classification.
 """
 from __future__ import annotations
 
@@ -232,12 +231,18 @@ def read_sample_qc(p: Path) -> dict[str, str]:
     }
 
 
-def count_strict_hets(source_qc_path: Path, allowed_samples: set[str], p: dict) -> Counter:
+def count_strict_hets(
+    source_qc_path: Path,
+    allowed_samples: set[str],
+    p: dict,
+    removed_keys: dict[str, set[tuple[str, str, str, str]]] | None = None,
+) -> Counter:
     if not source_qc_path.is_file():
         raise FileNotFoundError(
             f"source variant QC report not found: {source_qc_path}. "
             "Run pre_liftover_variant_qc before intraspecies_contamination."
         )
+    removed_keys = removed_keys or {}
     counts = Counter()
     lo = float(p["target_het_af_min"])
     hi = float(p["target_het_af_max"])
@@ -245,6 +250,14 @@ def count_strict_hets(source_qc_path: Path, allowed_samples: set[str], p: dict) 
     for r in load_rows(source_qc_path):
         sample = str(r.get("sample", "")).strip()
         if sample not in allowed_samples:
+            continue
+        source_key = (
+            str(r.get("source_chrom", "")),
+            str(r.get("source_pos", "")),
+            str(r.get("source_ref", "")),
+            str(r.get("source_alt", "")),
+        )
+        if source_key in removed_keys.get(sample, set()):
             continue
         af = as_float(r.get("source_af"))
         dp = as_float(r.get("source_dp"))
@@ -270,6 +283,30 @@ def load_clustered_variant_keys(cluster_report: Path | None):
     out = defaultdict(set)
     for r in rows:
         if str(r.get("clustered", "")).upper() != "YES":
+            continue
+        sample = str(r.get("sample", "")).strip()
+        if not sample:
+            continue
+        out[sample].add((
+            str(r.get("source_chrom", "")),
+            str(r.get("source_pos", "")),
+            str(r.get("source_ref", "")),
+            str(r.get("source_alt", "")),
+        ))
+    return dict(out), True
+
+
+def load_artifact_removal_keys(removal_report: Path) -> tuple[dict[str, set[tuple[str, str, str, str]]], bool]:
+    """Load exact native-coordinate variants removed by NUMT/indel artifact QC."""
+    if not removal_report.is_file():
+        return {}, False
+    rows = load_rows(removal_report)
+    required = {"sample", "source_chrom", "source_pos", "source_ref", "source_alt", "filter_action"}
+    if rows and not required.issubset(rows[0]):
+        raise ValueError(f"invalid artifact-removal report: {removal_report}")
+    out = defaultdict(set)
+    for r in rows:
+        if str(r.get("filter_action", "")).upper() != "REMOVE":
             continue
         sample = str(r.get("sample", "")).strip()
         if not sample:
@@ -970,7 +1007,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
             mirror_p99_threshold=p99, mirror_calibration_status=cal_status,
             mirror_support_candidate=False, mirror_support_highconf=False,
             contamination_score_gate_pass=False,
-            contamination_score_version="v7_project_cohort_adjusted",
+            contamination_score_version="v8_artifact_filtered_project_cohort_adjusted",
             contamination_score_source_basis="not_scored",
             contamination_score_source_overlap_input=0.0,
             contamination_score_source_fraction_input=0.0,
@@ -1229,7 +1266,26 @@ def main():
         "source_variant_qc_report",
         "results/qc/pre_liftover_variant_qc/reports/source_variant_qc.tsv",
     ))
-    het_counts = count_strict_hets(source_qc_path, allowed_samples, p)
+
+    artifact_removal_report = path(sec.get(
+        "artifact_removal_report",
+        "results/qc/local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv",
+    ))
+    artifact_removed_keys, artifact_filter_available = load_artifact_removal_keys(
+        artifact_removal_report
+    )
+    if not artifact_filter_available:
+        raise FileNotFoundError(
+            f"artifact-removal report not found: {artifact_removal_report}. "
+            "Run local_heteroplasmy_qc before intraspecies_contamination."
+        )
+
+    het_counts = count_strict_hets(
+        source_qc_path,
+        allowed_samples,
+        p,
+        removed_keys=artifact_removed_keys,
+    )
 
     provenance_path = path(sec.get(
         "sample_provenance_report",
@@ -1261,9 +1317,25 @@ def main():
     if table is None:
         raise ValueError("build_variant_table=false requires variant_table")
 
+    table_rows = load_rows(path(table))
+    n_table_rows_before_artifact_filter = len(table_rows)
+    table_rows = [
+        r for r in table_rows
+        if (
+            str(r.get("CHROM", "")),
+            str(r.get("POS", "")),
+            str(r.get("REF", "")),
+            str(r.get("ALT", "")),
+        ) not in artifact_removed_keys.get(
+            str(r.get("Sample", "") or r.get("sample", "")).strip(),
+            set(),
+        )
+    ]
+    n_table_rows_after_artifact_filter = len(table_rows)
+
     nc = a.negative_control_pairs or sec.get("negative_control_pairs")
     findings, eligibility, donor_variant_details = analyse(
-        load_rows(path(table)), p, source_pairs, qc_status, het_counts,
+        table_rows, p, source_pairs, qc_status, het_counts,
         provenance=provenance,
         clustered_keys=clustered_keys,
         cluster_sensitivity_available=cluster_sensitivity_available,
@@ -1289,6 +1361,11 @@ def main():
         w.writerow(("source_sample_ref_file", source_list))
         w.writerow(("sample_qc_report", sample_qc_path))
         w.writerow(("source_variant_qc_report", source_qc_path))
+        w.writerow(("artifact_removal_report", artifact_removal_report))
+        w.writerow(("artifact_filter_available", artifact_filter_available))
+        w.writerow(("artifact_variants_to_remove", sum(len(v) for v in artifact_removed_keys.values())))
+        w.writerow(("variant_rows_before_artifact_filter", n_table_rows_before_artifact_filter))
+        w.writerow(("variant_rows_after_artifact_filter", n_table_rows_after_artifact_filter))
         w.writerow(("sample_provenance_report", provenance_path))
         w.writerow(("samples_with_project_metadata", sum(bool(v.get("project")) for v in provenance.values())))
         w.writerow(("samples_with_cohort_metadata", sum(bool(v.get("cohort")) for v in provenance.values())))
@@ -1308,6 +1385,11 @@ def main():
         f"dispersion_window_bp={p['dispersion_window_bp']}\n"
         f"cluster_sensitivity_available={cluster_sensitivity_available}\n"
         f"cluster_report={cluster_report}\n"
+        f"artifact_filter_available={artifact_filter_available}\n"
+        f"artifact_removal_report={artifact_removal_report}\n"
+        f"artifact_variants_to_remove={sum(len(v) for v in artifact_removed_keys.values())}\n"
+        f"variant_rows_before_artifact_filter={n_table_rows_before_artifact_filter}\n"
+        f"variant_rows_after_artifact_filter={n_table_rows_after_artifact_filter}\n"
         f"report={report}\n",
         encoding="utf-8",
     )
