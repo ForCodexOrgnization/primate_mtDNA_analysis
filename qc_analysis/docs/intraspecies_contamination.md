@@ -1,17 +1,21 @@
 # Intra-species contamination analysis
 
-This independent pre-liftover QC module detects evidence consistent with
-intra-species sample mixture or contamination. It does not prove the biological
-or technical source of the mixture and it does not remove individual variants
-from the VCF. Coordinates remain in the species reference; neither human
+This pre-liftover QC module detects evidence consistent with intra-species
+sample mixture or contamination after excluding native-coordinate variants
+identified by `local_heteroplasmy_qc` as NUMT/indel/local artifacts. It does not
+prove the biological or technical source of the mixture and it does not itself
+rewrite the VCF. Coordinates remain in the species reference; neither human
 liftover, human-contamination filtering, nor inter-species filtering is done.
 
 ## Inputs and method
 
 The builder recursively reads collected `.vcf`/`.vcf.gz` files and sample/species
-metadata (a `sample species` table or `config/sample_ref_file.tsv`). It requires
-one VCF sample column and uses only sample `FORMAT/AF`, `FORMAT/DP`, and (when
-available) `FORMAT/AD`; INFO/DP is never substituted. The core table requires
+metadata (a `sample species` table or `config/sample_ref_file.tsv`). Before
+contamination analysis, exact SOURCE-keyed variants listed as `REMOVE` in
+`local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv` are excluded from
+both the working variant table and strict-HET target eligibility counts. It
+requires one VCF sample column and uses only sample `FORMAT/AF`, `FORMAT/DP`,
+and (when available) `FORMAT/AD`; INFO/DP is never substituted. The core table requires
 `Sample, Species, CHROM, POS, REF, ALT, Type, FILTER, DP`, and `VAF` (or `AF`).
 
 Comparisons are strictly within species to avoid interpreting fixed
