@@ -36,7 +36,7 @@ best_source_species_overlap best_source_species_fraction matched_low_vaf_median
 matched_low_vaf_mad vaf_coherence source_species_count source_sample_count
 target_project target_cohort best_source_project best_source_cohort
 target_source_same_project target_source_same_cohort provenance_relationship_basis
-provenance_source_factor source_specificity_assessable
+provenance_source_factor target_study best_source_study target_center best_source_center target_platform best_source_platform target_instrument best_source_instrument target_source_same_study target_source_same_center target_source_same_platform target_source_same_instrument technical_provenance_level source_specificity_assessable
 target_genus best_source_genus source_genus_specificity_assessable best_source_genus_species_n
 best_overlap_background_adjusted best_fraction_background_adjusted
 best_overlap_mean_cross_species_frequency best_overlap_mean_source_specificity
@@ -146,6 +146,92 @@ def merge_provenance(primary, fallback):
                 merged[key] = values[key]
         out[sample] = merged
     return out
+
+
+def read_technical_metadata(path: Path, sample_col: str) -> dict[str, dict[str, str]]:
+    if not path.is_file():
+        return {}
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    if not rows:
+        return {}
+    fields = list(rows[0])
+    by_lower = {str(x).strip().lower(): x for x in fields}
+
+    def pick(*aliases):
+        for alias in aliases:
+            if alias.lower() in by_lower:
+                return by_lower[alias.lower()]
+        return None
+
+    sample_name = sample_col if sample_col in fields else pick("sample", "input_accession", "accession")
+    if sample_name is None:
+        raise ValueError(f"technical metadata missing sample column: {path}")
+    study_name = pick("study_accession", "project", "bioproject", "bioproject_accession")
+    center_name = pick("study_center_best", "sequencing_center", "study_center", "center")
+    platform_name = pick("sequencing_platform", "platform")
+    instrument_name = pick("sequencing_instrument_model", "instrument_model", "instrument")
+
+    result = {}
+    for row in rows:
+        sample = clean_meta(row.get(sample_name))
+        if not sample:
+            continue
+        result[sample] = {
+            "study": clean_meta(row.get(study_name)) if study_name else "",
+            "center": clean_meta(row.get(center_name)) if center_name else "",
+            "platform": clean_meta(row.get(platform_name)) if platform_name else "",
+            "instrument": clean_meta(row.get(instrument_name)) if instrument_name else "",
+        }
+    return result
+
+
+def technical_relationship(target_sample: str, source_sample: str, technical: dict) -> dict:
+    target = technical.get(target_sample, {})
+    source = technical.get(source_sample, {}) if source_sample else {}
+
+    ts, ss = target.get("study", ""), source.get("study", "")
+    tc, sc = target.get("center", ""), source.get("center", "")
+    tp, sp = target.get("platform", ""), source.get("platform", "")
+    ti, si = target.get("instrument", ""), source.get("instrument", "")
+
+    def compare(a, b):
+        return None if not a or not b else a == b
+
+    same_study = compare(ts, ss)
+    same_center = compare(tc, sc)
+    same_platform = compare(tp, sp)
+    same_instrument = compare(ti, si)
+
+    if same_study is True:
+        level = "L1_SAME_STUDY"
+    elif same_center is True and same_platform is True and same_instrument is True:
+        level = "L2_SAME_TECH_ENV"
+    elif same_center is True:
+        level = "L3_SAME_CENTER"
+    elif same_center is False:
+        level = "L4_DIFFERENT_CENTER"
+    else:
+        level = "L0_UNKNOWN"
+
+    def flag(value):
+        return "YES" if value is True else "NO" if value is False else "NA"
+
+    return {
+        "target_study": ts or "NA",
+        "best_source_study": ss or "NA",
+        "target_center": tc or "NA",
+        "best_source_center": sc or "NA",
+        "target_platform": tp or "NA",
+        "best_source_platform": sp or "NA",
+        "target_instrument": ti or "NA",
+        "best_source_instrument": si or "NA",
+        "target_source_same_study": flag(same_study),
+        "target_source_same_center": flag(same_center),
+        "target_source_same_platform": flag(same_platform),
+        "target_source_same_instrument": flag(same_instrument),
+        "technical_provenance_level": level,
+    }
 
 
 def provenance_relationship(target_sample: str, source_sample: str, provenance: dict, settings: dict) -> dict:
