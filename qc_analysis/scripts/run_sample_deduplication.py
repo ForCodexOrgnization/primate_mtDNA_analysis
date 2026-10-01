@@ -301,7 +301,7 @@ def main() -> int:
         reports / "sample_deduplication_summary.tsv",
         summary,
         [
-            "metadata", "input_rows", "unique_input_accessions", "kept_accessions",
+            "metadata", "already_deduplicated", "input_rows", "unique_input_accessions", "kept_accessions",
             "excluded_archive_alias_accessions", "archive_duplicate_groups",
             "unique_input_rows", "canonical_id_rows", "archive_alias_rows",
             "biological_duplicate_candidate_rows", "archive_alias_only_candidate_rows",
