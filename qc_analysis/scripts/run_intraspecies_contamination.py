@@ -835,7 +835,7 @@ def contamination_score_metrics(
     return {
         "best_overlap_circular_span_fraction": span_fraction,
         "contamination_score_gate_pass": gate,
-        "contamination_score_version": "v7_project_cohort_adjusted",
+        "contamination_score_version": "v8_artifact_filtered_project_cohort_adjusted",
         "contamination_score_source_basis": source_basis,
         "contamination_score_source_overlap_input": round(overlap_for_score, 4),
         "contamination_score_source_fraction_input": (
