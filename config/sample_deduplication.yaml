@@ -3,7 +3,7 @@
 # removed; cross-BioSample biological-duplicate candidates are reported only.
 sample_deduplication:
   enabled: true
-  metadata: data/metadata/primate_metadata_master_3332_FINAL.tsv
+  metadata: data/metadata/primate_metadata_master_FINAL_with_missing_Zoonomia.tsv
   output_dir: results/qc/sample_deduplication
 
   input_accession_column: input_accession
