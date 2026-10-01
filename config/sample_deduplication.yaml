@@ -3,6 +3,10 @@
 # removed; cross-BioSample biological-duplicate candidates are reported only.
 sample_deduplication:
   enabled: true
+  # Set true when the metadata has already been deduplicated upstream. In this
+  # mode QC preserves every metadata row and only materializes the downstream
+  # sample/provenance files; no archive-alias collapsing is performed.
+  already_deduplicated: true
   metadata: data/metadata/primate_metadata_master_FINAL_with_missing_Zoonomia.tsv
   output_dir: results/qc/sample_deduplication
 
