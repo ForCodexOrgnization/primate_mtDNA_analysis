@@ -92,6 +92,7 @@ def main() -> int:
         return 0
 
     metadata_path = resolve(sec.get("metadata", "data/metadata/primate_metadata_master_3332_FINAL.tsv"))
+    already_deduplicated = bool(sec.get("already_deduplicated", False))
     output_dir = resolve(sec.get("output_dir", "results/qc/sample_deduplication"))
     reports = output_dir / "reports"
     reports.mkdir(parents=True, exist_ok=True)
@@ -208,7 +209,9 @@ def main() -> int:
         if bio_flag.lower() == "true":
             bio_candidates.append(base.copy())
 
-        if role in keep_roles:
+        if already_deduplicated:
+            kept.append(base)
+        elif role in keep_roles:
             kept.append(base)
         elif role in exclude_roles:
             excluded.append(base)
@@ -218,24 +221,25 @@ def main() -> int:
     if duplicate_accession_rows:
         examples = ",".join(sorted(set(duplicate_accession_rows))[:10])
         raise RuntimeError(f"metadata contains duplicate input_accession rows; examples: {examples}")
-    if unknown_roles:
+    if unknown_roles and not already_deduplicated:
         examples = "; ".join(f"line {n} {s}:{r}" for n, s, r in unknown_roles[:10])
         raise RuntimeError(f"metadata contains unhandled archive_duplicate_role values: {examples}")
 
-    # Every declared archive alias group must contain exactly one canonical row
-    # and at least one archive alias row.
-    bad_groups = []
-    for group, members in sorted(by_group.items()):
-        roles = [clean(r.get(role_col)) for r in members]
-        n_canonical = roles.count("canonical_id_row")
-        n_alias = roles.count("archive_alias_row")
-        if n_canonical != 1 or n_alias < 1:
-            bad_groups.append((group, n_canonical, n_alias, len(members)))
-    if bad_groups:
-        examples = "; ".join(
-            f"{g}:canonical={c},alias={a},rows={n}" for g, c, a, n in bad_groups[:10]
-        )
-        raise RuntimeError(f"invalid archive duplicate groups in FINAL metadata: {examples}")
+    if not already_deduplicated:
+        # Every declared archive alias group must contain exactly one canonical
+        # row and at least one archive alias row when deduplication is requested.
+        bad_groups = []
+        for group, members in sorted(by_group.items()):
+            roles = [clean(r.get(role_col)) for r in members]
+            n_canonical = roles.count("canonical_id_row")
+            n_alias = roles.count("archive_alias_row")
+            if n_canonical != 1 or n_alias < 1:
+                bad_groups.append((group, n_canonical, n_alias, len(members)))
+        if bad_groups:
+            examples = "; ".join(
+                f"{g}:canonical={c},alias={a},rows={n}" for g, c, a, n in bad_groups[:10]
+            )
+            raise RuntimeError(f"invalid archive duplicate groups in FINAL metadata: {examples}")
 
     kept.sort(key=lambda r: r["sample"])
     excluded.sort(key=lambda r: r["sample"])
@@ -311,6 +315,7 @@ def main() -> int:
     )
 
     print(f"[sample_deduplication] metadata={metadata_path}")
+    print(f"[sample_deduplication] already_deduplicated={already_deduplicated}")
     print(f"[sample_deduplication] input_rows={len(rows)}")
     print(
         f"[sample_deduplication] kept={len(kept)} "
