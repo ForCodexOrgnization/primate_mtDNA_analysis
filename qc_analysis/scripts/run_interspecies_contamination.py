@@ -8,11 +8,11 @@ variants listed by local_heteroplasmy_qc. Exact SOURCE_CHROM/SOURCE_POS/SOURCE_R
 SOURCE_ALT identity is used after liftover, so artifact removal remains tied to
 the original species-coordinate call.
 
-The score weights themselves are unchanged and account for cross-species allele
+The report-only 0-1 score is sequence-evidence-only: cross-species allele
 specificity, genome-wide dispersion, AF coherence, source-sample concentration,
-source-species separation, source-genus background correction, and project/cohort
-provenance. Project/cohort provenance modifies only the source-matching component.
-It never creates contamination evidence by itself.
+source-species separation, and source-genus background correction. Project/cohort
+and technical provenance are reported as annotations only and do not modify the
+score, so score-vs-provenance analyses remain independent.
 """
 from __future__ import annotations
 
@@ -803,8 +803,10 @@ def main() -> int:
             fraction_strength = min(1.0, adjusted_fraction / source_fraction_saturation) if source_fraction_saturation > 0 else 0.0
             source_index = math.sqrt(max(0.0, overlap_strength * fraction_strength))
             source_pre = 4.0 * source_index
-            provenance_factor = max(0.0, min(1.0, float(provenance_fields["provenance_source_factor"])))
-            source_total = source_pre * provenance_factor
+            # Keep provenance completely independent from the sequence score.
+            # provenance_source_factor is retained in the report as an annotation
+            # for backwards-compatible interpretation, but is not applied here.
+            source_total = source_pre
             score_dispersion = dispersion_points(float(dispersion["overlap_bin_entropy_normalized"]))
             score_af = af_coherence_points(mad, overlap)
             score_concentration = concentration_points(sample_concentration)
@@ -863,7 +865,7 @@ def main() -> int:
             second_source_species_adjusted_overlap=f"{second_adjusted_overlap:.6f}",
             best_source_species_separation=f"{species_separation:.6f}",
             contamination_score_gate_pass="YES" if score_gate else "NO",
-            contamination_score_version="v4_artifact_filtered_genus_corrected_cross_species_project_cohort",
+            contamination_score_version="v5_artifact_filtered_genus_corrected_cross_species_sequence_only",
             contamination_score_source_basis=score_basis,
             contamination_score_source_composite_index=f"{source_index:.6f}",
             contamination_score_source_total_pre_provenance=f"{source_pre:.6f}",
