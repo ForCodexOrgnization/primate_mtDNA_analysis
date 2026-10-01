@@ -576,6 +576,15 @@ def main() -> int:
     ))
     provenance = merge_provenance(metadata_provenance, read_optional_provenance(provenance_path))
 
+    technical_metadata_path = resolve(paths.get(
+        "technical_metadata_file",
+        "data/metadata/primate_metadata_master_FINAL_with_missing_Zoonomia.tsv",
+    ))
+    technical_metadata = read_technical_metadata(
+        technical_metadata_path,
+        str(paths.get("technical_metadata_sample_column", "input_accession")),
+    )
+
     current_ok = collection_ok_samples(cfg)
     liftover_ok = liftover_ok_samples(cfg)
     current_samples = set(metadata) & current_ok & liftover_ok
@@ -786,6 +795,7 @@ def main() -> int:
 
         dispersion = overlap_dispersion(overlap_keys, mt_length, bin_bp, window_bp)
         provenance_fields = provenance_relationship(recipient, best_sample, provenance, settings)
+        technical_fields = technical_relationship(recipient, best_sample, technical_metadata)
 
         score_gate = denominator >= min_informative and overlap >= min_overlap and bool(best_species)
         if score_gate:
@@ -867,6 +877,7 @@ def main() -> int:
             contamination_score_interpretation=score_interpretation(score),
         )
         row.update(provenance_fields)
+        row.update(technical_fields)
         row.update({
             key: f"{value:.6f}" if isinstance(value, float) else value
             for key, value in dispersion.items()
@@ -883,7 +894,8 @@ def main() -> int:
     print(
         f"Wrote {output} ({len(report)} samples); "
         f"artifact_filter={artifact_removal_report} "
-        f"removed_keys={sum(len(v) for v in artifact_removed_keys.values())}"
+        f"removed_keys={sum(len(v) for v in artifact_removed_keys.values())} "
+        f"technical_metadata={technical_metadata_path}"
     )
     return 0
 
