@@ -339,6 +339,9 @@ interspecies_contamination:
     # Preferred provenance source when the deduplicated workflow is used.
     # Missing files/metadata are neutral rather than punitive.
     sample_provenance_file: results/qc/sample_deduplication/reports/deduplicated_sample_ref_file.tsv
+    # Full metadata used only to annotate technical provenance of the nominated source.
+    technical_metadata_file: data/metadata/primate_metadata_master_FINAL_with_missing_Zoonomia.tsv
+    technical_metadata_sample_column: input_accession
     # Native-coordinate removal list; SOURCE_* tags in lifted VCFs are used to
     # exclude the same NUMT/indel/local-artifact variants before inter-species scoring.
     artifact_removal_report: results/qc/local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv
