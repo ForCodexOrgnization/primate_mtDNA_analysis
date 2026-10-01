@@ -28,14 +28,14 @@ def value(row, names):
    if math.isfinite(x): return x
   except (TypeError,ValueError): pass
  return None
-def evaluate(row, thresholds):
+def evaluate(row, thresholds, mad_enabled=True):
  vals={k:value(row,v) for k,v in ALIASES.items()}
  checks={
   "pass_mt_coverage": vals["mt_median_coverage"] is not None and vals["mt_median_coverage"] >= float(thresholds["mt_median_coverage_min"]),
   "pass_percent_100": vals["Percent_100"] is not None and vals["Percent_100"] >= float(thresholds["percent_100_min"]),
   "pass_nuclear_coverage": vals["nuclear_median_coverage"] is not None and vals["nuclear_median_coverage"] >= float(thresholds["nuclear_median_coverage_min"]),
   "pass_mtcn": vals["mtcn_median"] is not None and vals["mtcn_median"] >= float(thresholds["mtcn_min"]),
-  "pass_mad": vals["MAD"] is not None and vals["MAD"] < float(thresholds["mad_max"]),
+  "pass_mad": True if not mad_enabled else (vals["MAD"] is not None and vals["MAD"] < float(thresholds["mad_max"])),
  }
  reasons={"pass_mt_coverage":"low_mt_coverage","pass_percent_100":"low_percent_100","pass_nuclear_coverage":"low_nuclear_coverage","pass_mtcn":"low_mtcn","pass_mad":"high_MAD"}
  failed=[reasons[k] for k,ok in checks.items() if not ok]
@@ -48,10 +48,11 @@ def main():
  if not inp.is_file(): raise ValueError(f"missing collection summary: {inp}")
  if report.exists(): print(f"[sample_variant_filtering] replacing existing report: {report}",file=sys.stderr)
  t={"mt_median_coverage_min":100,"percent_100_min":90,"nuclear_median_coverage_min":20,"mtcn_min":40,"mad_max":.5,**(sec.get("thresholds") or {})}
- with inp.open(newline="",encoding="utf-8") as h: rows=[evaluate(r,t) for r in csv.DictReader(h,delimiter="\t")]
+ mad_enabled=sec.get("mad_enabled",True) is not False
+ with inp.open(newline="",encoding="utf-8") as h: rows=[evaluate(r,t,mad_enabled=mad_enabled) for r in csv.DictReader(h,delimiter="\t")]
  out.joinpath("reports").mkdir(parents=True,exist_ok=True);out.joinpath("logs").mkdir(exist_ok=True)
  with report.open("w",newline="",encoding="utf-8") as h:w=csv.DictWriter(h,fieldnames=FIELDS,delimiter="\t");w.writeheader();w.writerows(rows)
- out.joinpath("logs/sample_variant_filtering.log").write_text(f"samples={len(rows)} pass={sum(r['qc_status']=='PASS' for r in rows)}\n")
+ out.joinpath("logs/sample_variant_filtering.log").write_text(f"samples={len(rows)} pass={sum(r['qc_status']=='PASS' for r in rows)} mad_enabled={mad_enabled}\n")
  print(f"[sample_variant_filtering] report={report} samples={len(rows)}");return 0
 if __name__=="__main__":
  try: raise SystemExit(main())
