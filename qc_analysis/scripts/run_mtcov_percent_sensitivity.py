@@ -368,6 +368,7 @@ def scenario_config(base_text: str, params: dict, output_root: Path, input_summa
     )
 
     text = set_yaml_path(text, ("final_filter", "output_dir"), final_dir)
+    text = set_yaml_path(text, ("final_filter", "strict_missing_samples"), False)
     text = set_yaml_path(
         text,
         ("final_filter", "sample_reports", "intraspecies", "path"),
@@ -460,8 +461,13 @@ def summarize_scenario(params, scenario_root: Path, source_by_sample, hetero_ref
     local_rows = read_tsv(scenario_root / "local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv")
     intra_rows = read_tsv(scenario_root / "intraspecies_contamination/reports/intraspecies_contamination_report.tsv")
     inter_rows = read_tsv(scenario_root / "interspecies_contamination/reports/interspecies_contamination_report.tsv")
-    final_samples = read_tsv(scenario_root / "final_filter/reports/final_sample_qc.tsv")
-    final_vars = read_tsv(scenario_root / "final_filter/reports/final_variant_qc.tsv")
+    final_sample_path = scenario_root / "final_filter/reports/final_sample_qc.tsv"
+    final_variant_path = scenario_root / "final_filter/reports/final_variant_qc.tsv"
+    missing_final = [str(p) for p in (final_sample_path, final_variant_path) if not p.is_file()]
+    if missing_final:
+        raise FileNotFoundError("incomplete final_filter output: " + ", ".join(missing_final))
+    final_samples = read_tsv(final_sample_path)
+    final_vars = read_tsv(final_variant_path)
 
     sample_qc_pass = [r for r in sample_rows if str(r.get("qc_status", "")).upper() == "PASS"]
     final_pass_samples = [r for r in final_samples if str(r.get("final_sample_status", "")).upper() == "PASS"]
