@@ -283,15 +283,6 @@ def scenario_config(base_text: str, params: dict, output_root: Path, input_summa
     ):
         text = set_yaml_path(text, path, value)
 
-    # Generic Percent_X threshold. Historical percent_100_min is also set above
-    # so old report fields remain internally consistent.
-    text = add_direct_child(
-        text,
-        "sample_variant_filtering",
-        "percent_coverage_min",
-        params["fraction"],
-    )
-
     text = set_yaml_path(text, ("local_heteroplasmy_qc", "output_dir"), local_dir)
     text = add_direct_child(
         text,
