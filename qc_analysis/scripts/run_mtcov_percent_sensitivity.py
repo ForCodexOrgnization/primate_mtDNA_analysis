@@ -235,23 +235,75 @@ def build_augmented_summary(output_root: Path) -> Path:
     src = source_summary_path()
     if not src.is_file():
         raise FileNotFoundError(src)
+
     rows = read_tsv(src)
     out_rows = []
+    missing_cov_rows = []
+
     for i, row in enumerate(rows, 1):
         sample = str(row.get("sample", "")).strip()
         if not sample:
             continue
-        cov_path = resolve_cov_path(row)
+
         new = dict(row)
-        for depth in MT_COV_VALUES:
-            new[f"Percent_{depth}"] = f"{percent_at_depth(cov_path, depth):.6g}"
+
+        try:
+            cov_path = resolve_cov_path(row)
+            for depth in MT_COV_VALUES:
+                new[f"Percent_{depth}"] = f"{percent_at_depth(cov_path, depth):.6g}"
+        except (FileNotFoundError, ValueError) as exc:
+            # Preserve the sample in the sensitivity input rather than aborting
+            # the whole experiment. Missing/invalid Percent_X values naturally
+            # fail sample_variant_filtering for every scenario.
+            for depth in MT_COV_VALUES:
+                new[f"Percent_{depth}"] = "NA"
+
+            old_notes = str(new.get("notes", "")).strip()
+            extra_note = "sensitivity_missing_or_invalid_per_base_coverage"
+            new["notes"] = (
+                f"{old_notes};{extra_note}" if old_notes else extra_note
+            )
+
+            missing_cov_rows.append({
+                "sample": sample,
+                "species": str(row.get("species", "")).strip(),
+                "collection_status": str(row.get("status", "")).strip(),
+                "cov_file": str(row.get("cov_file", "")).strip(),
+                "reason": str(exc),
+            })
+
+            print(
+                f"[mtcov_percent_sensitivity] WARNING sample={sample}: {exc}; "
+                "setting Percent_60/80/100=NA",
+                file=sys.stderr,
+                flush=True,
+            )
+
         out_rows.append(new)
+
         if i % 250 == 0:
-            print(f"[mtcov_percent_sensitivity] percent metrics {i}/{len(rows)}", flush=True)
+            print(
+                f"[mtcov_percent_sensitivity] percent metrics {i}/{len(rows)}",
+                flush=True,
+            )
 
     out = output_root / "sensitivity_input_summary.tsv"
     write_tsv(out, out_rows)
-    print(f"[mtcov_percent_sensitivity] augmented_summary={out}", flush=True)
+
+    missing_report = output_root / "missing_or_invalid_coverage.tsv"
+    write_tsv(missing_report, missing_cov_rows)
+
+    print(
+        f"[mtcov_percent_sensitivity] augmented_summary={out} "
+        f"missing_or_invalid_coverage={len(missing_cov_rows)}",
+        flush=True,
+    )
+    if missing_cov_rows:
+        print(
+            f"[mtcov_percent_sensitivity] missing coverage report={missing_report}",
+            flush=True,
+        )
+
     return out
 
 
