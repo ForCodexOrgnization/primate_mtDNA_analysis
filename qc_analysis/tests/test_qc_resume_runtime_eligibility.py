@@ -194,3 +194,47 @@ def test_runtime_exclusion_removes_stale_codon_outputs(tmp_path):
     assert "ELIGIBLE=0" in result.stdout
     assert not stale_vcf.exists()
     assert not stale_summary.exists()
+
+
+
+def test_sample_qc_supports_configurable_percent_x_metric(tmp_path):
+    collection = tmp_path / "collection_percent_x.tsv"
+    collection.write_text(
+        "sample\tspecies\tmt_median_coverage\tPercent_80\tPercent_100\t"
+        "nuclear_median_coverage\tmtcn_median\tMAD\tstatus\n"
+        "S1\tSpecies_one\t120\t89\t95\t10\t50\t0.1\tOK\n"
+    )
+    out = tmp_path / "sample_qc_percent_x"
+    config = tmp_path / "qc_percent_x.yaml"
+    config.write_text(
+        "sample_variant_filtering:\n"
+        "  enabled: true\n"
+        f"  input_summary: {collection}\n"
+        f"  output_dir: {out}\n"
+        "  mad_enabled: false\n"
+        "  percent_coverage_column: Percent_80\n"
+        "  thresholds:\n"
+        "    mt_median_coverage_min: 80\n"
+        "    percent_100_min: 90\n"
+        "    nuclear_median_coverage_min: 5\n"
+        "    mtcn_min: 40\n"
+        "    mad_max: 0.5\n"
+    )
+    result = subprocess.run(
+        [sys.executable, str(SAMPLE_QC), "--config", str(config)],
+        cwd=ROOT, text=True, capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    report = out / "reports/sample_qc.tsv"
+    with report.open(newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["percent_coverage_metric"] == "Percent_80"
+    assert float(row["percent_coverage_value"]) == 89.0
+    assert row["pass_percent_100"] == "True"
+    assert row["pass_percent_coverage"] == "False"
+    assert row["qc_status"] == "FAIL"
+    assert "low_percent_80" in row["failed_criteria"]
