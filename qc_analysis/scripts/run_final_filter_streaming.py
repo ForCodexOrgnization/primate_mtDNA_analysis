@@ -640,3 +640,11 @@ def main():
     )
     print(f"[final_filter] output={out} samples_pass={len(passing)}/{len(collection)}")
     return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (ValueError, KeyError, OSError, RuntimeError, sqlite3.Error, subprocess.CalledProcessError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        raise SystemExit(2)
