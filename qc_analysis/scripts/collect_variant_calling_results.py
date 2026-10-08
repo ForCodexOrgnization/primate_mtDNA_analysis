@@ -25,6 +25,7 @@ SUMMARY_COLUMNS = [
     "species",
     "mt_median_coverage",
     "nuclear_median_coverage",
+    "nuclear_mean_coverage",
     "mtcn_median",
     "Percent_100",
     "MAD",
@@ -55,6 +56,14 @@ MTCN_ALIASES = {
         "nuclear_median_depth",
         "nuc_median_depth",
         "median_nuclear_coverage",
+    ],
+    "nuclear_mean_coverage": [
+        "nuclear_mean_coverage",
+        "mean_nuclear_coverage",
+        "nuc_mean_coverage",
+        "autosomal_mean_coverage",
+        "nuclear_mean_depth",
+        "nuc_mean_depth",
     ],
     "mtcn_median": [
         "mtcn_median",
@@ -192,6 +201,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     ap.add_argument("--allow-single-cov", action="store_true", default=parse_bool(defaults.get("allow_single_cov", False)))
     ap.add_argument("--mtcn-mt-column", default=defaults.get("mtcn_mt_column"))
     ap.add_argument("--mtcn-nuclear-column", default=defaults.get("mtcn_nuclear_column"))
+    ap.add_argument("--mtcn-nuclear-mean-column", default=defaults.get("mtcn_nuclear_mean_column"))
     ap.add_argument("--mtcn-mtcn-column", default=defaults.get("mtcn_mtcn_column"))
     args = ap.parse_args(argv)
     for attr in ("input_root", "outdir", "metadata"):
@@ -298,7 +308,12 @@ def alias_lookup(fieldnames: Sequence[str], requested: Optional[str], aliases: S
 
 
 def parse_mtcn(path: Optional[Path], args: argparse.Namespace) -> Tuple[Dict[str, str], List[str]]:
-    values = {"mt_median_coverage": "NA", "nuclear_median_coverage": "NA", "mtcn_median": "NA"}
+    values = {
+        "mt_median_coverage": "NA",
+        "nuclear_median_coverage": "NA",
+        "nuclear_mean_coverage": "NA",
+        "mtcn_median": "NA",
+    }
     notes: List[str] = []
     if not path:
         return values, notes
@@ -312,6 +327,7 @@ def parse_mtcn(path: Optional[Path], args: argparse.Namespace) -> Tuple[Dict[str
         requested = {
             "mt_median_coverage": args.mtcn_mt_column,
             "nuclear_median_coverage": args.mtcn_nuclear_column,
+            "nuclear_mean_coverage": args.mtcn_nuclear_mean_column,
             "mtcn_median": args.mtcn_mtcn_column,
         }
         for key, aliases in MTCN_ALIASES.items():
