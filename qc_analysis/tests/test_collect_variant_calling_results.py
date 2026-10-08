@@ -26,7 +26,7 @@ def prepare(tmp_path, missing=(), single=False):
         f"  metadata: {metadata}\n  allow_single_cov: {'true' if single else 'false'}\n"
     )
     (source / "mtcn/S1.round2.mtcn.tsv").write_text(
-        "mt_median_coverage\tnuclear_median_coverage\tnuclear_mean_coverage\tmtcn_median\n300\t20\t22.5\t30\n"
+        "mt_median_coverage\tmt_mean_coverage\tnuclear_median_coverage\tnuclear_mean_coverage\tmtcn_median\tmtcn_mean\n300\t320\t20\t22.5\t30\t28.4444\n"
     )
     vcf = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\nchrM\t1\t.\tA\tG\t.\tPASS\t.\tDP:AF\t101:0.1\n"
     (source / "vcf/S1.round2.original_coords.clean.final.split.vcf").write_text(vcf)
