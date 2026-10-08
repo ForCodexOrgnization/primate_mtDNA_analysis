@@ -24,9 +24,11 @@ SUMMARY_COLUMNS = [
     "sample",
     "species",
     "mt_median_coverage",
+    "mt_mean_coverage",
     "nuclear_median_coverage",
     "nuclear_mean_coverage",
     "mtcn_median",
+    "mtcn_mean",
     "Percent_100",
     "MAD",
     "n_hetero",
@@ -48,6 +50,15 @@ MTCN_ALIASES = {
         "mitochondrial_median_depth",
         "median_mt_coverage",
         "median_mito_coverage",
+    ],
+    "mt_mean_coverage": [
+        "mt_mean_coverage",
+        "mean_mt_coverage",
+        "mitochondrial_mean_coverage",
+        "mito_mean_coverage",
+        "mt_mean_depth",
+        "mitochondrial_mean_depth",
+        "mean_mito_coverage",
     ],
     "nuclear_median_coverage": [
         "nuclear_median_coverage",
@@ -73,6 +84,12 @@ MTCN_ALIASES = {
         "mt_copy_number",
         "mitochondrial_copy_number",
         "median_mtcn",
+    ],
+    "mtcn_mean": [
+        "mtcn_mean",
+        "mean_mtcn",
+        "mean_mtCN",
+        "mtcnmean",
     ],
 }
 
@@ -200,9 +217,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     ap.add_argument("--copy-files", action="store_true", default=parse_bool(defaults.get("copy_files", False)))
     ap.add_argument("--allow-single-cov", action="store_true", default=parse_bool(defaults.get("allow_single_cov", False)))
     ap.add_argument("--mtcn-mt-column", default=defaults.get("mtcn_mt_column"))
+    ap.add_argument("--mtcn-mt-mean-column", default=defaults.get("mtcn_mt_mean_column"))
     ap.add_argument("--mtcn-nuclear-column", default=defaults.get("mtcn_nuclear_column"))
     ap.add_argument("--mtcn-nuclear-mean-column", default=defaults.get("mtcn_nuclear_mean_column"))
     ap.add_argument("--mtcn-mtcn-column", default=defaults.get("mtcn_mtcn_column"))
+    ap.add_argument("--mtcn-mean-column", default=defaults.get("mtcn_mean_column"))
     args = ap.parse_args(argv)
     for attr in ("input_root", "outdir", "metadata"):
         value = getattr(args, attr)
@@ -310,9 +329,11 @@ def alias_lookup(fieldnames: Sequence[str], requested: Optional[str], aliases: S
 def parse_mtcn(path: Optional[Path], args: argparse.Namespace) -> Tuple[Dict[str, str], List[str]]:
     values = {
         "mt_median_coverage": "NA",
+        "mt_mean_coverage": "NA",
         "nuclear_median_coverage": "NA",
         "nuclear_mean_coverage": "NA",
         "mtcn_median": "NA",
+        "mtcn_mean": "NA",
     }
     notes: List[str] = []
     if not path:
@@ -326,9 +347,11 @@ def parse_mtcn(path: Optional[Path], args: argparse.Namespace) -> Tuple[Dict[str
             return values, ["mtCN file has no data rows"]
         requested = {
             "mt_median_coverage": args.mtcn_mt_column,
+            "mt_mean_coverage": args.mtcn_mt_mean_column,
             "nuclear_median_coverage": args.mtcn_nuclear_column,
             "nuclear_mean_coverage": args.mtcn_nuclear_mean_column,
             "mtcn_median": args.mtcn_mtcn_column,
+            "mtcn_mean": args.mtcn_mean_column,
         }
         for key, aliases in MTCN_ALIASES.items():
             col = alias_lookup(reader.fieldnames, requested[key], aliases)
