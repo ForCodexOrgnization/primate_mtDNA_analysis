@@ -61,7 +61,7 @@ The summary table contains one row for every metadata sample (or discovered VCF
 sample when metadata is unavailable), including samples with missing inputs. Columns are:
 
 ```text
-sample species mt_median_coverage nuclear_median_coverage mtcn_median Percent_100 MAD n_hetero n_homo vcf_file cov_file mtcn_file status missing_files notes
+sample species mt_median_coverage nuclear_median_coverage nuclear_mean_coverage mtcn_median Percent_100 MAD n_hetero n_homo vcf_file cov_file mtcn_file status missing_files notes
 ```
 
 Species are read from an optional metadata TSV/CSV configured with `--metadata`,
@@ -71,9 +71,9 @@ headerless files are interpreted as `sample` and `species`. If no species can be
 found, `NA` is written.
 
 mtCN columns can be configured explicitly with `--mtcn-mt-column`,
-`--mtcn-nuclear-column`, and `--mtcn-mtcn-column`. If these are not supplied, the
+`--mtcn-nuclear-column`, `--mtcn-nuclear-mean-column`, and `--mtcn-mtcn-column`. If these are not supplied, the
 script tries common aliases such as `mt_median_coverage`,
-`nuclear_median_coverage`, and `mtcn_median`. Missing mtCN metrics are reported as
+`nuclear_median_coverage`, `nuclear_mean_coverage` / `mean_nuclear_coverage`, and `mtcn_median`. Missing mtCN metrics are reported as
 `NA` and logged in `collection_warnings.log`.
 
 ## QC metrics
