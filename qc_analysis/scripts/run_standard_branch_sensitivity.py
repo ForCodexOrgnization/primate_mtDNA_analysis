@@ -181,6 +181,7 @@ def scenario_config(base_text: str, params: dict, output_root: Path) -> str:
     )
 
     text = set_yaml_path(text, ("final_filter", "output_dir"), final_dir)
+    text = set_yaml_path(text, ("final_filter", "strict_missing_samples"), False)
     text = set_yaml_path(
         text,
         ("final_filter", "sample_reports", "intraspecies", "path"),
