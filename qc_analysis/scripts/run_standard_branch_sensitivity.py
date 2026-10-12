@@ -1,27 +1,24 @@
 #!/usr/bin/env python3
-"""Run Standard-branch QC threshold sensitivity at fixed nuclear coverage >=5x.
+"""Run Percent_100 sample-QC sensitivity at fixed nuclear/mtCN/mtDNA thresholds.
 
 Experiment:
   nuclear median coverage >= 5x (fixed)
   MAD disabled
-  mtCN minimum:               20, 40, 60
-  mtDNA median coverage min:  75, 100, 150
-  Percent_100 minimum:        85, 90, 95
+  mtCN minimum:               40 (fixed)
+  mtDNA median coverage min:  100 (fixed)
+  Percent_100 minimum:        60, 65, 70, 75, 80, 85, 90, 95
 
-This creates 27 isolated scenarios. Each scenario reruns the QC steps whose
+This creates 8 isolated scenarios. Each scenario reruns the QC steps whose
 outputs depend on sample membership or the scenario-specific artifact list:
 sample_variant_filtering -> local_heteroplasmy_qc ->
 intraspecies_contamination -> interspecies_contamination -> final_filter.
 
 Upstream calling/liftover/codon/tRNA/rRNA outputs are reused read-only.
 
-After all scenarios finish, the script writes scenario_summary.tsv and two
-standard plots:
-  1) samples/species/unique-variant retention
-  2) sample retention vs fixed species-specific P95 heteroplasmy outliers
-
-For the two plots, one threshold is swept at a time while the other two are
-fixed at the historical baseline (mtCN=40, mtDNA coverage=100, Percent_100=90).
+The purpose is to evaluate whether the historical Percent_100 >=90% sample
+threshold can be relaxed while keeping the per-site calling depth requirement
+at 100x. Scenario-specific final_sample_qc.tsv and final_variant_qc.tsv outputs
+are retained for downstream heteroplasmy/homoplasmy comparisons.
 """
 from __future__ import annotations
 
@@ -39,9 +36,9 @@ ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = ROOT / "qc_analysis/scripts/run_qc_preprocessing.sh"
 
 NUCLEAR_MIN = 5
-MTCN_VALUES = (20, 40, 60)
-MT_COV_VALUES = (75, 100, 150)
-PERCENT100_VALUES = (85, 90, 95)
+MTCN_VALUES = (40,)
+MT_COV_VALUES = (100,)
+PERCENT100_VALUES = (60, 65, 70, 75, 80, 85, 90, 95)
 BASELINE = {"mtcn": 40, "mtcov": 100, "pct100": 90}
 
 STEPS = (
@@ -601,7 +598,7 @@ def submit(base_config: Path, output_root: Path, force: bool, concurrency: int):
     ]
     result = subprocess.run(array_cmd, cwd=ROOT, check=True, text=True, capture_output=True)
     array_job = result.stdout.strip().split(";")[0]
-    print(f"[standard_sensitivity] submitted 27-scenario array job={array_job}")
+    print(f"[standard_sensitivity] submitted {len(manifest)}-scenario array job={array_job}")
 
     summary_cmd = [
         "sbatch", "--parsable",
