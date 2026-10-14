@@ -19,8 +19,12 @@ Genome-wide dispersion, AF-coherence, and donor-competition/dominance metrics ar
 diagnostic only. Donor dominance reports the top three same-species source candidates
 and the best-vs-second separation without changing the current score. A report-only
 0-1 contamination evidence score combines donor matching, mt-high-hets,
-genome-wide dispersion, AF coherence, and mirror support. The score does NOT
-change the validated contamination flags, contamination_status, or qc_status.
+genome-wide dispersion, AF coherence, and mirror support. A parallel zero-inflated
+v2 score is also reported: samples with sufficient low-AF data must pass all
+required donor-match, donor-specificity, donor-dominance, AF-coherence, and
+dispersion gates or receive v2 score 0; insufficient samples receive NA. The v2
+score is validation-only and does NOT change the validated contamination flags,
+contamination_status, qc_status, or the legacy contamination_score.
 """
 from __future__ import annotations
 
@@ -38,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species target_project target_cohort sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_project best_source_cohort target_source_same_project target_source_same_cohort provenance_relationship_basis provenance_source_factor best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable donor_dominance_metric top_adjusted_source_sample top_adjusted_source_overlap top_adjusted_source_background_adjusted top_adjusted_source_effective_specific_overlap second_source_sample second_source_overlap second_source_background_adjusted second_source_effective_specific_overlap third_source_sample third_source_overlap third_source_background_adjusted third_source_effective_specific_overlap best_vs_second_background_adjusted_margin best_vs_second_background_adjusted_ratio best_vs_second_effective_specific_margin best_vs_second_effective_specific_ratio donor_dominance_background_adjusted donor_dominance_effective_specific best_overlap_positions best_overlap_occupied_bins best_overlap_occupied_bin_fraction best_overlap_bin_entropy best_overlap_bin_entropy_normalized best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_occupied_bin_fraction_noncluster best_overlap_bin_entropy_noncluster best_overlap_bin_entropy_normalized_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total_pre_provenance contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_basis contamination_score_dispersion_entropy contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score_raw_10 contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species target_project target_cohort sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_project best_source_cohort target_source_same_project target_source_same_cohort provenance_relationship_basis provenance_source_factor best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable donor_dominance_metric top_adjusted_source_sample top_adjusted_source_overlap top_adjusted_source_background_adjusted top_adjusted_source_effective_specific_overlap second_source_sample second_source_overlap second_source_background_adjusted second_source_effective_specific_overlap third_source_sample third_source_overlap third_source_background_adjusted third_source_effective_specific_overlap best_vs_second_background_adjusted_margin best_vs_second_background_adjusted_ratio best_vs_second_effective_specific_margin best_vs_second_effective_specific_ratio donor_dominance_background_adjusted donor_dominance_effective_specific best_overlap_positions best_overlap_occupied_bins best_overlap_occupied_bin_fraction best_overlap_bin_entropy best_overlap_bin_entropy_normalized best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_occupied_bin_fraction_noncluster best_overlap_bin_entropy_noncluster best_overlap_bin_entropy_normalized_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total_pre_provenance contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_basis contamination_score_dispersion_entropy contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score_raw_10 contamination_score contamination_score_interpretation contamination_v2_version contamination_v2_gate_pass contamination_v2_gate_reason contamination_v2_match_strength contamination_v2_donor_specificity_strength contamination_v2_donor_dominance_strength contamination_v2_af_coherence_strength contamination_v2_dispersion_strength contamination_v2_score contamination_v2_status contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -79,6 +83,24 @@ DEFAULTS = dict(
     provenance_different_cohort_factor=.75,
     provenance_different_project_factor=.60,
     provenance_unknown_factor=1.00,
+    # Parallel zero-inflated v2 score; validation-only.
+    v2_min_adjusted_overlap=3.0,
+    v2_min_adjusted_fraction=.20,
+    v2_min_donor_specificity=.60,
+    v2_min_donor_dominance=.40,
+    v2_min_best_second_ratio=3.0,
+    v2_max_af_mad=.015,
+    v2_min_entropy=.40,
+    v2_match_overlap_saturation=10.0,
+    v2_match_fraction_saturation=.50,
+    v2_specificity_floor=.50,
+    v2_dominance_floor=.20,
+    v2_dominance_saturation=.80,
+    v2_af_mad_scale=.010,
+    v2_entropy_floor=.30,
+    v2_entropy_saturation=.85,
+    v2_strong_threshold=.30,
+    v2_plausible_threshold=.10,
 )
 
 
@@ -685,6 +707,159 @@ def source_dominance_metrics(lowkeys, otherhigh, n_lowA, p):
     }
 
 
+def _clip01(value):
+    return max(0.0, min(1.0, float(value)))
+
+
+def contamination_v2_metrics(
+    *,
+    sample_qc_status,
+    n_lowA,
+    adjusted_overlap,
+    adjusted_fraction,
+    donor_specificity,
+    donor_dominance,
+    top_adjusted_overlap,
+    second_adjusted_overlap,
+    af_mad,
+    entropy,
+    p,
+):
+    """Parallel zero-inflated intra-species score for validation.
+
+    Samples with insufficient data receive score=None/status=INSUFFICIENT.
+    Samples with sufficient data but failing any required evidence gate receive
+    score=0/status=NO_CONVINCING_EVIDENCE. Only samples passing every gate receive
+    a multiplicative continuous score. This function never changes the legacy
+    production classification or contamination_score.
+    """
+    version = "v2_zero_inflated_parallel_20261014"
+    n_low = int(n_lowA or 0)
+    if str(sample_qc_status).upper() != "PASS":
+        return {
+            "contamination_v2_version": version,
+            "contamination_v2_gate_pass": False,
+            "contamination_v2_gate_reason": "insufficient_sample_qc_not_pass",
+            "contamination_v2_match_strength": None,
+            "contamination_v2_donor_specificity_strength": None,
+            "contamination_v2_donor_dominance_strength": None,
+            "contamination_v2_af_coherence_strength": None,
+            "contamination_v2_dispersion_strength": None,
+            "contamination_v2_score": None,
+            "contamination_v2_status": "INSUFFICIENT",
+        }
+    if n_low < int(p["min_n_lowA"]):
+        return {
+            "contamination_v2_version": version,
+            "contamination_v2_gate_pass": False,
+            "contamination_v2_gate_reason": "insufficient_lowA",
+            "contamination_v2_match_strength": None,
+            "contamination_v2_donor_specificity_strength": None,
+            "contamination_v2_donor_dominance_strength": None,
+            "contamination_v2_af_coherence_strength": None,
+            "contamination_v2_dispersion_strength": None,
+            "contamination_v2_score": None,
+            "contamination_v2_status": "INSUFFICIENT",
+        }
+
+    adj = as_float(adjusted_overlap)
+    frac = as_float(adjusted_fraction)
+    spec = as_float(donor_specificity)
+    dom = as_float(donor_dominance)
+    best_adj = as_float(top_adjusted_overlap, 0.0) or 0.0
+    second_adj = as_float(second_adjusted_overlap, 0.0) or 0.0
+    mad = as_float(af_mad)
+    ent = as_float(entropy)
+
+    if second_adj > 0:
+        best_second_ratio = best_adj / second_adj
+    elif best_adj > 0:
+        best_second_ratio = math.inf
+    else:
+        best_second_ratio = None
+
+    failures = []
+    if adj is None or adj < float(p["v2_min_adjusted_overlap"]):
+        failures.append("adjusted_overlap")
+    if frac is None or frac < float(p["v2_min_adjusted_fraction"]):
+        failures.append("adjusted_fraction")
+    if spec is None or spec < float(p["v2_min_donor_specificity"]):
+        failures.append("donor_specificity")
+    if dom is None or dom < float(p["v2_min_donor_dominance"]):
+        failures.append("donor_dominance")
+    if best_second_ratio is None or best_second_ratio < float(p["v2_min_best_second_ratio"]):
+        failures.append("best_second_ratio")
+    if mad is None or mad > float(p["v2_max_af_mad"]):
+        failures.append("af_mad")
+    if ent is None or ent < float(p["v2_min_entropy"]):
+        failures.append("entropy")
+
+    overlap_sat = float(p["v2_match_overlap_saturation"])
+    fraction_sat = float(p["v2_match_fraction_saturation"])
+    match_strength = math.sqrt(
+        _clip01((adj or 0.0) / overlap_sat if overlap_sat > 0 else 0.0)
+        * _clip01((frac or 0.0) / fraction_sat if fraction_sat > 0 else 0.0)
+    )
+
+    spec_floor = float(p["v2_specificity_floor"])
+    spec_strength = _clip01(
+        ((spec or 0.0) - spec_floor) / max(1e-12, 1.0 - spec_floor)
+    )
+
+    dom_floor = float(p["v2_dominance_floor"])
+    dom_sat = float(p["v2_dominance_saturation"])
+    dom_strength = _clip01(
+        ((dom or 0.0) - dom_floor) / max(1e-12, dom_sat - dom_floor)
+    )
+
+    mad_scale = float(p["v2_af_mad_scale"])
+    af_strength = (
+        math.exp(-mad / mad_scale)
+        if mad is not None and mad_scale > 0 else 0.0
+    )
+
+    ent_floor = float(p["v2_entropy_floor"])
+    ent_sat = float(p["v2_entropy_saturation"])
+    dispersion_strength = _clip01(
+        ((ent or 0.0) - ent_floor) / max(1e-12, ent_sat - ent_floor)
+    )
+
+    if failures:
+        score = 0.0
+        status = "NO_CONVINCING_EVIDENCE"
+        gate_pass = False
+        gate_reason = ";".join(failures)
+    else:
+        score = (
+            match_strength
+            * (spec_strength ** 0.5)
+            * (dom_strength ** 2.0)
+            * af_strength
+            * (dispersion_strength ** 0.35)
+        )
+        gate_pass = True
+        gate_reason = "PASS"
+        if score >= float(p["v2_strong_threshold"]):
+            status = "STRONG"
+        elif score >= float(p["v2_plausible_threshold"]):
+            status = "PLAUSIBLE"
+        else:
+            status = "WEAK"
+
+    return {
+        "contamination_v2_version": version,
+        "contamination_v2_gate_pass": gate_pass,
+        "contamination_v2_gate_reason": gate_reason,
+        "contamination_v2_match_strength": match_strength,
+        "contamination_v2_donor_specificity_strength": spec_strength,
+        "contamination_v2_donor_dominance_strength": dom_strength,
+        "contamination_v2_af_coherence_strength": af_strength,
+        "contamination_v2_dispersion_strength": dispersion_strength,
+        "contamination_v2_score": score,
+        "contamination_v2_status": status,
+    }
+
+
 def contamination_score_metrics(
     *,
     n_lowA,
@@ -1143,6 +1318,16 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
             contamination_score_raw_10=None,
             contamination_score=None,
             contamination_score_interpretation="not_tested",
+            contamination_v2_version="v2_zero_inflated_parallel_20261014",
+            contamination_v2_gate_pass=False,
+            contamination_v2_gate_reason="insufficient_not_scored",
+            contamination_v2_match_strength=None,
+            contamination_v2_donor_specificity_strength=None,
+            contamination_v2_donor_dominance_strength=None,
+            contamination_v2_af_coherence_strength=None,
+            contamination_v2_dispersion_strength=None,
+            contamination_v2_score=None,
+            contamination_v2_status="INSUFFICIENT",
             contamination_flag_candidate=False, contamination_flag_highconf=False,
         )
         # Sample-QC failures are not scoreable.  By contrast, a PASS target with
@@ -1277,6 +1462,19 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
             mirror_calibration_status=cal_status,
             p=p,
         )
+        v2_score = contamination_v2_metrics(
+            sample_qc_status=sample_qc,
+            n_lowA=len(lowkeys),
+            adjusted_overlap=donor_specificity.get("best_overlap_background_adjusted"),
+            adjusted_fraction=donor_specificity.get("best_frac_lowA_in_highB_background_adjusted"),
+            donor_specificity=donor_specificity.get("best_overlap_mean_donor_specificity"),
+            donor_dominance=donor_dominance.get("donor_dominance_background_adjusted"),
+            top_adjusted_overlap=donor_dominance.get("top_adjusted_source_background_adjusted"),
+            second_adjusted_overlap=donor_dominance.get("second_source_background_adjusted"),
+            af_mad=af_stats.get("best_overlap_af_mad"),
+            entropy=dispersion.get("best_overlap_bin_entropy_normalized"),
+            p=p,
+        )
         overlap_candidate = (
             len(lowkeys) >= p["min_n_lowA"]
             and best_overlap >= p["min_overlap"]
@@ -1342,6 +1540,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
             mirror_low_fraction=mfrac, normalized_mirror_support=norm,
             mirror_support_candidate=mcand, mirror_support_highconf=mhigh,
             **score,
+            **v2_score,
             contamination_status=status, contamination_flag_candidate=candidate,
             contamination_flag_highconf=highconf, qc_status=qc, qc_reason=status,
         )
