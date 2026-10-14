@@ -15,7 +15,9 @@ local_heteroplasmy_qc in numt_variants_to_remove.tsv. The filtering is exact and
 sample-specific by native CHROM/POS/REF/ALT identity. Score weights and validated
 candidate/high-confidence thresholds are otherwise unchanged.
 
-Genome-wide dispersion and AF-coherence metrics are diagnostic only. A report-only
+Genome-wide dispersion, AF-coherence, and donor-competition/dominance metrics are
+diagnostic only. Donor dominance reports the top three same-species source candidates
+and the best-vs-second separation without changing the current score. A report-only
 0-1 contamination evidence score combines donor matching, mt-high-hets,
 genome-wide dispersion, AF coherence, and mirror support. The score does NOT
 change the validated contamination flags, contamination_status, or qc_status.
@@ -36,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
-REPORT_COLUMNS = """sample species target_project target_cohort sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_project best_source_cohort target_source_same_project target_source_same_cohort provenance_relationship_basis provenance_source_factor best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable best_overlap_positions best_overlap_occupied_bins best_overlap_occupied_bin_fraction best_overlap_bin_entropy best_overlap_bin_entropy_normalized best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_occupied_bin_fraction_noncluster best_overlap_bin_entropy_noncluster best_overlap_bin_entropy_normalized_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total_pre_provenance contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_basis contamination_score_dispersion_entropy contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score_raw_10 contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
+REPORT_COLUMNS = """sample species target_project target_cohort sample_qc_status n_strict_het target_eligible target_ineligible_reason n_species_samples n_source_candidates n_usable_variants n_lowA best_source_sample best_source_project best_source_cohort target_source_same_project target_source_same_cohort provenance_relationship_basis provenance_source_factor best_source_qc_status best_overlap best_frac_lowA_in_highB best_overlap_background_adjusted best_frac_lowA_in_highB_background_adjusted best_overlap_background_adjustment_basis best_overlap_n_unique_to_best_source best_overlap_unique_to_best_source_fraction best_overlap_mean_source_high_fraction best_overlap_median_source_high_fraction best_overlap_mean_donor_specificity best_overlap_effective_specific_overlap best_overlap_fraction_common_ge50 donor_specificity_assessable donor_dominance_metric top_adjusted_source_sample top_adjusted_source_overlap top_adjusted_source_background_adjusted top_adjusted_source_effective_specific_overlap second_source_sample second_source_overlap second_source_background_adjusted second_source_effective_specific_overlap third_source_sample third_source_overlap third_source_background_adjusted third_source_effective_specific_overlap best_vs_second_background_adjusted_margin best_vs_second_background_adjusted_ratio best_vs_second_effective_specific_margin best_vs_second_effective_specific_ratio donor_dominance_background_adjusted donor_dominance_effective_specific best_overlap_positions best_overlap_occupied_bins best_overlap_occupied_bin_fraction best_overlap_bin_entropy best_overlap_bin_entropy_normalized best_overlap_linear_span_bp best_overlap_circular_span_bp best_overlap_circular_span_fraction best_overlap_max_in_window best_overlap_max_local_fraction best_overlap_af_median best_overlap_af_mad best_overlap_af_iqr best_overlap_af_cv best_overlap_af_min best_overlap_af_max local_cluster_sensitivity_available n_lowA_clustered n_lowA_noncluster best_source_sample_noncluster best_overlap_noncluster best_frac_lowA_in_highB_noncluster best_overlap_positions_noncluster best_overlap_occupied_bins_noncluster best_overlap_occupied_bin_fraction_noncluster best_overlap_bin_entropy_noncluster best_overlap_bin_entropy_normalized_noncluster best_overlap_circular_span_bp_noncluster best_overlap_max_local_fraction_noncluster best_overlap_af_median_noncluster best_overlap_af_mad_noncluster best_overlap_af_iqr_noncluster best_overlap_af_cv_noncluster best_overlap_af_min_noncluster best_overlap_af_max_noncluster n_overlap_from_cluster overlap_retention_after_cluster_removal source_stable_after_cluster_removal n_anchor_pool_excluding_A n_anchor_tested_in_A n_depressed_anchor mt_high_hets_contamination mt_high_hets_mode anchor_evidence_level anchor_source_count n_mirror_pairs n_low_variants_with_mirror mirror_low_fraction normalized_mirror_support mirror_p95_threshold mirror_p99_threshold mirror_calibration_status mirror_support_candidate mirror_support_highconf contamination_score_gate_pass contamination_score_version contamination_score_source_basis contamination_score_source_overlap_input contamination_score_source_fraction_input contamination_score_source_overlap contamination_score_source_fraction contamination_score_source_composite_index contamination_score_source_total_pre_provenance contamination_score_source_total contamination_score_mt_high_basis contamination_score_mt_high_index contamination_score_mt_high contamination_score_dispersion_basis contamination_score_dispersion_entropy contamination_score_dispersion_bins contamination_score_dispersion_span contamination_score_dispersion_local contamination_score_dispersion_composite_index contamination_score_dispersion_total contamination_score_af_coherence contamination_score_mirror contamination_score_mirror_basis contamination_score_raw_10 contamination_score contamination_score_interpretation contamination_status contamination_flag_candidate contamination_flag_highconf qc_status qc_reason""".split()
 
 ELIGIBILITY_COLUMNS = """sample species sample_qc_status n_strict_het min_target_het target_eligible target_ineligible_reason""".split()
 
@@ -593,6 +595,96 @@ def donor_specificity_metrics(best_overlap_keys, otherhigh, n_lowA, p):
     return metrics, per_key
 
 
+def source_dominance_metrics(lowkeys, otherhigh, n_lowA, p):
+    """Report source competition without changing production classification/score.
+
+    Every same-species source candidate is evaluated against the same artifact-clean
+    low-AF target universe. Candidates are ranked by species-background-adjusted
+    overlap, then effective donor-specific overlap, then raw overlap.
+
+    The diagnostic dominance quantities are:
+      margin = best - second
+      ratio = best / second (infinite when second=0 and best>0)
+      dominance = best / sum(all candidates)
+
+    These fields are intentionally report-only in this version.
+    """
+    rows = []
+    for source, highkeys in otherhigh.items():
+        overlap_keys = lowkeys & highkeys
+        raw_overlap = len(overlap_keys)
+        metrics, _ = donor_specificity_metrics(overlap_keys, otherhigh, n_lowA, p)
+        adjusted = as_float(metrics.get("best_overlap_background_adjusted"), 0.0) or 0.0
+        effective = as_float(metrics.get("best_overlap_effective_specific_overlap"), 0.0) or 0.0
+        rows.append({
+            "source": source,
+            "raw_overlap": raw_overlap,
+            "background_adjusted": adjusted,
+            "effective_specific": effective,
+        })
+
+    rows.sort(
+        key=lambda x: (
+            x["background_adjusted"],
+            x["effective_specific"],
+            x["raw_overlap"],
+            x["source"],
+        ),
+        reverse=True,
+    )
+
+    def row_at(i):
+        if i < len(rows):
+            return rows[i]
+        return {
+            "source": "",
+            "raw_overlap": 0,
+            "background_adjusted": 0.0,
+            "effective_specific": 0.0,
+        }
+
+    first, second, third = row_at(0), row_at(1), row_at(2)
+    best_adj = float(first["background_adjusted"])
+    second_adj = float(second["background_adjusted"])
+    best_eff = float(first["effective_specific"])
+    second_eff = float(second["effective_specific"])
+    total_adj = sum(float(x["background_adjusted"]) for x in rows)
+    total_eff = sum(float(x["effective_specific"]) for x in rows)
+
+    adj_ratio = (
+        best_adj / second_adj
+        if second_adj > 0 else
+        math.inf if best_adj > 0 else None
+    )
+    eff_ratio = (
+        best_eff / second_eff
+        if second_eff > 0 else
+        math.inf if best_eff > 0 else None
+    )
+
+    return {
+        "donor_dominance_metric": "background_adjusted_overlap",
+        "top_adjusted_source_sample": first["source"],
+        "top_adjusted_source_overlap": first["raw_overlap"],
+        "top_adjusted_source_background_adjusted": best_adj,
+        "top_adjusted_source_effective_specific_overlap": best_eff,
+        "second_source_sample": second["source"],
+        "second_source_overlap": second["raw_overlap"],
+        "second_source_background_adjusted": second_adj,
+        "second_source_effective_specific_overlap": second_eff,
+        "third_source_sample": third["source"],
+        "third_source_overlap": third["raw_overlap"],
+        "third_source_background_adjusted": float(third["background_adjusted"]),
+        "third_source_effective_specific_overlap": float(third["effective_specific"]),
+        "best_vs_second_background_adjusted_margin": best_adj - second_adj,
+        "best_vs_second_background_adjusted_ratio": adj_ratio,
+        "best_vs_second_effective_specific_margin": best_eff - second_eff,
+        "best_vs_second_effective_specific_ratio": eff_ratio,
+        "donor_dominance_background_adjusted": best_adj / total_adj if total_adj > 0 else None,
+        "donor_dominance_effective_specific": best_eff / total_eff if total_eff > 0 else None,
+    }
+
+
 def contamination_score_metrics(
     *,
     n_lowA,
@@ -976,6 +1068,22 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
             best_overlap_effective_specific_overlap=None,
             best_overlap_fraction_common_ge50=None,
             donor_specificity_assessable=False,
+            donor_dominance_metric="not_tested",
+            top_adjusted_source_sample="", top_adjusted_source_overlap=0,
+            top_adjusted_source_background_adjusted=0.0,
+            top_adjusted_source_effective_specific_overlap=0.0,
+            second_source_sample="", second_source_overlap=0,
+            second_source_background_adjusted=0.0,
+            second_source_effective_specific_overlap=0.0,
+            third_source_sample="", third_source_overlap=0,
+            third_source_background_adjusted=0.0,
+            third_source_effective_specific_overlap=0.0,
+            best_vs_second_background_adjusted_margin=0.0,
+            best_vs_second_background_adjusted_ratio=None,
+            best_vs_second_effective_specific_margin=0.0,
+            best_vs_second_effective_specific_ratio=None,
+            donor_dominance_background_adjusted=None,
+            donor_dominance_effective_specific=None,
             best_overlap_positions="", best_overlap_occupied_bins=0,
             best_overlap_occupied_bin_fraction=0.0,
             best_overlap_bin_entropy=0.0,
@@ -1056,6 +1164,9 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
         best_source, best_overlap, frac, best_overlap_keys = best_source_match(lowkeys, otherhigh)
         donor_specificity, donor_per_key = donor_specificity_metrics(
             best_overlap_keys, otherhigh, len(lowkeys), p
+        )
+        donor_dominance = source_dominance_metrics(
+            lowkeys, otherhigh, len(lowkeys), p
         )
         provenance_metrics = provenance_relationship(
             sample, best_source, provenance, p
@@ -1219,6 +1330,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
             best_overlap=best_overlap, best_frac_lowA_in_highB=frac,
             **provenance_metrics,
             **donor_specificity,
+            **donor_dominance,
             **dispersion,
             **af_stats,
             **sensitivity,
