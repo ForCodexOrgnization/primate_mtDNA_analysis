@@ -404,7 +404,7 @@ def alleles(
                 key = (fields[0], int(fields[1]), ref, alt)
             except ValueError:
                 continue
-            if dp is not None and dp >= dp_min and af is not None:
+            if dp is not None and dp > dp_min and af is not None:
                 result.append((key, af, dp))
     return result, removed_n
 
