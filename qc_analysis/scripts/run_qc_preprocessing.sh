@@ -345,8 +345,13 @@ TRNASCAN_BIN="$(configured_trnascan_value trnascan_bin)"
 
 runtime_sample_eligible() {
   [[ "$RUNTIME_ELIGIBILITY_MODE" == 1 ]] || return 0
-  [[ "$(classify_step "$STEP")" == sample ]] || return 0
-  [[ "$STEP" != coordinate_liftover ]] || return 0
+  # Runtime eligibility is only defined for downstream annotation steps.
+  # pre_liftover_variant_qc must run before liftover and therefore must not be
+  # sent through qc_sample_runtime_eligibility.py (which requires liftover QC).
+  case "$STEP" in
+    codon_match|trna_match|rrna_match) ;;
+    *) return 0 ;;
+  esac
   local output eligible reason
   output=$("$RUNTIME_ELIGIBILITY_PYTHON" "$RUNTIME_ELIGIBILITY_SCRIPT" "$STEP" "$SAMPLE" "$CONFIG")
   eligible=$(printf '%s\n' "$output" | sed -n 's/^ELIGIBLE=//p')
