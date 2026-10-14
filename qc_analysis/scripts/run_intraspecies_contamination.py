@@ -2,8 +2,11 @@
 """Validated original-coordinate intra-species contamination analysis.
 
 Target and source cohorts are deliberately asymmetric:
-- TARGETS are deduplicated samples; contamination is tested only when sample QC
-  is PASS and the sample has at least ``min_target_het`` strict HET calls.
+- TARGETS are deduplicated samples. Production contamination classification keeps
+  the validated requirement that sample QC is PASS and the sample has at least
+  ``min_target_het`` strict HET calls.
+- Report-only contamination scoring is also calculated for sample-QC PASS targets
+  with fewer strict HETs, using the artifact-clean 0.01-0.20 low-AF universe.
 - SOURCES are *all* deduplicated same-species samples, irrespective of sample QC.
 
 Primary intra-species contamination evidence is calculated only after removing
@@ -835,7 +838,7 @@ def contamination_score_metrics(
     return {
         "best_overlap_circular_span_fraction": span_fraction,
         "contamination_score_gate_pass": gate,
-        "contamination_score_version": "v8_artifact_filtered_project_cohort_adjusted",
+        "contamination_score_version": "v9_lowaf_artifact_clean_score_decoupled",
         "contamination_score_source_basis": source_basis,
         "contamination_score_source_overlap_input": round(overlap_for_score, 4),
         "contamination_score_source_fraction_input": (
@@ -1007,7 +1010,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
             mirror_p99_threshold=p99, mirror_calibration_status=cal_status,
             mirror_support_candidate=False, mirror_support_highconf=False,
             contamination_score_gate_pass=False,
-            contamination_score_version="v8_artifact_filtered_project_cohort_adjusted",
+            contamination_score_version="v9_lowaf_artifact_clean_score_decoupled",
             contamination_score_source_basis="not_scored",
             contamination_score_source_overlap_input=0.0,
             contamination_score_source_fraction_input=0.0,
@@ -1034,7 +1037,11 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
             contamination_score_interpretation="not_tested",
             contamination_flag_candidate=False, contamination_flag_highconf=False,
         )
-        if not eligible:
+        # Sample-QC failures are not scoreable.  By contrast, a PASS target with
+        # fewer than min_target_het strict (>10%) HETs is still scored from the
+        # artifact-clean 1-20% low-AF pool.  The historical production
+        # classification remains NOT_TESTED for that target.
+        if sample_qc != "PASS":
             status = "not_tested_" + ineligible_reason
             base.update(contamination_status=status, qc_status="PASS", qc_reason=status)
             out.append(base)
@@ -1173,23 +1180,38 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
         mcand = p95 is not None and norm >= p95
         mhigh = p99 is not None and norm >= p99
 
-        if not others:
+        # Preserve the validated production gate based on strict-HET count.
+        # Samples below min_target_het keep their report-only score but cannot
+        # become candidate/high-confidence contamination calls from this run.
+        if not eligible:
+            status = "not_tested_insufficient_strict_heteroplasmy"
+            candidate = False
+            highconf = False
+            qc = "PASS"
+        elif not others:
             status = "insufficient_singleton_species"
+            qc = "WARN"
         elif not own:
             status = "insufficient_variant_data"
+            qc = "WARN"
         elif highconf:
             status = "high_confidence_contaminated"
+            qc = "FAIL"
         elif candidate:
             status = "candidate_contaminated"
+            qc = "WARN"
         elif overlap_candidate and not mtcand:
             status = "lowA_highB_overlap_only"
+            qc = "WARN"
         elif mtcand and not overlap_candidate:
             status = "mt_high_hets_only"
+            qc = "WARN"
         elif est is None:
             status = "insufficient_anchor_data"
+            qc = "WARN"
         else:
             status = "no_strong_evidence"
-        qc = "FAIL" if status == "high_confidence_contaminated" else "PASS" if status == "no_strong_evidence" else "WARN"
+            qc = "PASS"
 
         base.update(
             n_lowA=len(lowkeys), best_source_sample=best_source,
