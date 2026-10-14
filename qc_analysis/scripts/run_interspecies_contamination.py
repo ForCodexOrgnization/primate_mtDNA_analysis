@@ -17,7 +17,10 @@ to pass and additionally suppresses background-prone target-to-source species
 pairs when the target species has enough samples for prevalence estimation.
 Project/cohort and technical provenance are annotations only and do not modify
 either score. The v2 score is validation-only and does not change the historical
-production classification or legacy contamination_score.
+production classification or legacy contamination_score. For the final inter-v2
+report, contamination_v2_score is strong-only: STRONG samples retain their raw
+v2 score, while PLAUSIBLE and WEAK samples are reported as score 0. The continuous
+pre-threshold value is preserved in contamination_v2_raw_score for auditing.
 """
 from __future__ import annotations
 
@@ -63,7 +66,7 @@ contamination_v2_target_species_n contamination_v2_pair_n contamination_v2_pair_
 contamination_v2_pair_background_prone contamination_v2_match_strength
 contamination_v2_source_specificity_strength contamination_v2_source_concentration_strength
 contamination_v2_af_coherence_strength contamination_v2_dispersion_strength
-contamination_v2_species_separation_strength contamination_v2_score contamination_v2_status""".split()
+contamination_v2_species_separation_strength contamination_v2_raw_score contamination_v2_score contamination_v2_status""".split()
 
 
 def resolve(value: object) -> Path:
@@ -983,6 +986,7 @@ def main() -> int:
             contamination_v2_species_separation_strength=(
                 "NA" if v2_separation_strength is None else f"{v2_separation_strength:.6f}"
             ),
+            contamination_v2_raw_score="NA",
             contamination_v2_score="NA",
             contamination_v2_status="INSUFFICIENT",
         )
@@ -1032,6 +1036,7 @@ def main() -> int:
         if n_low < min_informative:
             row["contamination_v2_gate_pass"] = "NO"
             row["contamination_v2_gate_reason"] = "insufficient_lowA"
+            row["contamination_v2_raw_score"] = "NA"
             row["contamination_v2_score"] = "NA"
             row["contamination_v2_status"] = "INSUFFICIENT"
             continue
@@ -1065,6 +1070,7 @@ def main() -> int:
         if failures:
             row["contamination_v2_gate_pass"] = "NO"
             row["contamination_v2_gate_reason"] = ";".join(failures)
+            row["contamination_v2_raw_score"] = "0.000000"
             row["contamination_v2_score"] = "0.000000"
             row["contamination_v2_status"] = "NO_CONVINCING_EVIDENCE"
         else:
@@ -1085,8 +1091,15 @@ def main() -> int:
             )
             row["contamination_v2_gate_pass"] = "YES"
             row["contamination_v2_gate_reason"] = "PASS"
-            row["contamination_v2_score"] = f"{v2_score:.6f}"
-            row["contamination_v2_status"] = contamination_v2_status(v2_score)
+            v2_status = contamination_v2_status(v2_score)
+            row["contamination_v2_raw_score"] = f"{v2_score:.6f}"
+            # Final inter v2 score is intentionally strong-only: plausible and
+            # weak patterns remain available through status/raw_score for audit,
+            # but their production-facing score is exactly zero.
+            row["contamination_v2_score"] = (
+                f"{v2_score:.6f}" if v2_status == "STRONG" else "0.000000"
+            )
+            row["contamination_v2_status"] = v2_status
 
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".tmp")
