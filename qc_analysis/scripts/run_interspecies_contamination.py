@@ -4,9 +4,10 @@
 Production PASS/WARN/FAIL classification preserves the historical hard-threshold
 logic, but both classification and the report-only 0-1 evidence score are now
 calculated after excluding native-coordinate NUMT and indel/local-artifact
-variants listed by local_heteroplasmy_qc. Exact SOURCE_CHROM/SOURCE_POS/SOURCE_REF/
-SOURCE_ALT identity is used after liftover, so artifact removal remains tied to
-the original species-coordinate call.
+variants listed by local_heteroplasmy_qc, including high-specificity 0.01-0.10
+low-AF SNV artifacts added by the low-AF extension step. Exact
+SOURCE_CHROM/SOURCE_POS/SOURCE_REF/SOURCE_ALT identity is used after liftover, so
+artifact removal remains tied to the original species-coordinate call.
 
 The report-only 0-1 score is sequence-evidence-only: cross-species allele
 specificity, genome-wide dispersion, AF coherence, source-sample concentration,
@@ -30,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 
 FIELDS = """sample species interspecies_status classification reason recipient_species_n
-n_lowA n_lowA_after_species_background best_source_species best_source_sample
+n_lowA n_lowA_after_species_background artifact_filter_available n_artifact_variants_removed_before_scoring best_source_species best_source_sample
 overlap_count overlap_fraction best_source_sample_overlap best_source_sample_fraction
 best_source_species_overlap best_source_species_fraction matched_low_vaf_median
 matched_low_vaf_mad vaf_coherence source_species_count source_sample_count
@@ -350,10 +351,12 @@ def alleles(
     dp_min: float,
     sample: str,
     removed_keys: dict[str, set[tuple[str, str, str, str]]] | None = None,
-) -> list[tuple[tuple[str, int, str, str], float]]:
+) -> tuple[list[tuple[tuple[str, int, str, str], float]], int]:
+    """Return artifact-clean SNV calls plus the number removed before scoring."""
     opener = gzip.open if path.suffix == ".gz" else open
     removed_keys = removed_keys or {}
     result = []
+    removed_n = 0
     with opener(path, "rt", encoding="utf-8") as handle:
         for line in handle:
             if line.startswith("#"):
@@ -374,6 +377,7 @@ def alleles(
                 str(info.get("SOURCE_ALT", "")),
             )
             if source_key in removed_keys.get(sample, set()):
+                removed_n += 1
                 continue
 
             dp = number(fmt.get("DP", ""))
@@ -389,7 +393,7 @@ def alleles(
                 continue
             if dp is not None and dp >= dp_min and af is not None:
                 result.append((key, af))
-    return result
+    return result, removed_n
 
 
 def specificity_weight(freq: float, settings: dict) -> float:
@@ -614,7 +618,7 @@ def main() -> int:
     source_fraction_saturation = float(settings.get("score_source_fraction_saturation", .70))
     min_genus_species = int(settings.get("min_source_genus_species_for_specificity", 3))
 
-    calls = {
+    call_results = {
         sample: alleles(
             path,
             dp_min,
@@ -623,6 +627,8 @@ def main() -> int:
         )
         for sample, path in vcfs.items()
     }
+    calls = {sample: result[0] for sample, result in call_results.items()}
+    artifact_removed_counts = {sample: result[1] for sample, result in call_results.items()}
     species_samples = defaultdict(set)
     high_index = defaultdict(list)
     for sample, rows in calls.items():
@@ -832,6 +838,8 @@ def main() -> int:
             recipient_species_n=len(species_samples[species]),
             n_lowA=len(raw_low),
             n_lowA_after_species_background=denominator,
+            artifact_filter_available="YES" if artifact_filter_available else "NO",
+            n_artifact_variants_removed_before_scoring=artifact_removed_counts.get(recipient, 0),
             best_source_species=best_species,
             best_source_sample=best_sample,
             overlap_count=overlap,
@@ -865,7 +873,7 @@ def main() -> int:
             second_source_species_adjusted_overlap=f"{second_adjusted_overlap:.6f}",
             best_source_species_separation=f"{species_separation:.6f}",
             contamination_score_gate_pass="YES" if score_gate else "NO",
-            contamination_score_version="v5_artifact_filtered_genus_corrected_cross_species_sequence_only",
+            contamination_score_version="v6_lowaf_artifact_clean_genus_corrected_cross_species_sequence_only",
             contamination_score_source_basis=score_basis,
             contamination_score_source_composite_index=f"{source_index:.6f}",
             contamination_score_source_total_pre_provenance=f"{source_pre:.6f}",
