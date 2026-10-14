@@ -410,6 +410,7 @@ def main():
 
     reset_managed_outputs(out)
     eligible_source_classes = {str(x).upper() for x in names(sec.get("biological_call_classes", ["HET", "HOM"]))}
+    variant_dp_min = float(sec.get("variant_dp_min", 100))
 
     fail_cfg = sec.get("sample_fail_status") or {}
     fail_defaults = {
@@ -525,6 +526,12 @@ def main():
                             authoritative_class = source_call_class if source_call_class != "NOT_AVAILABLE" else call_class(af)
                             if source_call_class != "NOT_AVAILABLE" and source_call_class.upper() not in eligible_source_classes:
                                 why.append("source_call_class:" + source_call_class)
+                            # Use native/source DP when available; fall back to the
+                            # current VCF DP for legacy records. Production
+                            # threshold is strict: DP must be > variant_dp_min.
+                            effective_dp = source_dp if source_dp is not None else dp
+                            if effective_dp is None or effective_dp <= variant_dp_min:
+                                why.append(f"DP_NOT_ABOVE_{variant_dp_min:g}")
                             variant_class, snv_type = variant_classes(f[3], f[4])
                             ref, alt = f[3].upper(), f[4].upper()
                             is_canonical_snv = len(ref) == len(alt) == 1 and ref in "ACGT" and alt in "ACGT" and "," not in alt
