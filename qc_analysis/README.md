@@ -35,13 +35,13 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 | 顺序 | wrapper step | 作用 | 主要下游依赖 |
 |---:|---|---|---|
 | 1 | `collect_variant_calling_results` | 收集并标准化 variant-calling 的 VCF、coverage 和 mtCN 结果 | native-coordinate QC |
-| 2 | `sample_variant_filtering` | 五项样本 QC，report-only | 最终样本判定 |
+| 2 | `sample_variant_filtering` | 基础三项样本 QC（Percent_100、nuclear median coverage、mtCN），report-only | 最终样本判定 |
 | 3 | `pre_liftover_variant_qc` | 在物种原始坐标中冻结 SOURCE_* call identity/QC | local artifact QC、liftover |
 | 4 | `local_heteroplasmy_qc` | 完整 native-coordinate NUMT/indel artifact workflow：strict-HET clustering → species NUMT propagation → NUMT seed expansion → indel complex/dense-overlap filtering → residual production rules → low-AF artifact extension；生成 SOURCE-keyed removal list | intra/inter contamination、liftover、terminal removal |
 | 5 | `intraspecies_contamination` | 原始物种坐标的种内污染分析；先排除 SOURCE-keyed NUMT/indel artifacts，再按原有规则/score 计算 | 最终样本判定 |
 | 6 | `discover_global_anchor` | 对参考线粒体序列做全局比对并生成经过验证的 anchor 表 | 坐标转换 anchor |
 | 7 | `coordinate_liftover` | 将样本变异转换到人 chrM 坐标，同时保留 SOURCE_* identity | 后续污染/功能注释 |
-| 8 | `interspecies_contamination` | lifted 人坐标的跨物种污染报告；保留历史 PASS/WARN/FAIL，并新增 cross-species specificity + project/cohort report-only score | `final_filter` 输入 |
+| 8 | `interspecies_contamination` | lifted 人坐标的跨物种污染报告；保留历史字段用于审计，并计算 refined strong-only v2 score/status | `final_filter` 输入 |
 | 9 | `mitos2_prepare_tasks` | 生成每个目标参考序列一条记录的 MITOS2 任务表 | `mitos2_annotation` |
 | 10 | `mitos2_annotation` | 按参考序列运行 MITOS2 | MITOS2 合并结果 |
 | 11 | `mitos2_merge` | 合并并严格质控 MITOS2 结果，生成生产密码子表和样本映射 | `codon_match_validate` |
@@ -74,7 +74,7 @@ human gene/phase candidate pairs instead of collapsing a position to one gene.
 样本由 metadata 表提供；两个 coverage 文件以 `(chrom, pos, target)` 为键逐位取最大深度，
 并写入稳定的 `collected_cov/{sample}.merged.max_depth.per_base_coverage.tsv` 下游接口。
 
-`sample_variant_filtering`、`pre_liftover_variant_qc`、完整的 `local_heteroplasmy_qc` 和 `intraspecies_contamination` 都在 liftover 前运行。`local_heteroplasmy_qc` 先生成 SOURCE-keyed NUMT/indel artifact removal list；随后 intra contamination 使用过滤后的 native-coordinate variants 计算。liftover 后的 interspecies contamination 通过 immutable `SOURCE_*` tags 应用同一 removal list，再按原有 inter score 公式计算。
+`sample_variant_filtering`、`pre_liftover_variant_qc`、完整的 `local_heteroplasmy_qc` 和 `intraspecies_contamination` 都在 liftover 前运行。当前 `all` 直接使用 `config/sample_ref_file.tsv` 作为最新样本清单；intra contamination 不再依赖预先存在的 dedup sample list。`local_heteroplasmy_qc` 先生成 SOURCE-keyed NUMT/indel artifact removal list；随后 intra contamination 使用过滤后的 native-coordinate variants 计算。liftover 后的 interspecies contamination 通过 immutable `SOURCE_*` tags 应用同一 removal list，再按原有 inter score 公式计算。
 
 `final_filter` 调用 `run_final_filter_with_heteroplasmy.py`：先执行基础 terminal filtering，再读取 `local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv`，使用 immutable `SOURCE_CHROM/SOURCE_POS/SOURCE_REF/SOURCE_ALT` 精确移除 native-coordinate NUMT/indel artifacts。详见
 [`docs/intraspecies_contamination.md`](docs/intraspecies_contamination.md)。
@@ -207,15 +207,18 @@ is the dependency-light Python implementation. Mirror evidence is the complete
 within-sample low-AF × high-AF cross product and Tier-2 negative controls
 calibrate its normalized p95/p99 evidence.
 
-`sample_variant_filtering` is report-only. A sample passes when mt median depth
-is at least 100, at least 90% of mtDNA bases have 100× depth, nuclear median
-depth is at least 20, median mtCN is at least 40, and MAD is strictly below
-0.5. Neither this step nor contamination analysis removes data.
+`sample_variant_filtering` is report-only. Current production sample QC uses
+three pass/fail criteria: Percent_100 >= 90%, nuclear median coverage >= 2, and
+median mtCN >= 40. mt median coverage and MAD remain in the report for
+diagnostics but are not pass/fail criteria. Neither this step nor contamination
+analysis removes data.
 
 `final_filter` is the only irreversible step. Intraspecies and sample-QC reports
-are required by default; human and interspecies reports are optional. Passing
-samples require sample QC PASS and must not be `high_confidence_contaminated`.
-Candidate/insufficient contamination results remain warnings. VCFs are selected
+are required by default; interspecies is also consumed when available, while
+human contamination remains paused from production `all`. Passing samples
+require sample QC PASS and must not have refined intra/inter
+`contamination_v2_status=STRONG`. PLAUSIBLE/WEAK/NO_CONVINCING_EVIDENCE do
+not fail the sample. VCFs are selected
 in deterministic priority order: rRNA, tRNA, codon, then raw coordinate
 liftover. There is intentionally no original-coordinate collection fallback.
 Final VCFs are BGZF compressed and tabix indexed (pysam or bgzip+tabix required).
@@ -314,7 +317,7 @@ removed until `final_filter`. The fully annotated, unfiltered input is
 The primate homoplasmic background is an intermediate calibration dataset used
 to distinguish recurrent/evolutionary primate alleles from more informative
 Human PhyloTree marker hits. By default it contains exact post-liftover
-`human_pos + human_ref + human_alt` SNVs with VCF `FILTER=PASS`, DP >= 100,
+`human_pos + human_ref + human_alt` SNVs with VCF `FILTER=PASS`, DP > 100,
 AF >= 0.95, and orthology status `PASS`. It does not read Human or interspecies
 contamination status and is never a final-output VCF source. Human QC retains
 its historical all-marker screen and reports background and informative subsets;
