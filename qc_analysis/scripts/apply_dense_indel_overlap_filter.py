@@ -2,7 +2,7 @@
 """Apply local indel-associated artifact filtering to residual heteroplasmy.
 
 This production step runs after ``detect_indel_complex_regions.py`` and before
-later residual-artifact sensitivity / recurrent-block analyses.
+validated residual-artifact production rules.
 
 Three complementary rules are applied to the same pre-step residual HET universe:
 
