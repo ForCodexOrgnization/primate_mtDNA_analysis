@@ -9,11 +9,15 @@ low-AF SNV artifacts added by the low-AF extension step. Exact
 SOURCE_CHROM/SOURCE_POS/SOURCE_REF/SOURCE_ALT identity is used after liftover, so
 artifact removal remains tied to the original species-coordinate call.
 
-The report-only 0-1 score is sequence-evidence-only: cross-species allele
+The legacy report-only 0-1 score is sequence-evidence-only: cross-species allele
 specificity, genome-wide dispersion, AF coherence, source-sample concentration,
-source-species separation, and source-genus background correction. Project/cohort
-and technical provenance are reported as annotations only and do not modify the
-score, so score-vs-provenance analyses remain independent.
+source-species separation, and source-genus background correction. A parallel
+zero-inflated v2 score is also reported. V2 requires all minimum evidence gates
+to pass and additionally suppresses background-prone target-to-source species
+pairs when the target species has enough samples for prevalence estimation.
+Project/cohort and technical provenance are annotations only and do not modify
+either score. The v2 score is validation-only and does not change the historical
+production classification or legacy contamination_score.
 """
 from __future__ import annotations
 
@@ -53,7 +57,13 @@ contamination_score_source_basis contamination_score_source_composite_index
 contamination_score_source_total_pre_provenance contamination_score_source_total
 contamination_score_dispersion contamination_score_af_coherence
 contamination_score_source_concentration contamination_score_species_separation
-contamination_score_raw_10 contamination_score contamination_score_interpretation""".split()
+contamination_score_raw_10 contamination_score contamination_score_interpretation
+contamination_v2_version contamination_v2_gate_pass contamination_v2_gate_reason
+contamination_v2_target_species_n contamination_v2_pair_n contamination_v2_pair_prevalence
+contamination_v2_pair_background_prone contamination_v2_match_strength
+contamination_v2_source_specificity_strength contamination_v2_source_concentration_strength
+contamination_v2_af_coherence_strength contamination_v2_dispersion_strength
+contamination_v2_species_separation_strength contamination_v2_score contamination_v2_status""".split()
 
 
 def resolve(value: object) -> Path:
@@ -537,6 +547,22 @@ def score_interpretation(score: float | None) -> str:
     return "little_evidence"
 
 
+def _clip01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def contamination_v2_status(score: float | None) -> str:
+    if score is None:
+        return "INSUFFICIENT"
+    if score >= .30:
+        return "STRONG"
+    if score >= .10:
+        return "PLAUSIBLE"
+    if score > 0:
+        return "WEAK"
+    return "NO_CONVINCING_EVIDENCE"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -618,6 +644,20 @@ def main() -> int:
     source_fraction_saturation = float(settings.get("score_source_fraction_saturation", .70))
     min_genus_species = int(settings.get("min_source_genus_species_for_specificity", 3))
 
+    # Parallel zero-inflated v2 validation score. These settings do not alter
+    # the historical production classification or legacy contamination_score.
+    v2_min_effective_overlap = float(settings.get("v2_min_effective_overlap", 5.0))
+    v2_min_adjusted_fraction = float(settings.get("v2_min_adjusted_fraction", .20))
+    v2_min_source_specificity = float(settings.get("v2_min_source_specificity", .60))
+    v2_min_source_concentration = float(settings.get("v2_min_source_concentration", .50))
+    v2_max_af_mad = float(settings.get("v2_max_af_mad", .015))
+    v2_min_entropy = float(settings.get("v2_min_entropy", .40))
+    v2_min_species_separation = float(settings.get("v2_min_species_separation", .30))
+    v2_pair_min_target_species_n = int(settings.get("v2_pair_min_target_species_n", 10))
+    v2_pair_max_prevalence = float(settings.get("v2_pair_max_prevalence", .50))
+    v2_match_overlap_saturation = float(settings.get("v2_match_overlap_saturation", 10.0))
+    v2_match_fraction_saturation = float(settings.get("v2_match_fraction_saturation", .50))
+
     call_results = {
         sample: alleles(
             path,
@@ -639,6 +679,8 @@ def main() -> int:
 
     all_species = set(species_samples)
     report = []
+    # Pair prevalence for v2 is computed after all recipients have been scored,
+    # because the denominator is the full scoreable target-species cohort.
     for recipient in sorted(vcfs):
         species = metadata[recipient]
         raw_low = [(key, af) for key, af in calls[recipient] if low_min <= af <= low_max]
@@ -829,6 +871,37 @@ def main() -> int:
             score = None
             score_basis = "not_scored_gate_failed"
 
+        # Parallel v2 continuous evidence components. The final hard gate and
+        # target->source species-pair prevalence correction are applied after
+        # all recipient rows are available.
+        if denominator >= min_informative:
+            v2_match_strength = math.sqrt(
+                _clip01(adjusted_overlap / v2_match_overlap_saturation if v2_match_overlap_saturation > 0 else 0.0)
+                * _clip01(adjusted_fraction / v2_match_fraction_saturation if v2_match_fraction_saturation > 0 else 0.0)
+            )
+            v2_specificity_strength = _clip01((mean_effective_specificity - .40) / .60)
+            v2_concentration_strength = _clip01((sample_concentration - .30) / .70)
+            v2_af_strength = math.exp(-mad / .012) if mad is not None else 0.0
+            v2_dispersion_strength = _clip01(
+                (float(dispersion["overlap_bin_entropy_normalized"]) - .45) / .40
+            )
+            v2_separation_strength = _clip01((species_separation - .15) / .70)
+            v2_continuous_score = (
+                v2_match_strength
+                * v2_specificity_strength
+                * v2_concentration_strength
+                * math.sqrt(v2_af_strength * v2_dispersion_strength)
+                * math.sqrt(v2_separation_strength)
+            )
+        else:
+            v2_match_strength = None
+            v2_specificity_strength = None
+            v2_concentration_strength = None
+            v2_af_strength = None
+            v2_dispersion_strength = None
+            v2_separation_strength = None
+            v2_continuous_score = None
+
         row = dict(
             sample=recipient,
             species=species,
@@ -885,6 +958,33 @@ def main() -> int:
             contamination_score_raw_10=f"{raw_10:.6f}",
             contamination_score="NA" if score is None else f"{score:.6f}",
             contamination_score_interpretation=score_interpretation(score),
+            contamination_v2_version="v2_zero_inflated_parallel_20261014",
+            contamination_v2_gate_pass="NO",
+            contamination_v2_gate_reason="pending_pair_prevalence",
+            contamination_v2_target_species_n="NA",
+            contamination_v2_pair_n="NA",
+            contamination_v2_pair_prevalence="NA",
+            contamination_v2_pair_background_prone="NO",
+            contamination_v2_match_strength=(
+                "NA" if v2_match_strength is None else f"{v2_match_strength:.6f}"
+            ),
+            contamination_v2_source_specificity_strength=(
+                "NA" if v2_specificity_strength is None else f"{v2_specificity_strength:.6f}"
+            ),
+            contamination_v2_source_concentration_strength=(
+                "NA" if v2_concentration_strength is None else f"{v2_concentration_strength:.6f}"
+            ),
+            contamination_v2_af_coherence_strength=(
+                "NA" if v2_af_strength is None else f"{v2_af_strength:.6f}"
+            ),
+            contamination_v2_dispersion_strength=(
+                "NA" if v2_dispersion_strength is None else f"{v2_dispersion_strength:.6f}"
+            ),
+            contamination_v2_species_separation_strength=(
+                "NA" if v2_separation_strength is None else f"{v2_separation_strength:.6f}"
+            ),
+            contamination_v2_score="NA",
+            contamination_v2_status="INSUFFICIENT",
         )
         row.update(provenance_fields)
         row.update(technical_fields)
@@ -893,6 +993,100 @@ def main() -> int:
             for key, value in dispersion.items()
         })
         report.append(row)
+
+    # Finalize the zero-inflated v2 score using the complete cohort.
+    # Pair prevalence is estimated only among rows with >=min_informative low-AF
+    # variants after recipient-species background removal.
+    scoreable_rows = [
+        row for row in report
+        if int(row.get("n_lowA_after_species_background", 0) or 0) >= min_informative
+    ]
+    target_species_counts = defaultdict(int)
+    pair_counts = defaultdict(int)
+    for row in scoreable_rows:
+        target_species_counts[row["species"]] += 1
+        pair_counts[(row["species"], row.get("best_source_species", ""))] += 1
+
+    for row in report:
+        n_low = int(row.get("n_lowA_after_species_background", 0) or 0)
+        target_species = row["species"]
+        source_species = row.get("best_source_species", "")
+        target_n = target_species_counts.get(target_species, 0)
+        pair_n = pair_counts.get((target_species, source_species), 0)
+        pair_prevalence = (pair_n / target_n) if target_n > 0 else None
+        pair_background_prone = (
+            target_n >= v2_pair_min_target_species_n
+            and pair_prevalence is not None
+            and pair_prevalence >= v2_pair_max_prevalence
+        )
+
+        row["contamination_v2_target_species_n"] = target_n
+        row["contamination_v2_pair_n"] = pair_n
+        row["contamination_v2_pair_prevalence"] = (
+            "NA" if pair_prevalence is None else f"{pair_prevalence:.6f}"
+        )
+        row["contamination_v2_pair_background_prone"] = (
+            "YES" if pair_background_prone else "NO"
+        )
+
+        if n_low < min_informative:
+            row["contamination_v2_gate_pass"] = "NO"
+            row["contamination_v2_gate_reason"] = "insufficient_lowA"
+            row["contamination_v2_score"] = "NA"
+            row["contamination_v2_status"] = "INSUFFICIENT"
+            continue
+
+        failures = []
+        eff_overlap = number(row.get("best_overlap_effective_specific_overlap"), 0.0) or 0.0
+        adj_fraction = number(row.get("best_fraction_background_adjusted"), 0.0) or 0.0
+        eff_specificity = number(row.get("best_overlap_mean_effective_source_specificity"), 0.0) or 0.0
+        concentration = number(row.get("best_source_sample_concentration"), 0.0) or 0.0
+        af_mad = number(row.get("matched_low_vaf_mad"))
+        entropy = number(row.get("overlap_bin_entropy_normalized"), 0.0) or 0.0
+        separation = number(row.get("best_source_species_separation"), 0.0) or 0.0
+
+        if eff_overlap < v2_min_effective_overlap:
+            failures.append("effective_overlap")
+        if adj_fraction < v2_min_adjusted_fraction:
+            failures.append("adjusted_fraction")
+        if eff_specificity < v2_min_source_specificity:
+            failures.append("source_specificity")
+        if concentration < v2_min_source_concentration:
+            failures.append("source_concentration")
+        if af_mad is None or af_mad > v2_max_af_mad:
+            failures.append("af_mad")
+        if entropy < v2_min_entropy:
+            failures.append("entropy")
+        if separation < v2_min_species_separation:
+            failures.append("species_separation")
+        if pair_background_prone:
+            failures.append("background_prone_species_pair")
+
+        if failures:
+            row["contamination_v2_gate_pass"] = "NO"
+            row["contamination_v2_gate_reason"] = ";".join(failures)
+            row["contamination_v2_score"] = "0.000000"
+            row["contamination_v2_status"] = "NO_CONVINCING_EVIDENCE"
+        else:
+            strengths = [
+                number(row.get("contamination_v2_match_strength"), 0.0) or 0.0,
+                number(row.get("contamination_v2_source_specificity_strength"), 0.0) or 0.0,
+                number(row.get("contamination_v2_source_concentration_strength"), 0.0) or 0.0,
+                number(row.get("contamination_v2_af_coherence_strength"), 0.0) or 0.0,
+                number(row.get("contamination_v2_dispersion_strength"), 0.0) or 0.0,
+                number(row.get("contamination_v2_species_separation_strength"), 0.0) or 0.0,
+            ]
+            v2_score = (
+                strengths[0]
+                * strengths[1]
+                * strengths[2]
+                * math.sqrt(strengths[3] * strengths[4])
+                * math.sqrt(strengths[5])
+            )
+            row["contamination_v2_gate_pass"] = "YES"
+            row["contamination_v2_gate_reason"] = "PASS"
+            row["contamination_v2_score"] = f"{v2_score:.6f}"
+            row["contamination_v2_status"] = contamination_v2_status(v2_score)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".tmp")
