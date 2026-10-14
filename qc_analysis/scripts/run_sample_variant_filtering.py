@@ -50,7 +50,13 @@ def value(row, names):
     return None
 
 
-def evaluate(row, thresholds, mad_enabled=True, percent_column="Percent_100"):
+def evaluate(
+    row,
+    thresholds,
+    mad_enabled=True,
+    mt_coverage_enabled=True,
+    percent_column="Percent_100",
+):
     vals = {k: value(row, v) for k, v in ALIASES.items()}
     selected_percent = value(row, (percent_column,))
     percent_min = float(thresholds.get("percent_coverage_min", thresholds["percent_100_min"]))
@@ -66,8 +72,12 @@ def evaluate(row, thresholds, mad_enabled=True, percent_column="Percent_100"):
 
     checks = {
         "pass_mt_coverage": (
-            vals["mt_median_coverage"] is not None
-            and vals["mt_median_coverage"] >= float(thresholds["mt_median_coverage_min"])
+            True
+            if not mt_coverage_enabled
+            else (
+                vals["mt_median_coverage"] is not None
+                and vals["mt_median_coverage"] >= float(thresholds["mt_median_coverage_min"])
+            )
         ),
         "pass_percent_coverage": selected_percent_pass,
         "pass_nuclear_coverage": (
@@ -155,6 +165,7 @@ def main():
     }
     percent_column = str(sec.get("percent_coverage_column", "Percent_100")).strip() or "Percent_100"
     mad_enabled = sec.get("mad_enabled", True) is not False
+    mt_coverage_enabled = sec.get("mt_coverage_enabled", True) is not False
 
     with inp.open(newline="", encoding="utf-8") as h:
         rows = [
@@ -162,6 +173,7 @@ def main():
                 r,
                 t,
                 mad_enabled=mad_enabled,
+                mt_coverage_enabled=mt_coverage_enabled,
                 percent_column=percent_column,
             )
             for r in csv.DictReader(h, delimiter="\t")
@@ -178,6 +190,7 @@ def main():
         f"samples={len(rows)} "
         f"pass={sum(r['qc_status'] == 'PASS' for r in rows)} "
         f"mad_enabled={mad_enabled} "
+        f"mt_coverage_enabled={mt_coverage_enabled} "
         f"percent_coverage_column={percent_column} "
         f"percent_coverage_min={t.get('percent_coverage_min', t['percent_100_min'])}\n"
     )
