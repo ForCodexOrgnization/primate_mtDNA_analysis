@@ -129,6 +129,22 @@ local_heteroplasmy_qc:
   recurrence_only_action: FLAG
   unresolved_action: KEEP
 
+  # Extend artifact removal to the low-AF SNVs used by contamination scoring.
+  # The validated strict-HET cluster rules above remain 0.10-0.95; this extension
+  # only removes 0.01-0.10 SNVs when high-specificity NUMT/indel evidence exists.
+  low_af_artifact_filter:
+    enabled: true
+    low_af_min: 0.01
+    low_af_max: 0.10
+    dp_min: 100
+    pass_only: true
+    indel_af_min: 0.01
+    indel_af_max: 0.95
+    apply_species_numt_positions: true
+    apply_high_conf_indel_regions: true
+    near_indel_distance_bp: 10
+    near_indel_max_delta_af: 0.05
+
 # Terminal decision step. Missing optional reports are represented as
 # NOT_AVAILABLE and do not fail a sample; paths can be enabled as they are added.
 final_filter:
