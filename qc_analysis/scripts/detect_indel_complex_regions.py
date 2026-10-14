@@ -196,7 +196,7 @@ def read_raw_context(
             pos = inum(pos_text)
             if pos is None or not alt_text or alt_text == ".":
                 continue
-            if pass_only and filt not in {"PASS", "."}:
+            if pass_only and filt != "PASS":
                 continue
 
             fmt = parse_format(fields[8], fields[9]) if len(fields) >= 10 else {}
