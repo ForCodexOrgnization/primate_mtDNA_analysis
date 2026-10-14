@@ -30,4 +30,10 @@ PYTHON_BIN="${PYTHON:-python3}"
 "$PYTHON_BIN" qc_analysis/scripts/apply_residual_artifact_rules.py \
   --config "$CONFIG"
 
+# Extend the removal list to high-specificity 1-10% AF SNV artifacts.
+# This leaves the validated >10% strict-HET cluster rules unchanged, but makes
+# the low-AF universe used by intra/inter contamination artifact-clean.
+"$PYTHON_BIN" qc_analysis/scripts/extend_low_af_artifact_removals.py \
+  --config "$CONFIG"
+
 printf '[local_heteroplasmy_qc_with_expansion] complete config=%s\n' "$CONFIG" >&2
