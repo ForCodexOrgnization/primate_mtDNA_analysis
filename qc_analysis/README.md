@@ -336,7 +336,10 @@ integrated.
 Lifted `FORMAT/AF` describes the target human-reference-oriented ALT frequency. A
 REF/ALT flip can therefore change target AF from 0.03 to 0.97, but it never changes
 `SOURCE_CALL_CLASS`. LOW_AF records remain in intermediate VCFs for contamination
-work and are excluded from final biological calls by default.
+work and are excluded from final biological calls by default. Before contamination
+scoring, the local-artifact workflow now also extends the SOURCE-keyed removal
+list to high-specificity 0.01-0.10 AF SNV artifacts supported by NUMT positions,
+direct/near AF-matched indels, or high-confidence indel-complex regions.
 
 `local_heteroplasmy_qc` now runs the full native-coordinate local-artifact workflow through
 `run_local_heteroplasmy_qc_with_expansion.sh`. The base clustering step still writes
