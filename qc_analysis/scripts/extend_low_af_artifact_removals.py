@@ -220,7 +220,7 @@ def read_vcf_context(
             if len(f) < 10:
                 continue
             chrom, pos_text, _, ref, alt_text, _, filt, info_text = f[:8]
-            if pass_only and filt not in {"PASS", "."}:
+            if pass_only and filt != "PASS":
                 continue
             pos = inum(pos_text)
             if pos is None or not alt_text or alt_text == ".":
