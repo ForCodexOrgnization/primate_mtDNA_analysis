@@ -166,3 +166,13 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh \
 Output:
 
 `results/qc/interspecies_contamination/reports/interspecies_contamination_report.tsv`
+
+
+## Low-AF artifact-clean scoring
+
+The lifted VCF continues to be screened at 0.01-0.20 AF for recipient low-AF
+evidence, but the SOURCE-keyed artifact list now also contains conservative
+0.01-0.10 AF SNV artifacts from the native-coordinate low-AF extension step.
+Those rows are removed before construction of the low-AF recipient pool and the
+cross-species score.  The report includes
+`n_artifact_variants_removed_before_scoring` for auditability.
