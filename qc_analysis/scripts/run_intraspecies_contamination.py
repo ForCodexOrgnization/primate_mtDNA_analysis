@@ -1701,6 +1701,89 @@ def main():
         ],
     )
 
+    # Persist the exact artifact-clean intra-species variant universe used for
+    # contamination scoring so downstream plotting does not depend on final_filter
+    # outputs or hidden .work files. Evidence classes intentionally mirror the
+    # plotting convention used for interspecies contamination.
+    report_by_sample = {row["sample"]: row for row in findings}
+    matched_keys_by_sample = defaultdict(set)
+    for row in donor_variant_details:
+        sample_id = str(row.get("sample", "")).strip()
+        if not sample_id:
+            continue
+        try:
+            pos_value = int(row.get("pos"))
+        except (TypeError, ValueError):
+            continue
+        matched_keys_by_sample[sample_id].add((
+            str(row.get("chrom", "")),
+            pos_value,
+            str(row.get("ref", "")).upper(),
+            str(row.get("alt", "")).upper(),
+        ))
+
+    variant_detail_rows = []
+    low_min = float(p["low_vaf_min"])
+    low_max = float(p["low_vaf_max"])
+    high_min = float(p["source_high_vaf_min"])
+    for row in table_rows:
+        sample_id = str(row.get("Sample", "") or row.get("sample", "")).strip()
+        if not sample_id:
+            continue
+        species_value = str(row.get("Species", "") or row.get("species", "")).strip()
+        chrom = str(row.get("CHROM", ""))
+        try:
+            pos_value = int(row.get("POS"))
+        except (TypeError, ValueError):
+            continue
+        ref = str(row.get("REF", "")).upper()
+        alt = str(row.get("ALT", "")).upper()
+        af = as_float(row.get("VAF"))
+        dp = as_float(row.get("DP"))
+        if af is None:
+            continue
+
+        allele_key = (chrom, pos_value, ref, alt)
+        is_low = low_min <= af <= low_max
+        is_matched = is_low and allele_key in matched_keys_by_sample.get(sample_id, set())
+        if af >= high_min:
+            evidence = "High-A anchor"
+        elif is_matched:
+            evidence = "Matched low-A"
+        elif is_low:
+            evidence = "Other low-A"
+        else:
+            evidence = "Other"
+
+        summary = report_by_sample.get(sample_id, {})
+        variant_detail_rows.append({
+            "sample": sample_id,
+            "species": species_value,
+            "chrom": chrom,
+            "pos": pos_value,
+            "ref": ref,
+            "alt": alt,
+            "af": f"{af:.6f}",
+            "dp": "NA" if dp is None else f"{dp:.0f}",
+            "matched_to_best_source": "YES" if is_matched else "NO",
+            "best_source_sample": summary.get("best_source_sample", ""),
+            "evidence": evidence,
+            "contamination_v2_raw_score": summary.get("contamination_v2_raw_score", "NA"),
+            "contamination_v2_score": summary.get("contamination_v2_score", "NA"),
+            "contamination_v2_status": summary.get("contamination_v2_status", "INSUFFICIENT"),
+        })
+
+    write_rows(
+        out / "reports/intraspecies_variant_detail.tsv",
+        variant_detail_rows,
+        [
+            "sample", "species", "chrom", "pos", "ref", "alt", "af", "dp",
+            "matched_to_best_source", "best_source_sample", "evidence",
+            "contamination_v2_raw_score", "contamination_v2_score",
+            "contamination_v2_status",
+        ],
+    )
+
     with (out / "run_parameters.tsv").open("w", newline="", encoding="utf-8") as h:
         w = csv.writer(h, delimiter="\t")
         w.writerow(("parameter", "value"))
@@ -1737,14 +1820,17 @@ def main():
         f"artifact_variants_to_remove={sum(len(v) for v in artifact_removed_keys.values())}\n"
         f"variant_rows_before_artifact_filter={n_table_rows_before_artifact_filter}\n"
         f"variant_rows_after_artifact_filter={n_table_rows_after_artifact_filter}\n"
-        f"report={report}\n",
+        f"report={report}\n"
+        f"variant_detail={out / 'reports/intraspecies_variant_detail.tsv'}\n"
+        f"variant_detail_rows={len(variant_detail_rows)}\n",
         encoding="utf-8",
     )
     print(
         f"[intraspecies] report={report} deduplicated_samples={len(source_pairs)} "
         f"eligible_targets={n_eligible} source_AF>={p['source_high_vaf_min']} "
         f"lowA={p['low_vaf_min']}-{p['low_vaf_max']} AD_alt>={p['min_alt_reads']} "
-        f"cluster_sensitivity={'yes' if cluster_sensitivity_available else 'no'}"
+        f"cluster_sensitivity={'yes' if cluster_sensitivity_available else 'no'} "
+        f"variant_detail_rows={len(variant_detail_rows)}"
     )
     return 0
 
