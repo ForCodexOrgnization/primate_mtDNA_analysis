@@ -78,7 +78,7 @@ def main():
       if dp in (None,".",""): st["n_missing_dp"]+=1; logging.warning("%s:%s missing FORMAT/DP",f,pos); continue
       try: dp=float(dp)
       except ValueError: st["n_missing_dp"]+=1; logging.warning("%s:%s malformed FORMAT/DP",f,pos); continue
-      if dp>=a.min_dp: st["n_dp_ge_threshold"]+=1
+      if dp>a.min_dp: st["n_dp_ge_threshold"]+=1
       else: continue
       af=d.get("AF")
       if af in (None,".",""): st["n_missing_af"]+=1; logging.warning("%s:%s missing FORMAT/AF",f,pos); continue
