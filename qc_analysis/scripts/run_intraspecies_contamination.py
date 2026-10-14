@@ -296,7 +296,7 @@ def count_strict_hets(
             and str(r.get("source_filter", "")).upper() == "PASS"
             and str(r.get("source_variant_qc", "")).upper() == "PASS"
             and af is not None and lo <= af < hi
-            and dp is not None and dp >= dp_min
+            and dp is not None and dp > dp_min
         ):
             counts[sample] += 1
     return counts
@@ -1193,7 +1193,7 @@ def analyse(rows, p, source_pairs, qc_status, het_counts, provenance=None,
     usable = [
         r for r in rows
         if r.get("Sample") in source_samples
-        and num(r, "DP") >= float(p["dp_min"])
+        and num(r, "DP") > float(p["dp_min"])
         and (not p["use_snv_only"] or r["Type"] == "SNV")
         and (not p["pass_only"] or r["FILTER"] == "PASS")
     ]
