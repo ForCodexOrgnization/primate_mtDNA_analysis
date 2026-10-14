@@ -270,7 +270,7 @@ def analyze_sample(sample: str, species: str, path: Path | None, markers: dict, 
         for v in parse_vcf(path):
             structural = v["pos"] is not None and len(v["ref"]) == len(v["alt"]) == 1 and v["ref"] in "ACGT" and v["alt"] in "ACGT" and "," not in v["alt"]
             accepted_filter = v["filter"] == "PASS" or (vf.get("allow_dot_filter", False) and v["filter"] == ".")
-            base_ok = structural and (not vf["pass_only"] or accepted_filter) and v["dp"] is not None and v["dp"] >= vf["dp_min"]
+            base_ok = structural and (not vf["pass_only"] or accepted_filter) and v["dp"] is not None and v["dp"] > vf["dp_min"]
             if base_ok and v["af"] is None: missing_af += 1
             if base_ok and v["af"] is not None and 0 <= v["af"] <= 1:
                 usable.append(v)
