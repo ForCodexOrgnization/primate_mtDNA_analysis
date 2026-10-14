@@ -103,7 +103,7 @@ def main():
   for f,info,af,dp,_ in variants(path):
    region,match,reason=status(info,accepted_rrna_match_tiers);srcpos=info.get('SRC_POS',info.get('MTLIFT_ORIG_POS',''));row=dict(sample=sample,species=m.get('species',''),human_chrom=f[0],human_pos=f[1],human_ref=f[3],human_alt=f[4],source_chrom=info.get('SRC_CHROM',info.get('MTLIFT_ORIG_CHROM','')),source_pos=srcpos,source_ref=info.get('SRC_REF',info.get('MTLIFT_ORIG_REF','')),source_alt=info.get('SRC_ALT',info.get('MTLIFT_ORIG_ALT','')),AF=af if af is not None else 'NA',DP=dp if dp is not None else 'NA',variant_class='SNV' if len(f[3])==len(f[4])==1 and ',' not in f[4] else 'OTHER',region_type=region,orthology_match_status=match,orthology_fail_reason=reason);ortho.append(row)
    valid=len(f[3])==len(f[4])==1 and f[3] in 'ACGT' and f[4] in 'ACGT' and ',' not in f[4]
-   if (not snv_only or valid) and (not pass_only or f[6]=='PASS') and af is not None and af>=homo and dp is not None and dp>=dpmin and match in accepted:
+   if (not snv_only or valid) and (not pass_only or f[6]=='PASS') and af is not None and af>=homo and dp is not None and dp>dpmin and match in accepted:
     homos.append({k:row[k] for k in ('sample','species','human_pos','human_ref','human_alt','AF','DP','region_type','orthology_match_status')}|{'genus':m.get('genus',''),'family':m.get('family','')})
  write(orthodir/'orthology_match_report.tsv',ORTHO_COLUMNS,ortho);write(out/'primate_homo_background.tsv',HOMO_COLUMNS,homos)
  grouped=defaultdict(list)
