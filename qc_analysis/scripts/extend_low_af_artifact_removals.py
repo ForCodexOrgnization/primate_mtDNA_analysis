@@ -231,7 +231,7 @@ def read_vcf_context(
             dp = fnum(fmt.get("DP"))
             if dp is None:
                 dp = fnum(info.get("DP"))
-            if dp is None or dp < dp_min:
+            if dp is None or dp <= dp_min:
                 continue
 
             afs = float_list(fmt.get("AF"))
