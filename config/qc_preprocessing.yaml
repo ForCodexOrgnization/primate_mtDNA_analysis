@@ -52,10 +52,15 @@ sample_variant_filtering:
   enabled: true
   input_summary: results/qc/collected_variant_calling_results/reports/variant_calling_collection_summary.tsv
   output_dir: results/qc/sample_variant_filtering
+  # Current basic sample QC: Percent_100 >= 90, nuclear median coverage >= 2,
+  # and mtCN >= 40. mt median coverage and MAD are retained in the report for
+  # diagnostics but are not sample-level pass/fail criteria.
+  mt_coverage_enabled: false
+  mad_enabled: false
   thresholds:
     mt_median_coverage_min: 100
     percent_100_min: 90
-    nuclear_median_coverage_min: 20
+    nuclear_median_coverage_min: 2
     mtcn_min: 40
     mad_max: 0.5
 
@@ -155,6 +160,8 @@ final_filter:
   optional_sample_reports: interspecies
   strict_missing_samples: true
   biological_call_classes: HET,HOM
+  # Variant-level baseline: VCF FILTER must be PASS and source DP must be > 100.
+  variant_dp_min: 100
   # Priority-ordered exact filenames. Directory-only comma-separated values
   # remain accepted, but are resolved against known exact suffixes (never globs).
   vcf_sources:
@@ -170,19 +177,22 @@ final_filter:
     liftover:
       dir: results/qc/coordinate_liftover/vcf_lifted_raw
       pattern: "{sample}.lifted.raw.vcf"
+  # Final sample filtering consumes the refined strong-only v2 contamination
+  # status. Only STRONG intra/inter contamination is sample-failing.
   sample_fail_status:
-    intraspecies: high_confidence_contaminated,FAIL
+    intraspecies: STRONG
     human: fail,FAIL
-    interspecies: fail,FAIL
+    interspecies: STRONG
     sample_qc: fail,FAIL,MISSING_INPUT,FAIL_PROCESSING
   sample_reports:
     intraspecies:
       path: results/qc/intraspecies_contamination/reports/intraspecies_contamination_report.tsv
-      status_columns: contamination_status,qc_status
+      status_columns: contamination_v2_status
     human:
       path: results/qc/human_contamination/reports/human_contamination_report_no.tsv
     interspecies:
       path: results/qc/interspecies_contamination/reports/interspecies_contamination_report.tsv
+      status_columns: contamination_v2_status
     sample_qc:
       path: results/qc/sample_variant_filtering/reports/sample_qc.tsv
   variant_reports:
