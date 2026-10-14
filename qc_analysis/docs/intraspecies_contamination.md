@@ -221,3 +221,18 @@ The contamination and five-criterion sample-QC jobs only emit evidence reports.
 The terminal `final_filter` requires both reports, treats candidate and
 insufficient contamination calls as warnings, removes high-confidence calls or
 five-criterion QC failures, and selects rRNA → tRNA → codon → raw-lifted VCFs.
+
+
+## Low-AF artifact-clean scoring
+
+The production strict-HET definition remains 0.10-0.95 AF and the validated
+`min_target_het` gate remains unchanged for `contamination_status` and
+`qc_status`.  However, sample-QC PASS targets below that strict-HET threshold
+are now allowed to receive the report-only contamination score from the
+artifact-clean 0.01-0.20 AF pool.  Such samples remain
+`not_tested_insufficient_strict_heteroplasmy` for production classification.
+
+Before intra scoring, `local_heteroplasmy_qc` extends
+`numt_variants_to_remove.tsv` with conservative 0.01-0.10 AF SNV removals
+supported by exact same-species NUMT positions, direct indel overlap, near
+AF-matched indels, or high-confidence indel-complex regions.
