@@ -22,10 +22,6 @@ PYTHON_BIN="${PYTHON:-python3}"
 "$PYTHON_BIN" qc_analysis/scripts/apply_dense_indel_overlap_filter.py \
   --config "$CONFIG"
 
-# Keep sensitivity diagnostics on the post-dense-indel residual universe.
-"$PYTHON_BIN" qc_analysis/scripts/analyze_residual_artifact_sensitivity.py \
-  --config "$CONFIG"
-
 # Apply validated indel-seed expansion and recurrent-block production rules.
 "$PYTHON_BIN" qc_analysis/scripts/apply_residual_artifact_rules.py \
   --config "$CONFIG"
