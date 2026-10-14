@@ -37,7 +37,7 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 | 1 | `collect_variant_calling_results` | 收集并标准化 variant-calling 的 VCF、coverage 和 mtCN 结果 | native-coordinate QC |
 | 2 | `sample_variant_filtering` | 五项样本 QC，report-only | 最终样本判定 |
 | 3 | `pre_liftover_variant_qc` | 在物种原始坐标中冻结 SOURCE_* call identity/QC | local artifact QC、liftover |
-| 4 | `local_heteroplasmy_qc` | 完整 native-coordinate NUMT/indel artifact workflow：local HET clustering → species NUMT propagation → NUMT seed expansion → indel complex/dense-overlap detection → residual production rules；生成 SOURCE-keyed removal list | intra/inter contamination、liftover、terminal removal |
+| 4 | `local_heteroplasmy_qc` | 完整 native-coordinate NUMT/indel artifact workflow：strict-HET clustering → species NUMT propagation → NUMT seed expansion → indel complex/dense-overlap filtering → residual production rules → low-AF artifact extension；生成 SOURCE-keyed removal list | intra/inter contamination、liftover、terminal removal |
 | 5 | `intraspecies_contamination` | 原始物种坐标的种内污染分析；先排除 SOURCE-keyed NUMT/indel artifacts，再按原有规则/score 计算 | 最终样本判定 |
 | 6 | `discover_global_anchor` | 对参考线粒体序列做全局比对并生成经过验证的 anchor 表 | 坐标转换 anchor |
 | 7 | `coordinate_liftover` | 将样本变异转换到人 chrM 坐标，同时保留 SOURCE_* identity | 后续污染/功能注释 |
@@ -89,8 +89,8 @@ CONFIG=config/qc_preprocessing.yaml
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit collect_variant_calling_results "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit sample_variant_filtering "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit pre_liftover_variant_qc "$CONFIG"
-bash qc_analysis/scripts/run_qc_preprocessing.sh --submit intraspecies_contamination "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit local_heteroplasmy_qc "$CONFIG"
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit intraspecies_contamination "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit discover_global_anchor "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover "$CONFIG"
 bash qc_analysis/scripts/run_qc_preprocessing.sh --submit mitos2_annotation "$CONFIG"
@@ -346,6 +346,7 @@ direct/near AF-matched indels, or high-confidence indel-complex regions.
 `local_heteroplasmy_sample_summary.tsv` and `local_heteroplasmy_variant_detail.tsv`,
 but production then propagates exact NUMT-supported positions within species/reference,
 expands validated NUMT seeds, detects indel-centered complex/dense-overlap artifacts,
-runs residual sensitivity diagnostics, and applies validated residual production rules.
+applies validated residual production rules, and extends conservative artifact removal
+to 0.01-0.10 AF SNVs for contamination scoring.
 The resulting combined `numt_variants_to_remove.tsv` is a SOURCE-coordinate removal list;
 variants are not physically removed from lifted intermediates until terminal `final_filter`.
