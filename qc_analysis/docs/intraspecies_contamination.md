@@ -108,7 +108,7 @@ Weights are:
 
 `n_lowA` is retained as an evidence-sufficiency gate rather than an additive
 score component. The report records `contamination_score_version =
-v7_project_cohort_adjusted` and includes the source and dispersion composite
+v9_lowaf_artifact_clean_score_decoupled` and includes the source and dispersion composite
 indices plus project/cohort provenance fields for auditability.
 
 Initial report-only interpretations on the normalized 0-1 scale are:
