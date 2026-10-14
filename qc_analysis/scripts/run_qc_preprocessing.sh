@@ -17,7 +17,7 @@ Usage:
 Steps:
   collect_variant_calling_results  Collect and standardize variant-calling outputs only.
   intraspecies_contamination       Write original-coordinate sample contamination QC report.
-  sample_variant_filtering         Write the five-criterion biological sample QC report.
+  sample_variant_filtering         Write the basic three-criterion biological sample QC report.
   pre_liftover_variant_qc          Annotate native VCFs with immutable source-call QC.
   local_heteroplasmy_qc            Run native-coordinate NUMT/indel local-artifact QC and removal-list generation.
   discover_global_anchor           Discover reference-level global MSA anchors only.
