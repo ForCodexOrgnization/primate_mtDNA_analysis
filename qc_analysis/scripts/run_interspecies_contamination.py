@@ -364,8 +364,8 @@ def alleles(
     dp_min: float,
     sample: str,
     removed_keys: dict[str, set[tuple[str, str, str, str]]] | None = None,
-) -> tuple[list[tuple[tuple[str, int, str, str], float]], int]:
-    """Return artifact-clean SNV calls plus the number removed before scoring."""
+) -> tuple[list[tuple[tuple[str, int, str, str], float, float]], int]:
+    """Return artifact-clean SNV calls (allele, AF, DP) plus number removed."""
     opener = gzip.open if path.suffix == ".gz" else open
     removed_keys = removed_keys or {}
     result = []
@@ -405,7 +405,7 @@ def alleles(
             except ValueError:
                 continue
             if dp is not None and dp >= dp_min and af is not None:
-                result.append((key, af))
+                result.append((key, af, dp))
     return result, removed_n
 
 
@@ -676,26 +676,27 @@ def main() -> int:
     high_index = defaultdict(list)
     for sample, rows in calls.items():
         species_samples[metadata[sample]].add(sample)
-        for allele, af in rows:
+        for allele, af, dp in rows:
             if af >= high_min:
                 high_index[allele].append((sample, af))
 
     all_species = set(species_samples)
     report = []
+    variant_detail = []
     # Pair prevalence for v2 is computed after all recipients have been scored,
     # because the denominator is the full scoreable target-species cohort.
     for recipient in sorted(vcfs):
         species = metadata[recipient]
-        raw_low = [(key, af) for key, af in calls[recipient] if low_min <= af <= low_max]
+        raw_low = [(key, af, dp) for key, af, dp in calls[recipient] if low_min <= af <= low_max]
 
         retained = [
-            (key, af) for key, af in raw_low
+            (key, af, dp) for key, af, dp in raw_low
             if not any(source != recipient and metadata[source] == species for source, _ in high_index.get(key, ()))
         ]
 
         by_species, by_sample = defaultdict(dict), defaultdict(dict)
         source_af_by_sample = defaultdict(dict)
-        for key, af in retained:
+        for key, af, dp in retained:
             for source, source_af in high_index.get(key, ()):
                 if source != recipient and metadata[source] != species:
                     by_species[metadata[source]][key] = af
@@ -715,6 +716,43 @@ def main() -> int:
         sample_keys = set(by_sample.get(best_sample, {}))
         sample_overlap = len(sample_keys)
         sample_fraction = sample_overlap / denominator if denominator else 0.0
+
+        # Persist the exact artifact-clean recipient variant universe used by
+        # interspecies contamination so downstream plots do not need to reopen VCFs.
+        # Four evidence classes intentionally match the plotting convention:
+        # High-A anchor, Matched low-A, Other low-A, Other.
+        retained_low_keys = {key for key, _, _ in retained}
+        raw_low_keys = {key for key, _, _ in raw_low}
+        for allele_key, allele_af, allele_dp in calls[recipient]:
+            chrom, pos, ref, alt = allele_key
+            is_low = low_min <= allele_af <= low_max
+            is_matched = is_low and allele_key in overlap_keys
+            if allele_af >= high_min:
+                evidence = "High-A anchor"
+            elif is_matched:
+                evidence = "Matched low-A"
+            elif is_low:
+                evidence = "Other low-A"
+            else:
+                evidence = "Other"
+            variant_detail.append({
+                "sample": recipient,
+                "species": species,
+                "chrom": chrom,
+                "pos": pos,
+                "ref": ref,
+                "alt": alt,
+                "af": f"{allele_af:.6f}",
+                "dp": f"{allele_dp:.0f}",
+                "is_raw_lowA": "YES" if allele_key in raw_low_keys else "NO",
+                "is_retained_lowA_after_species_background": (
+                    "YES" if allele_key in retained_low_keys else "NO"
+                ),
+                "matched_to_best_source_species": "YES" if is_matched else "NO",
+                "best_source_species": best_species,
+                "best_source_sample": best_sample,
+                "evidence": evidence,
+            })
 
         values = list(by_species.get(best_species, {}).values())
         median = statistics.median(values) if values else None
@@ -1101,7 +1139,33 @@ def main() -> int:
             )
             row["contamination_v2_status"] = v2_status
 
+    report_by_sample = {row["sample"]: row for row in report}
+    for row in variant_detail:
+        summary = report_by_sample.get(row["sample"], {})
+        row["contamination_v2_raw_score"] = summary.get("contamination_v2_raw_score", "NA")
+        row["contamination_v2_score"] = summary.get("contamination_v2_score", "NA")
+        row["contamination_v2_status"] = summary.get("contamination_v2_status", "INSUFFICIENT")
+
     output.parent.mkdir(parents=True, exist_ok=True)
+
+    variant_detail_output = output_dir / "reports/interspecies_variant_detail.tsv"
+    variant_detail_tmp = variant_detail_output.with_suffix(variant_detail_output.suffix + ".tmp")
+    variant_detail_fields = [
+        "sample", "species", "chrom", "pos", "ref", "alt", "af", "dp",
+        "is_raw_lowA", "is_retained_lowA_after_species_background",
+        "matched_to_best_source_species", "best_source_species", "best_source_sample",
+        "evidence", "contamination_v2_raw_score", "contamination_v2_score",
+        "contamination_v2_status",
+    ]
+    with variant_detail_tmp.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=variant_detail_fields, delimiter="\t",
+            lineterminator="\n", extrasaction="ignore"
+        )
+        writer.writeheader()
+        writer.writerows(variant_detail)
+    variant_detail_tmp.replace(variant_detail_output)
+
     temporary = output.with_suffix(output.suffix + ".tmp")
     with temporary.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, FIELDS, delimiter="\t", lineterminator="\n", extrasaction="ignore")
@@ -1112,7 +1176,8 @@ def main() -> int:
         f"Wrote {output} ({len(report)} samples); "
         f"artifact_filter={artifact_removal_report} "
         f"removed_keys={sum(len(v) for v in artifact_removed_keys.values())} "
-        f"technical_metadata={technical_metadata_path}"
+        f"technical_metadata={technical_metadata_path}; "
+        f"variant_detail={variant_detail_output} ({len(variant_detail)} rows)"
     )
     return 0
 
