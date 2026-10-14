@@ -217,10 +217,10 @@ Tier-2 negative-control pairs establish type-7 p95/p99 thresholds for normalized
 mirror evidence; unavailable/insufficient calibration is explicitly reported,
 never replaced by raw-count thresholds.
 
-The contamination and five-criterion sample-QC jobs only emit evidence reports.
+The contamination and three-criterion sample-QC jobs only emit evidence reports.
 The terminal `final_filter` requires both reports, treats candidate and
-insufficient contamination calls as warnings, removes high-confidence calls or
-five-criterion QC failures, and selects rRNA → tRNA → codon → raw-lifted VCFs.
+insufficient contamination calls as warnings, removes refined v2 STRONG contamination calls or
+three-criterion QC failures, and selects rRNA → tRNA → codon → raw-lifted VCFs.
 
 
 ## Low-AF artifact-clean scoring
