@@ -13,8 +13,10 @@ Low-AF SNVs are removed when at least one of the following is true:
   3. <= configured distance from a raw PASS indel and AF-matched to that indel;
   4. member of a HIGH_CONFIDENCE indel-complex region.
 
-The combined SOURCE-keyed removal list remains
-reports/numt_variants_to_remove.tsv for downstream compatibility.
+The processing universe is discovered from source-QC VCFs that actually exist
+on disk; sample metadata is used only to annotate those VCFs. The combined
+SOURCE-keyed removal list remains reports/numt_variants_to_remove.tsv for
+downstream compatibility.
 """
 from __future__ import annotations
 
@@ -109,12 +111,52 @@ def circular_distance(a: int, b: int, length: int | None) -> int:
     return min(d, length - d)
 
 
-def find_vcf(vcf_dir: Path, patterns: list[str], sample: str) -> Path | None:
-    for pat in patterns:
-        p = vcf_dir / pat.format(sample=sample)
-        if p.is_file():
-            return p
-    return None
+def pattern_regex(pattern: str) -> re.Pattern:
+    """Convert a single {sample}-based filename pattern to an anchored regex."""
+    escaped = re.escape(pattern)
+    escaped = escaped.replace(r"\{sample\}", r"(?P<sample>.+?)")
+    return re.compile(r"^" + escaped + r"$")
+
+
+def discover_vcfs(vcf_dir: Path, patterns: list[str]) -> dict[str, Path]:
+    """Discover the actual source-QC VCF universe from files that exist on disk.
+
+    Metadata can contain samples that never entered this QC branch, so it must
+    not define the processing universe for this step.
+    """
+    if not vcf_dir.is_dir():
+        raise FileNotFoundError(f"source-QC VCF directory not found: {vcf_dir}")
+
+    regexes = [(pattern, pattern_regex(pattern)) for pattern in patterns]
+    discovered: dict[str, Path] = {}
+    for path in sorted(vcf_dir.iterdir()):
+        if not path.is_file():
+            continue
+        for pattern, regex in regexes:
+            match = regex.match(path.name)
+            if not match:
+                continue
+            sample = match.group("sample").strip()
+            if not sample:
+                break
+            previous = discovered.get(sample)
+            if previous is None:
+                discovered[sample] = path
+            else:
+                # Prefer the earlier configured pattern, e.g. .vcf.gz before .vcf.
+                previous_rank = next(
+                    (i for i, (pat, _) in enumerate(regexes)
+                     if pattern_regex(pat).match(previous.name)),
+                    len(regexes),
+                )
+                current_rank = next(
+                    (i for i, (pat, _) in enumerate(regexes) if pat == pattern),
+                    len(regexes),
+                )
+                if current_rank < previous_rank:
+                    discovered[sample] = path
+            break
+    return discovered
 
 
 def read_metadata(path: Path) -> tuple[dict[str, str], dict[str, str]]:
@@ -317,17 +359,20 @@ def main() -> int:
 
     low_removals = []
     reason_counts = Counter()
-    missing_vcf = []
 
-    for sample in sorted(sample_species):
-        vcf = find_vcf(vcf_dir, patterns, sample)
-        if vcf is None:
-            missing_vcf.append(sample)
+    # Process only VCFs that actually exist in the current source-QC directory.
+    # sample_ref_file.tsv is metadata, not the definition of the active QC cohort.
+    discovered_vcfs = discover_vcfs(vcf_dir, patterns)
+    missing_metadata = []
+
+    for sample, vcf in sorted(discovered_vcfs.items()):
+        species = sample_species.get(sample, "")
+        if not species:
+            missing_metadata.append(sample)
             continue
         low_snvs, indels, lengths = read_vcf_context(
             vcf, sample, low_min, low_max, indel_min, indel_max, dp_min, pass_only
         )
-        species = sample_species[sample]
 
         rk = sample_refkey.get(sample, "")
         if not rk and len(species_refs.get(species, set())) == 1:
@@ -448,25 +493,36 @@ def main() -> int:
         "near_indel_distance_bp": near_bp,
         "near_indel_max_delta_af": near_delta,
         "n_existing_strict_artifact_removals": len(existing),
+        "n_source_qc_vcf_discovered": len(discovered_vcfs),
+        "n_source_qc_vcf_processed": len(discovered_vcfs) - len(missing_metadata),
+        "n_vcf_missing_metadata": len(missing_metadata),
         "n_low_af_artifact_rows": len(low_removals),
         "n_new_unique_low_af_removals": added,
         "n_combined_artifact_removals": len(combined),
-        "n_samples_missing_source_vcf": len(missing_vcf),
         **{f"n_{k.lower()}": v for k, v in sorted(reason_counts.items())},
     }]
     write_tsv(report_dir / "low_af_artifact_filter_summary.tsv", summary, list(summary[0]))
 
-    if missing_vcf:
+    if missing_metadata:
         write_tsv(
-            report_dir / "low_af_artifact_missing_vcf.tsv",
-            [{"sample": x} for x in missing_vcf],
+            report_dir / "low_af_artifact_missing_metadata.tsv",
+            [{"sample": x} for x in missing_metadata],
             ["sample"],
         )
 
+    # Remove the obsolete report from the old metadata-driven implementation so
+    # stale "missing VCF" counts cannot be mistaken for current QC failures.
+    obsolete_missing_vcf = report_dir / "low_af_artifact_missing_vcf.tsv"
+    if obsolete_missing_vcf.exists():
+        obsolete_missing_vcf.unlink()
+
     print(
         "[low_af_artifact_filter] "
+        f"source_vcfs={len(discovered_vcfs)} "
+        f"processed={len(discovered_vcfs) - len(missing_metadata)} "
+        f"missing_metadata={len(missing_metadata)} "
         f"low_af_rows={len(low_removals)} new_unique={added} "
-        f"combined={len(combined)} missing_vcf={len(missing_vcf)}",
+        f"combined={len(combined)}",
         file=sys.stderr,
     )
     return 0
