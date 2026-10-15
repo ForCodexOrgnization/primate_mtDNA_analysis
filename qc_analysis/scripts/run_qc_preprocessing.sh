@@ -55,7 +55,7 @@ Environment overrides:
   SLURM_ARRAY_CONCURRENCY          Maximum concurrent array tasks (default: 20).
   AUTO_SUBMIT_MERGE                Submit codon/tRNA/rRNA/MITOS2 merge afterok (default: true).
   SKIP_COMPLETED / FORCE_RERUN     Resume controls (defaults: true / false).
-  SLURM_PARTITION                  Optional partition/queue for --submit.
+  SLURM_PARTITION                  Partition for --submit (default: ycga; override with env var).
   SLURM_TIME                       Walltime for --submit (default: 24:00:00).
   SLURM_MEM                        Memory for --submit (default: 16G).
   SLURM_CPUS                       CPUs for --submit (default: 4).
@@ -204,7 +204,7 @@ submit_array() {
  local kind array;kind=$(classify_step "$step");array=$(build_array_expression "$TASK_COUNT" "$kind");resolve_step_resources "$step"
  local logs="${SLURM_LOG_DIR:-$CONFIG_LOG_DIR}";mkdir -p "$logs"
  local cmd=(sbatch --parsable --job-name="qc_preprocessing_${step}" --array="$array" --output="$logs/%A_%a.out" --error="$logs/%A_%a.err" --time="$RES_TIME" --mem="$RES_MEM" --cpus-per-task="$RES_CPUS")
- [[ -n "${SLURM_PARTITION:-}" ]] && cmd+=(--partition="$SLURM_PARTITION"); [[ -n "$dependency" ]] && cmd+=(--dependency="afterok:$dependency")
+ cmd+=(--partition="${SLURM_PARTITION:-ycga}"); [[ -n "$dependency" ]] && cmd+=(--dependency="afterok:$dependency")
  cmd+=("$(readlink -f "${BASH_SOURCE[0]}")" --array-task --runtime-eligibility --task-file "$TASK_FILE" "$step" "$CONFIG")
  printf '[qc_preprocessing] step=%s\n[qc_preprocessing] output_dir=%s\n[qc_preprocessing] task_file=%s\n[qc_preprocessing] manifest=%s\n[qc_preprocessing] logs=%s/%%A_%%a.{out,err}\n[qc_preprocessing] task_count=%s\n[qc_preprocessing] array=%s\n' "$step" "$OUTPUT_DIR" "$TASK_FILE" "${MANIFEST:-unknown}" "$logs" "$TASK_COUNT" "$array" >&2
  printf '[qc_preprocessing] concurrency=%s dependency=%s resources=%s,%s,%s\n' "$ARRAY_CONCURRENCY" "${dependency:-none}" "$RES_TIME" "$RES_MEM" "$RES_CPUS" >&2
