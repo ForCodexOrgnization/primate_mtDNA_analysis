@@ -212,7 +212,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--min-vcf-dp",
         type=float,
         default=float(defaults.get("min_vcf_dp") or 100),
-        help="Minimum sample FORMAT DP for counting VCF variants; variants must have DP greater than this value",
+        help="Minimum sample FORMAT DP for counting VCF variants; variants must have DP greater than or equal to this value",
     )
     ap.add_argument("--copy-files", action="store_true", default=parse_bool(defaults.get("copy_files", False)))
     ap.add_argument("--allow-single-cov", action="store_true", default=parse_bool(defaults.get("allow_single_cov", False)))
@@ -406,7 +406,7 @@ def format_number(value: float) -> str:
 def coverage_metrics(coverages: Sequence[float], threshold: float) -> Tuple[str, str]:
     if not coverages:
         return "NA", "NA"
-    pct = 100.0 * sum(c > threshold for c in coverages) / len(coverages)
+    pct = 100.0 * sum(c >= threshold for c in coverages) / len(coverages)
     med = median(coverages)
     if med == 0:
         mad = "NA"
@@ -469,7 +469,7 @@ def count_vcf(path: Optional[Path], low_hetero: float, low_homo: float, min_dp: 
             if afs:
                 saw_af = True
             dp = parse_sample_float(format_keys, fields[9], "DP")
-            if dp is None or dp <= min_dp:
+            if dp is None or dp < min_dp:
                 continue
             for af in afs:
                 if af >= low_homo:
