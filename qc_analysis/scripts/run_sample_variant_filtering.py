@@ -55,6 +55,8 @@ def evaluate(
     thresholds,
     mad_enabled=True,
     mt_coverage_enabled=True,
+    nuclear_coverage_enabled=True,
+    mtcn_enabled=True,
     percent_column="Percent_100",
 ):
     vals = {k: value(row, v) for k, v in ALIASES.items()}
@@ -81,12 +83,20 @@ def evaluate(
         ),
         "pass_percent_coverage": selected_percent_pass,
         "pass_nuclear_coverage": (
-            vals["nuclear_median_coverage"] is not None
-            and vals["nuclear_median_coverage"] >= float(thresholds["nuclear_median_coverage_min"])
+            True
+            if not nuclear_coverage_enabled
+            else (
+                vals["nuclear_median_coverage"] is not None
+                and vals["nuclear_median_coverage"] >= float(thresholds["nuclear_median_coverage_min"])
+            )
         ),
         "pass_mtcn": (
-            vals["mtcn_median"] is not None
-            and vals["mtcn_median"] >= float(thresholds["mtcn_min"])
+            True
+            if not mtcn_enabled
+            else (
+                vals["mtcn_median"] is not None
+                and vals["mtcn_median"] >= float(thresholds["mtcn_min"])
+            )
         ),
         "pass_mad": (
             True
@@ -166,6 +176,8 @@ def main():
     percent_column = str(sec.get("percent_coverage_column", "Percent_100")).strip() or "Percent_100"
     mad_enabled = sec.get("mad_enabled", True) is not False
     mt_coverage_enabled = sec.get("mt_coverage_enabled", True) is not False
+    nuclear_coverage_enabled = sec.get("nuclear_coverage_enabled", True) is not False
+    mtcn_enabled = sec.get("mtcn_enabled", True) is not False
 
     with inp.open(newline="", encoding="utf-8") as h:
         rows = [
@@ -174,6 +186,8 @@ def main():
                 t,
                 mad_enabled=mad_enabled,
                 mt_coverage_enabled=mt_coverage_enabled,
+                nuclear_coverage_enabled=nuclear_coverage_enabled,
+                mtcn_enabled=mtcn_enabled,
                 percent_column=percent_column,
             )
             for r in csv.DictReader(h, delimiter="\t")
@@ -191,6 +205,8 @@ def main():
         f"pass={sum(r['qc_status'] == 'PASS' for r in rows)} "
         f"mad_enabled={mad_enabled} "
         f"mt_coverage_enabled={mt_coverage_enabled} "
+        f"nuclear_coverage_enabled={nuclear_coverage_enabled} "
+        f"mtcn_enabled={mtcn_enabled} "
         f"percent_coverage_column={percent_column} "
         f"percent_coverage_min={t.get('percent_coverage_min', t['percent_100_min'])}\n"
     )
