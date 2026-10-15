@@ -352,3 +352,49 @@ applies validated residual production rules, and extends conservative artifact r
 to 0.01-0.10 AF SNVs for contamination scoring.
 The resulting combined `numt_variants_to_remove.tsv` is a SOURCE-coordinate removal list;
 variants are not physically removed from lifted intermediates until terminal `final_filter`.
+
+## Incremental strict QC reanalysis (isolated workspace)
+
+Use this mode only after confirming the backup annotations were generated with compatible
+SOURCE_* semantics, coordinate references, and orthology/artifact rules. The original
+`results/qc/` and `results/qc_back/` directories are never modified by this workflow.
+
+1. Stage the validated historical backup and the corrected collection summary:
+
+   ```bash
+   git pull
+   bash qc_analysis/scripts/prepare_incremental_strict.sh /path/to/variant_calling_collection_summary_20261015_nuclear_cov_mtcn_updated.tsv
+   ```
+
+2. Inspect the incremental task inventory before submitting (needs a working
+   Python environment and accessible reference FASTAs):
+
+   ```bash
+   python3 qc_analysis/scripts/qc_array_manifest.py coordinate_liftover config/qc_preprocessing_incremental_strict.yaml --incremental
+   python3 qc_analysis/scripts/qc_array_manifest.py mitos2_annotation config/qc_preprocessing_incremental_strict.yaml --incremental
+   ```
+
+3. Submit a *separate*, YCGA, dependency-ordered workflow:
+
+   ```bash
+   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit --incremental all config/qc_preprocessing_incremental_strict.yaml
+   ```
+
+Strict sample QC is `Percent_100 > 90`, `nuclear_median_coverage > 5`,
+and `mtcn_median > 40`; median mt coverage and MAD are diagnostic only.
+The old `>=` behaviour is unchanged in the normal configuration.
+
+Incremental arrays plan only samples passing strict sample QC according to the
+staged corrected summary. Completed per-sample VCFs are skipped when the
+required annotation is present in the VCF header; incomplete sample VCFs are
+recomputed. For MITOS2, an existing sequence-hash reference is skipped only
+when `mitos2.completed.ok` and the three required raw result files exist.
+Global steps (e.g. contamination, MITOS2 merge, codon/tRNA/rRNA merges, final
+filter) are deliberately rerun to incorporate all eligible samples.
+
+**Limitations:** the completion check validates file structure and expected tag,
+not biological/algorithm-version equivalence. Incompatible historical annotations
+must be regenerated before interpreting the strict final variants. Do not submit
+an incremental workflow before the backup and the reference manifest have been
+checked. The staged corrected summary is used specifically for sample QC; the
+collection step still regenerates the independent raw collection report.
