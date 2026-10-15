@@ -174,9 +174,9 @@ def eligible_het(row: dict, sec: dict) -> bool:
         and row.get("source_filter") == "PASS"
         and row.get("source_variant_qc") == "PASS"
         and dp is not None
-        and dp > float(sec.get("dp_min", 100))
+        and dp >= float(sec.get("dp_min", 100))
         and af is not None
-        and af > float(sec.get("heteroplasmy_af_min", 0.10))
+        and af >= float(sec.get("heteroplasmy_af_min", 0.10))
         and af < float(sec.get("heteroplasmy_af_max", 0.95))
     )
 
