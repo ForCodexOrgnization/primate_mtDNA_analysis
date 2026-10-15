@@ -9,13 +9,14 @@ from qc_analysis.lib.reference_utils import normalized_fasta_sequence_sha256
 SAMPLE_STEPS = {"pre_liftover_variant_qc", "coordinate_liftover", "codon_match", "trna_match", "rrna_match"}
 DEFERRED_INPUT_STEPS = set(SAMPLE_STEPS)
 WORKFLOW_REVALIDATE_STEPS = set(SAMPLE_STEPS)  # ordinary all mode; incremental mode skips completed valid outputs
-GLOBAL_STEPS = {"collect_variant_calling_results", "discover_global_anchor", "build_primate_codon_table",
+GLOBAL_STEPS = {"collect_variant_calling_results", "pre_liftover_variant_qc_merge", "discover_global_anchor", "build_primate_codon_table",
  "compare_genbank_mitos2", "mitos2_prepare_tasks", "mitos2_merge", "codon_match_validate",
  "codon_match_merge", "build_trna_indexes", "trna_match_merge", "trna_gene_qc", "rrna_match_merge", "build_primate_homo_background",
  "intraspecies_contamination", "sample_variant_filtering", "local_heteroplasmy_qc", "human_contamination", "final_filter", "interspecies_contamination"}
 
 STEP_SECTIONS = {
     "collect_variant_calling_results": "collect_variant_calling",
+    "pre_liftover_variant_qc_merge": "pre_liftover_variant_qc",
     "discover_global_anchor": "global_anchor_discovery",
     "coordinate_liftover": "coordinate_liftover",
     "pre_liftover_variant_qc": "pre_liftover_variant_qc",
