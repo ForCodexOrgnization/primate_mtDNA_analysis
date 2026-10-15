@@ -74,7 +74,7 @@ def main():
                 klass="UNCLASSIFIED" if af is None else "LOW_AF" if af<float(sec.get("heteroplasmy_af_min",.10)) else "HET" if af<float(sec.get("homoplasmy_af_min",.95)) else "HOM"
                 reasons=[]
                 if sec.get("pass_only",True) and p[6]!="PASS":reasons.append("FILTER_NOT_PASS")
-                if dp is None or dp<=float(sec.get("dp_min",100)):reasons.append("DP_NOT_ABOVE_MIN")
+                if dp is None or dp<float(sec.get("dp_min",100)):reasons.append("DP_BELOW_MIN")
                 if sec.get("snv_only",True) and not canonical:reasons.append("NOT_CANONICAL_BIALLELIC_SNV")
                 qc="PASS" if not reasons else ";".join(reasons)
                 vals={"SOURCE_CHROM":p[0],"SOURCE_POS":p[1],"SOURCE_REF":p[3],"SOURCE_ALT":p[4],"SOURCE_AF":"." if af is None else fmt(af),"SOURCE_DP":"." if dp is None else fmt(dp),"SOURCE_CALL_CLASS":klass,"SOURCE_VARIANT_QC":qc}
