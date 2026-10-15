@@ -58,18 +58,18 @@ def evaluate(
     nuclear_coverage_enabled=True,
     mtcn_enabled=True,
     percent_column="Percent_100",
+    strict_greater_than=False,
 ):
     vals = {k: value(row, v) for k, v in ALIASES.items()}
     selected_percent = value(row, (percent_column,))
     percent_min = float(thresholds.get("percent_coverage_min", thresholds["percent_100_min"]))
 
-    selected_percent_pass = (
-        selected_percent is not None and selected_percent >= percent_min
-    )
+    passes = (lambda observed, threshold: observed > threshold if strict_greater_than else observed >= threshold)
+    selected_percent_pass = selected_percent is not None and passes(selected_percent, percent_min)
 
     legacy_percent_pass = (
         vals["Percent_100"] is not None
-        and vals["Percent_100"] >= float(thresholds["percent_100_min"])
+        and passes(vals["Percent_100"], float(thresholds["percent_100_min"]))
     )
 
     checks = {
@@ -87,7 +87,7 @@ def evaluate(
             if not nuclear_coverage_enabled
             else (
                 vals["nuclear_median_coverage"] is not None
-                and vals["nuclear_median_coverage"] >= float(thresholds["nuclear_median_coverage_min"])
+                and passes(vals["nuclear_median_coverage"], float(thresholds["nuclear_median_coverage_min"]))
             )
         ),
         "pass_mtcn": (
@@ -95,7 +95,7 @@ def evaluate(
             if not mtcn_enabled
             else (
                 vals["mtcn_median"] is not None
-                and vals["mtcn_median"] >= float(thresholds["mtcn_min"])
+                and passes(vals["mtcn_median"], float(thresholds["mtcn_min"]))
             )
         ),
         "pass_mad": (
@@ -178,6 +178,7 @@ def main():
     mt_coverage_enabled = sec.get("mt_coverage_enabled", True) is not False
     nuclear_coverage_enabled = sec.get("nuclear_coverage_enabled", True) is not False
     mtcn_enabled = sec.get("mtcn_enabled", True) is not False
+    strict_greater_than = sec.get("strict_greater_than", False) is True
 
     with inp.open(newline="", encoding="utf-8") as h:
         rows = [
@@ -189,6 +190,7 @@ def main():
                 nuclear_coverage_enabled=nuclear_coverage_enabled,
                 mtcn_enabled=mtcn_enabled,
                 percent_column=percent_column,
+                strict_greater_than=strict_greater_than,
             )
             for r in csv.DictReader(h, delimiter="\t")
         ]
@@ -207,6 +209,7 @@ def main():
         f"mt_coverage_enabled={mt_coverage_enabled} "
         f"nuclear_coverage_enabled={nuclear_coverage_enabled} "
         f"mtcn_enabled={mtcn_enabled} "
+        f"strict_greater_than={strict_greater_than} "
         f"percent_coverage_column={percent_column} "
         f"percent_coverage_min={t.get('percent_coverage_min', t['percent_100_min'])}\n"
     )
