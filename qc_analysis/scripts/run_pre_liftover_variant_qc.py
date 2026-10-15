@@ -52,16 +52,16 @@ def rebuild(out):
             for key,n in sorted(counts.items()):w.writerow((*key,n))
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument("--config",type=Path,required=True);ap.add_argument("--sample");a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument("--config",type=Path,required=True);ap.add_argument("--sample");ap.add_argument("--merge-reports",action="store_true");ap.add_argument("--skip-missing",action="store_true");a=ap.parse_args()
     sec=read_simple_yaml(a.config).get("pre_liftover_variant_qc",{})
     if sec.get("enabled",True) is False:return 0
     inp=ROOT/str(sec.get("input_vcf_dir","results/qc/collected_variant_calling_results/collected_vcf"));out=ROOT/str(sec.get("output_dir","results/qc/pre_liftover_variant_qc"))
     (out/"vcf_source_qc").mkdir(parents=True,exist_ok=True);(out/"reports").mkdir(parents=True,exist_ok=True)
-    samples=[a.sample] if a.sample else sorted({p.name.split(".round2",1)[0] for p in inp.glob("*.round2.original_coords.clean.final.split.vcf*")})
+    if a.merge_reports:\n        rebuild(out)\n        return 0\n    samples=[a.sample] if a.sample else sorted({p.name.split(".round2",1)[0] for p in inp.glob("*.round2.original_coords.clean.final.split.vcf*")})
     for sample in samples:
         choices=[inp/f"{sample}.round2.original_coords.clean.final.split.vcf.gz",inp/f"{sample}.round2.original_coords.clean.final.split.vcf"]
         src=next((p for p in choices if p.is_file()),None)
-        if not src: raise FileNotFoundError(f"source VCF not found for {sample}")
+        if not src:\n            if a.skip_missing:\n                print(f"[pre_liftover_variant_qc] SKIPPED_MISSING_INPUT sample={sample}",file=sys.stderr)\n                continue\n            raise FileNotFoundError(f"source VCF not found for {sample}")
         dest=out/"vcf_source_qc"/f"{sample}.source_qc.vcf.gz"; rows=[]
         with op(src) as ih,gzip.open(dest,"wt") as oh:
             for line in ih:
@@ -83,5 +83,5 @@ def main():
                 rows.append(dict(zip(FIELDS,[sample,p[0],p[1],vals["SOURCE_REF"],vals["SOURCE_ALT"],vals["SOURCE_AF"],vals["SOURCE_DP"],p[6],klass,qc])))
         with (out/"reports"/f"{sample}.source_variant_qc.tsv").open("w",newline="") as f:
             w=csv.DictWriter(f,fieldnames=FIELDS,delimiter="\t");w.writeheader();w.writerows(rows)
-    rebuild(out);return 0
+    if not a.sample: rebuild(out)\n    return 0
 if __name__=="__main__":raise SystemExit(main())
