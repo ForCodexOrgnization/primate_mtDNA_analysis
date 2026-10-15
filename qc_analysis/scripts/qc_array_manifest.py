@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build immutable, race-safe task manifests for QC Slurm arrays."""
-import argparse, csv, datetime, os, re, sys
+import argparse, csv, datetime, gzip, os, re, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
@@ -171,10 +171,20 @@ def mitos2_reference_candidates(cfg):
     return references
 
 def valid_vcf(path,tag):
+    """Check VCF header/expected annotation, supporting plain and gzipped inputs."""
     try:
-        if Path(path).stat().st_size==0:return False
-        text=Path(path).read_text(errors='ignore'); return '#CHROM' in text and (not tag or tag in text)
-    except OSError:return False
+        file=Path(path)
+        if not file.is_file() or file.stat().st_size==0:return False
+        op=gzip.open if file.suffix=='.gz' else open
+        has_header=False;has_tag=not bool(tag)
+        with op(file,'rt',encoding='utf-8',errors='replace') as handle:
+            for line in handle:
+                if tag and tag in line:has_tag=True
+                if line.startswith('#CHROM'):
+                    has_header=True
+                    break
+        return has_header and has_tag
+    except (OSError,EOFError,UnicodeError):return False
 
 def paths_for(step,s,cfg,defer_input=False):
     if step=='pre_liftover_variant_qc':
