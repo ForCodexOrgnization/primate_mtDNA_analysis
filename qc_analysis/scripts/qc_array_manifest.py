@@ -161,6 +161,34 @@ def candidate_samples(step,cfg):
     if configured and Path(configured).is_file(): return table_samples(configured)
     return sample_inventory(cfg)
 
+def incremental_eligible_samples(cfg):
+    """Determine strict sample eligibility from the immutable, updated summary."""
+    from qc_analysis.scripts.run_sample_variant_filtering import evaluate
+    section=cfg.get('sample_variant_filtering') or {}
+    input_summary=Path(section.get('input_summary',''))
+    if not input_summary.is_file():
+        raise SystemExit(f'ERROR: incremental mode requires prepared sample QC input summary: {input_summary}')
+    thresholds={
+        'mt_median_coverage_min':100,'percent_100_min':90,
+        'nuclear_median_coverage_min':20,'mtcn_min':40,'mad_max':0.5,
+        **(section.get('thresholds') or {})
+    }
+    eligible=set()
+    with input_summary.open(newline='',encoding='utf-8') as handle:
+        for row in csv.DictReader(handle,delimiter='\t'):
+            result=evaluate(
+                row,thresholds,
+                mad_enabled=section.get('mad_enabled',True) is not False,
+                mt_coverage_enabled=section.get('mt_coverage_enabled',True) is not False,
+                nuclear_coverage_enabled=section.get('nuclear_coverage_enabled',True) is not False,
+                mtcn_enabled=section.get('mtcn_enabled',True) is not False,
+                percent_column=str(section.get('percent_coverage_column','Percent_100')),
+                strict_greater_than=section.get('strict_greater_than',False) is True,
+            )
+            if result['qc_status']=='PASS' and result['collection_status']=='OK':
+                eligible.add(result['sample'])
+    return eligible
+
 def mitos2_reference_candidates(cfg):
     """Always derive current MITOS2 work from stable sequence SHA identity."""
     references,_,unresolved=resolved_reference_inventory(cfg)
@@ -216,6 +244,10 @@ def main():
     elif step in SAMPLE_STEPS:candidates=candidate_samples(step,cfg)
     else:raise SystemExit(f'Unsupported array step: {step}')
     candidates=sorted(set(x for x in candidates if x))
+    if a.incremental and step in SAMPLE_STEPS:
+        eligible=incremental_eligible_samples(cfg)
+        candidates=[item for item in candidates if item in eligible]
+        print(f'INCREMENTAL_ELIGIBLE_SAMPLES={len(eligible)}',file=sys.stderr)
     if step in SAMPLE_STEPS and not candidates:
         detail=f' for requested sample {a.sample!r}' if a.sample else ''
         raise SystemExit(f'ERROR: no candidate samples for {step}{detail}; no eligible tasks under current sample/reference inventory')
