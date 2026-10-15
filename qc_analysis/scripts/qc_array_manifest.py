@@ -229,6 +229,14 @@ def main():
         if input_missing:missing+=1
         if input_missing and not defer_inputs:continue
         complete=bool(out and valid_vcf(out,tag))
+        if step=='mitos2_annotation' and a.incremental:
+            prefix='reference:mtref_'
+            if not item.startswith(prefix):
+                raise SystemExit(f'Unexpected MITOS2 reference identity: {item}')
+            key='seq_'+item[len(prefix):]
+            raw=Path((cfg.get('mitos2_annotation') or {}).get('paths',{}).get('mitos2_raw_dir','results/qc/mitos2_annotation/raw'))/key
+            marker=raw/'mitos2.completed.ok'
+            complete=marker.is_file() and marker.stat().st_size>0 and (raw/'result.gff').is_file() and (raw/'result.bed').is_file() and (raw/'result.mitos').is_file()
         if out and Path(out).exists() and not complete:invalid+=1
         if complete:done+=1
         workflow_revalidate=step in WORKFLOW_REVALIDATE_STEPS and not a.incremental
