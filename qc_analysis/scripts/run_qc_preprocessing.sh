@@ -43,6 +43,7 @@ Steps:
 
 Run modes:
   --submit                         Submit this wrapper to Slurm from a login/frontend node.
+  --incremental                    Skip validated completed per-sample VCFs when submitting; rerun global reports.
                                    Without --submit, bash runs the requested step immediately.
 
 Environment overrides:
@@ -62,7 +63,7 @@ Environment overrides:
   SLURM_LOG_DIR                    Override the step-specific scheduler log directory.
   SLURM_JOB_NAME                   Job name for --submit (default: qc_preprocessing_<step>).
 
-Options: --array-concurrency N, --task-file PATH, --prepare-only,
+Options: --incremental, --array-concurrency N, --task-file PATH, --prepare-only,
          --prepare-retry, --dry-run-submit. Direct mode remains sequential;
          --submit is recommended for HPC execution.
 
@@ -90,7 +91,7 @@ Examples:
 USAGE
 }
 
-SUBMIT_TO_SLURM=0; DRY_RUN_SUBMIT=0; PREPARE_ONLY=0; PREPARE_RETRY=0; ARRAY_TASK_MODE=0; RUNTIME_ELIGIBILITY_MODE=0
+SUBMIT_TO_SLURM=0; DRY_RUN_SUBMIT=0; PREPARE_ONLY=0; PREPARE_RETRY=0; ARRAY_TASK_MODE=0; RUNTIME_ELIGIBILITY_MODE=0; INCREMENTAL_MODE=0
 SAMPLE="${SAMPLE:-}"; TASK_FILE=""; ARRAY_CONCURRENCY="${SLURM_ARRAY_CONCURRENCY:-20}"
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
@@ -98,6 +99,7 @@ while [[ "${1:-}" == --* ]]; do
     --dry-run-submit) SUBMIT_TO_SLURM=1; DRY_RUN_SUBMIT=1; shift ;;
     --prepare-only) PREPARE_ONLY=1; shift ;;
     --prepare-retry) PREPARE_RETRY=1; shift ;;
+    --incremental) INCREMENTAL_MODE=1; shift ;;
     --runtime-eligibility) RUNTIME_ELIGIBILITY_MODE=1; shift ;;
     --sample)
       [[ $# -ge 2 ]] || { echo "ERROR: --sample requires a value" >&2; exit 2; }
@@ -179,6 +181,7 @@ resolve_array_item() {
 }
 prepare_task_manifest() {
  local args=(python3 qc_analysis/scripts/qc_array_manifest.py "$1" "$CONFIG")
+ [[ "$INCREMENTAL_MODE" == 1 ]] && args+=(--incremental)
  [[ -n "$SAMPLE" ]] && args+=(--sample "$SAMPLE")
  [[ "${FORCE_RERUN:-false}" == true || "${SKIP_COMPLETED:-true}" != true ]] && args+=(--force)
  [[ "$PREPARE_RETRY" == 1 ]] && args+=(--retry)
@@ -205,7 +208,9 @@ submit_array() {
  local logs="${SLURM_LOG_DIR:-$CONFIG_LOG_DIR}";mkdir -p "$logs"
  local cmd=(sbatch --parsable --job-name="qc_preprocessing_${step}" --array="$array" --output="$logs/%A_%a.out" --error="$logs/%A_%a.err" --time="$RES_TIME" --mem="$RES_MEM" --cpus-per-task="$RES_CPUS")
  cmd+=(--partition="${SLURM_PARTITION:-ycga}"); [[ -n "$dependency" ]] && cmd+=(--dependency="afterok:$dependency")
- cmd+=("$(readlink -f "${BASH_SOURCE[0]}")" --array-task --runtime-eligibility --task-file "$TASK_FILE" "$step" "$CONFIG")
+ cmd+=("$(readlink -f "${BASH_SOURCE[0]}")" --array-task --runtime-eligibility)
+  [[ "$INCREMENTAL_MODE" == 1 ]] && cmd+=(--incremental)
+  cmd+=(--task-file "$TASK_FILE" "$step" "$CONFIG")
  printf '[qc_preprocessing] step=%s\n[qc_preprocessing] output_dir=%s\n[qc_preprocessing] task_file=%s\n[qc_preprocessing] manifest=%s\n[qc_preprocessing] logs=%s/%%A_%%a.{out,err}\n[qc_preprocessing] task_count=%s\n[qc_preprocessing] array=%s\n' "$step" "$OUTPUT_DIR" "$TASK_FILE" "${MANIFEST:-unknown}" "$logs" "$TASK_COUNT" "$array" >&2
  printf '[qc_preprocessing] concurrency=%s dependency=%s resources=%s,%s,%s\n' "$ARRAY_CONCURRENCY" "${dependency:-none}" "$RES_TIME" "$RES_MEM" "$RES_CPUS" >&2
  if [[ "$PREPARE_ONLY" == 1 ]]; then LAST_JOB_ID="prepared_${step}"; return; fi
