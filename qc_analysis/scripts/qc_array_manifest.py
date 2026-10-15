@@ -8,7 +8,7 @@ from qc_analysis.lib.reference_utils import normalized_fasta_sequence_sha256
 
 SAMPLE_STEPS = {"pre_liftover_variant_qc", "coordinate_liftover", "codon_match", "trna_match", "rrna_match"}
 DEFERRED_INPUT_STEPS = set(SAMPLE_STEPS)
-WORKFLOW_REVALIDATE_STEPS = set(SAMPLE_STEPS)
+WORKFLOW_REVALIDATE_STEPS = set(SAMPLE_STEPS)  # ordinary all mode; incremental mode skips completed valid outputs
 GLOBAL_STEPS = {"collect_variant_calling_results", "discover_global_anchor", "build_primate_codon_table",
  "compare_genbank_mitos2", "mitos2_prepare_tasks", "mitos2_merge", "codon_match_validate",
  "codon_match_merge", "build_trna_indexes", "trna_match_merge", "trna_gene_qc", "rrna_match_merge", "build_primate_homo_background",
@@ -194,7 +194,7 @@ def paths_for(step,s,cfg,defer_input=False):
     return str(inp),str(Path(p['output_dir'])/folder/f'{s}{suffix}'),tag
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('step');ap.add_argument('config');ap.add_argument('--sample');ap.add_argument('--outdir');ap.add_argument('--force',action='store_true');ap.add_argument('--retry',action='store_true');ap.add_argument('--resolve-paths',action='store_true');ap.add_argument('--workflow-run',action='store_true')
+    ap=argparse.ArgumentParser();ap.add_argument('step');ap.add_argument('config');ap.add_argument('--sample');ap.add_argument('--outdir');ap.add_argument('--force',action='store_true');ap.add_argument('--retry',action='store_true');ap.add_argument('--resolve-paths',action='store_true');ap.add_argument('--workflow-run',action='store_true');ap.add_argument('--incremental',action='store_true')
     a=ap.parse_args();cfg=read_simple_yaml(Path(a.config));step=a.step;runtime=resolve_runtime_paths(step,cfg)
     if a.resolve_paths:
         print(f'OUTPUT_DIR={runtime["output_dir"]}');print(f'JOB_ARRAY_DIR={runtime["job_array_dir"]}');print(f'LOG_DIR={runtime["log_dir"]}');return
@@ -221,7 +221,7 @@ def main():
         complete=bool(out and valid_vcf(out,tag))
         if out and Path(out).exists() and not complete:invalid+=1
         if complete:done+=1
-        workflow_revalidate=step in WORKFLOW_REVALIDATE_STEPS
+        workflow_revalidate=step in WORKFLOW_REVALIDATE_STEPS and not a.incremental
         include=workflow_revalidate or ((not complete or a.force) if not a.retry else (not complete))
         if include:
             status='runtime_revalidate' if workflow_revalidate else 'force_rerun' if complete else 'pending_input' if input_missing else 'pending'
