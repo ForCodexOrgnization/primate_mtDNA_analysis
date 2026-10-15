@@ -57,11 +57,18 @@ def main():
     if sec.get("enabled",True) is False:return 0
     inp=ROOT/str(sec.get("input_vcf_dir","results/qc/collected_variant_calling_results/collected_vcf"));out=ROOT/str(sec.get("output_dir","results/qc/pre_liftover_variant_qc"))
     (out/"vcf_source_qc").mkdir(parents=True,exist_ok=True);(out/"reports").mkdir(parents=True,exist_ok=True)
-    if a.merge_reports:\n        rebuild(out)\n        return 0\n    samples=[a.sample] if a.sample else sorted({p.name.split(".round2",1)[0] for p in inp.glob("*.round2.original_coords.clean.final.split.vcf*")})
+    if a.merge_reports:
+        rebuild(out)
+        return 0
+    samples=[a.sample] if a.sample else sorted({p.name.split(".round2",1)[0] for p in inp.glob("*.round2.original_coords.clean.final.split.vcf*")})
     for sample in samples:
         choices=[inp/f"{sample}.round2.original_coords.clean.final.split.vcf.gz",inp/f"{sample}.round2.original_coords.clean.final.split.vcf"]
         src=next((p for p in choices if p.is_file()),None)
-        if not src:\n            if a.skip_missing:\n                print(f"[pre_liftover_variant_qc] SKIPPED_MISSING_INPUT sample={sample}",file=sys.stderr)\n                continue\n            raise FileNotFoundError(f"source VCF not found for {sample}")
+        if not src:
+            if a.skip_missing:
+                print(f"[pre_liftover_variant_qc] SKIPPED_MISSING_INPUT sample={sample}",file=sys.stderr)
+                continue
+            raise FileNotFoundError(f"source VCF not found for {sample}")
         dest=out/"vcf_source_qc"/f"{sample}.source_qc.vcf.gz"; rows=[]
         with op(src) as ih,gzip.open(dest,"wt") as oh:
             for line in ih:
