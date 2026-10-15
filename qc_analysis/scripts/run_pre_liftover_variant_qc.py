@@ -90,5 +90,6 @@ def main():
                 rows.append(dict(zip(FIELDS,[sample,p[0],p[1],vals["SOURCE_REF"],vals["SOURCE_ALT"],vals["SOURCE_AF"],vals["SOURCE_DP"],p[6],klass,qc])))
         with (out/"reports"/f"{sample}.source_variant_qc.tsv").open("w",newline="") as f:
             w=csv.DictWriter(f,fieldnames=FIELDS,delimiter="\t");w.writeheader();w.writerows(rows)
-    if not a.sample: rebuild(out)\n    return 0
+    if not a.sample: rebuild(out)
+    return 0
 if __name__=="__main__":raise SystemExit(main())
