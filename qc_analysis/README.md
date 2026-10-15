@@ -35,7 +35,7 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh all config/qc_preprocessing.yam
 | 顺序 | wrapper step | 作用 | 主要下游依赖 |
 |---:|---|---|---|
 | 1 | `collect_variant_calling_results` | 收集并标准化 variant-calling 的 VCF、coverage 和 mtCN 结果 | native-coordinate QC |
-| 2 | `sample_variant_filtering` | 基础三项样本 QC（Percent_100、nuclear median coverage、mtCN），report-only | 最终样本判定 |
+| 2 | `sample_variant_filtering` | 基础样本 QC：仅 Percent_100 >= 90 为 pass/fail；nuclear coverage、mtCN 等仅报告，report-only | 最终样本判定 |
 | 3 | `pre_liftover_variant_qc` | 在物种原始坐标中冻结 SOURCE_* call identity/QC | local artifact QC、liftover |
 | 4 | `local_heteroplasmy_qc` | 完整 native-coordinate NUMT/indel artifact workflow：strict-HET clustering → species NUMT propagation → NUMT seed expansion → indel complex/dense-overlap filtering → residual production rules → low-AF artifact extension；生成 SOURCE-keyed removal list | intra/inter contamination、liftover、terminal removal |
 | 5 | `intraspecies_contamination` | 原始物种坐标的种内污染分析；先排除 SOURCE-keyed NUMT/indel artifacts，再按原有规则/score 计算 | 最终样本判定 |
@@ -207,11 +207,10 @@ is the dependency-light Python implementation. Mirror evidence is the complete
 within-sample low-AF × high-AF cross product and Tier-2 negative controls
 calibrate its normalized p95/p99 evidence.
 
-`sample_variant_filtering` is report-only. Current production sample QC uses
-three pass/fail criteria: Percent_100 >= 90%, nuclear median coverage >= 2, and
-median mtCN >= 40. mt median coverage and MAD remain in the report for
-diagnostics but are not pass/fail criteria. Neither this step nor contamination
-analysis removes data.
+`sample_variant_filtering` is report-only. Current production sample QC uses one
+pass/fail criterion: Percent_100 >= 90%. mt median coverage, nuclear median coverage,
+mtCN, and MAD remain in the report for diagnostics but do not affect sample PASS/FAIL.
+Neither this step nor contamination analysis removes data.
 
 `final_filter` is the only irreversible step. Intraspecies and sample-QC reports
 are required by default; interspecies is also consumed when available, while
