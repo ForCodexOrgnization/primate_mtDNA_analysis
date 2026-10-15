@@ -132,7 +132,7 @@ done
 [[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
 STEP="$1"; CONFIG="${2:-config/qc_preprocessing.yaml}"
 case "$STEP" in
- collect_variant_calling_results|pre_liftover_variant_qc|local_heteroplasmy_qc|discover_global_anchor|coordinate_liftover|interspecies_contamination|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|rrna_match_merge|intraspecies_contamination|sample_variant_filtering|final_filter|all) ;;
+ collect_variant_calling_results|pre_liftover_variant_qc|pre_liftover_variant_qc_merge|local_heteroplasmy_qc|discover_global_anchor|coordinate_liftover|interspecies_contamination|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|rrna_match_merge|intraspecies_contamination|sample_variant_filtering|final_filter|all) ;;
  -h|--help|help) usage; exit 0;; *) echo "ERROR: unknown step: $STEP" >&2; exit 2;; esac
 [[ -s "$CONFIG" ]] || { echo "ERROR: missing or empty config file: $CONFIG" >&2; exit 1; }
 export SAMPLE
@@ -219,7 +219,7 @@ submit_array() {
  printf 'step\tjob_id\ttask_file\tmanifest\tlog_dir\tarray\tsubmitted_at\n%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$step" "$LAST_JOB_ID" "$TASK_FILE" "${MANIFEST:-}" "$logs" "$array" "$submitted_at" >"$submission"
 }
 submit_workflow() {
- local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results sample_variant_filtering pre_liftover_variant_qc local_heteroplasmy_qc intraspecies_contamination discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
+ local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results sample_variant_filtering pre_liftover_variant_qc pre_liftover_variant_qc_merge local_heteroplasmy_qc intraspecies_contamination discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
  for s in "${steps[@]}"; do
    TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
  done
@@ -590,7 +590,12 @@ case "$STEP" in
   rrna_match_merge) "$BASE_PYTHON" "$RRNA_MERGE_SCRIPT" --config "$CONFIG" ;;
   intraspecies_contamination) "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG" ;;
   sample_variant_filtering) "$BASE_PYTHON" "$SAMPLE_FILTER_SCRIPT" --config "$CONFIG" ;;
-  pre_liftover_variant_qc) "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" --config "$CONFIG" ${SAMPLE:+--sample "$SAMPLE"} ;;
+  pre_liftover_variant_qc)
+    pre_args=(--config "$CONFIG")
+    [[ -n "${SAMPLE:-}" ]] && pre_args+=(--sample "$SAMPLE")
+    [[ "$INCREMENTAL_MODE" == 1 ]] && pre_args+=(--skip-missing)
+    "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" "${pre_args[@]}" ;;
+  pre_liftover_variant_qc_merge) "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" --config "$CONFIG" --merge-reports ;;
   local_heteroplasmy_qc) PYTHON="$BASE_PYTHON" bash "$LOCAL_HET_QC_SCRIPT" "$CONFIG" ;;
   final_filter) "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG" ;;
   all)
