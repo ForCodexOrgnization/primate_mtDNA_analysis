@@ -55,10 +55,12 @@ sample_variant_filtering:
   enabled: true
   input_summary: results/qc/collected_variant_calling_results/reports/variant_calling_collection_summary.tsv
   output_dir: results/qc/sample_variant_filtering
-  # Current basic sample QC: Percent_100 >= 90, nuclear median coverage >= 2,
-  # and mtCN >= 40. mt median coverage and MAD are retained in the report for
-  # diagnostics but are not sample-level pass/fail criteria.
+  # Production sample QC: only Percent_100 >= 90 is sample-failing.
+  # mt median coverage, nuclear coverage, mtCN and MAD remain in the report
+  # for diagnostics but do not affect sample PASS/FAIL.
   mt_coverage_enabled: false
+  nuclear_coverage_enabled: false
+  mtcn_enabled: false
   mad_enabled: false
   thresholds:
     mt_median_coverage_min: 100
@@ -88,8 +90,8 @@ local_heteroplasmy_qc:
   sample_ref_file: config/sample_ref_file.tsv
   output_dir: results/qc/local_heteroplasmy_qc
 
-  # Strict cluster-discovery HET definition: PASS/QC-PASS, DP > 100,
-  # 0.10 < source AF < 0.95.
+  # Strict cluster-discovery HET definition: PASS/QC-PASS, DP >= 100,
+  # 0.10 <= source AF < 0.95.
   dp_min: 100
   heteroplasmy_af_min: 0.10
   heteroplasmy_af_max: 0.95
@@ -163,7 +165,7 @@ final_filter:
   optional_sample_reports: interspecies
   strict_missing_samples: true
   biological_call_classes: HET,HOM
-  # Variant-level baseline: VCF FILTER must be PASS and source DP must be > 100.
+  # Variant-level baseline: VCF FILTER must be PASS and source DP must be >= 100.
   variant_dp_min: 100
   # Priority-ordered exact filenames. Directory-only comma-separated values
   # remain accepted, but are resolved against known exact suffixes (never globs).
