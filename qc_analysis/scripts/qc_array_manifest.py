@@ -253,7 +253,7 @@ def main():
         raise SystemExit(f'ERROR: no candidate samples for {step}{detail}; no eligible tasks under current sample/reference inventory')
     rows=[];done=missing=invalid=0
     static_inventory=bool(resolved_static_samples(cfg)) if step in {'codon_match','trna_match','rrna_match'} else False
-    defer_inputs=(step in {'pre_liftover_variant_qc','coordinate_liftover'} or step=='codon_match' or (step in {'trna_match','rrna_match'} and static_inventory))
+    defer_inputs=(a.incremental and step in SAMPLE_STEPS) or (step in {'pre_liftover_variant_qc','coordinate_liftover'} or step=='codon_match' or (step in {'trna_match','rrna_match'} and static_inventory))
     for item in candidates:
         inp=out=tag=''
         if step in SAMPLE_STEPS:inp,out,tag=paths_for(step,item,cfg,defer_input=defer_inputs)
