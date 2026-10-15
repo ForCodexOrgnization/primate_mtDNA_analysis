@@ -528,10 +528,10 @@ def main():
                                 why.append("source_call_class:" + source_call_class)
                             # Use native/source DP when available; fall back to the
                             # current VCF DP for legacy records. Production
-                            # threshold is strict: DP must be > variant_dp_min.
+                            # Inclusive production threshold: DP must be >= variant_dp_min.
                             effective_dp = source_dp if source_dp is not None else dp
-                            if effective_dp is None or effective_dp <= variant_dp_min:
-                                why.append(f"DP_NOT_ABOVE_{variant_dp_min:g}")
+                            if effective_dp is None or effective_dp < variant_dp_min:
+                                why.append(f"DP_BELOW_{variant_dp_min:g}")
                             variant_class, snv_type = variant_classes(f[3], f[4])
                             ref, alt = f[3].upper(), f[4].upper()
                             is_canonical_snv = len(ref) == len(alt) == 1 and ref in "ACGT" and alt in "ACGT" and "," not in alt
