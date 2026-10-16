@@ -307,6 +307,64 @@ def load_sample_variant_evidence(connection, sample):
     return flags, annotations
 
 
+def trna_compensation_failures(vcf_path, eligible_classes, min_dp, max_stem_distance=2, max_loop_distance=2):
+    """Find same-sample source-HOM co-variants in species-reference tRNA elements.
+
+    Uses MTTRNA_S_* annotations produced from species-specific tRNAscan indexes.
+    Never imposes across-species recurrence. A proximity hit is a candidate,
+    not proof of biochemical compensation.
+    """
+    records = []
+    with open_vcf(vcf_path) as handle:
+        for line in handle:
+            if line.startswith("#"):
+                continue
+            fields = line.rstrip("\\n").split("\\t")
+            info, af, dp = variant_evidence(fields)
+            source_class = info_value(info, "SOURCE_CALL_CLASS")
+            effective_dp = number(info.get("SOURCE_DP"))
+            if effective_dp is None:
+                effective_dp = dp
+            if fields[6] != "PASS" or source_class != "HOM" or source_class not in eligible_classes:
+                continue
+            if effective_dp is None or effective_dp < min_dp:
+                continue
+            if info_value(info, "MTTRNA_STATUS") != "OK":
+                continue
+            identity = info_value(info, "MTTRNA_S_IDENTITY")
+            cls = info_value(info, "MTTRNA_S_CLASS").lower()
+            element = info_value(info, "MTTRNA_S_ELEMENT")
+            local = number(info.get("MTTRNA_S_LOCAL"))
+            mate = number(info.get("MTTRNA_S_PAIR_LOCAL"))
+            if identity == "NOT_AVAILABLE" or element == "NOT_AVAILABLE" or cls not in {"stem", "loop"}:
+                continue
+            if local is None or (cls == "stem" and mate is None):
+                continue
+            records.append({
+                "key": (fields[0], fields[1], fields[3], fields[4]),
+                "identity": identity, "class": cls, "element": element,
+                "rank": min(local, mate) if cls == "stem" else local,
+            })
+    by_element = defaultdict(list)
+    for record in records:
+        by_element[(record["identity"], record["class"], record["element"])].append(record)
+    flags = defaultdict(set)
+    for members in by_element.values():
+        for i, a in enumerate(members):
+            for b in members[i + 1:]:
+                if a["key"] == b["key"]:
+                    continue
+                distance = abs(a["rank"] - b["rank"])
+                threshold = max_stem_distance if a["class"] == "stem" else max_loop_distance
+                if a["class"] == "loop" and distance == 0:
+                    continue
+                if distance <= threshold:
+                    reason = "trna_same_stem_proximity" if a["class"] == "stem" else "trna_same_loop_proximity"
+                    flags[a["key"]].add(reason)
+                    flags[b["key"]].add(reason)
+    return flags
+
+
 def bgzip_and_index(plain, dest):
     try:
         import pysam
@@ -505,6 +563,16 @@ def main():
             variant_writer.writeheader()
             for sample, src in sorted(passing.items()):
                 variant_flags, variant_annotations = load_sample_variant_evidence(report_store, sample)
+                trna_cfg = sec.get("trna_compensation") or {}
+                trna_enabled = trna_cfg.get("enabled", False)
+                trna_proximity = (
+                    trna_compensation_failures(
+                        src, eligible_source_classes, variant_dp_min,
+                        int(trna_cfg.get("max_stem_pair_distance", 2)),
+                        int(trna_cfg.get("max_loop_distance", 2)),
+                    )
+                    if trna_enabled else {}
+                )
                 with tempfile.NamedTemporaryFile("w", suffix=".vcf", delete=False, dir=out) as target:
                     plain = Path(target.name)
                     n = 0
@@ -520,6 +588,16 @@ def main():
                             if vcf_filter != "PASS":
                                 why.append("vcf_filter:" + vcf_filter)
                             info, af, dp = variant_evidence(f)
+                            if trna_enabled:
+                                trna_status = info_value(info, "MTTRNA_STATUS")
+                                trna_strict = info_value(info, "MTTRNA_STRICT_MATCH")
+                                has_trna = any(
+                                    info_value(info, tag) != "NOT_AVAILABLE"
+                                    for tag in ("MTTRNA_S_ID", "MTTRNA_H_ID")
+                                )
+                                if has_trna and (trna_status != "OK" or trna_strict == "no"):
+                                    why.append("trna_match:strict_fail")
+                                why.extend(sorted(trna_proximity.get(key, ())))
                             source_af = number(info.get("SOURCE_AF"))
                             source_dp = number(info.get("SOURCE_DP"))
                             source_call_class = info_value(info, "SOURCE_CALL_CLASS")
