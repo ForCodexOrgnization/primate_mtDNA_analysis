@@ -58,7 +58,9 @@ def index(path):
 
 
 def names(value):
-    return [item.strip() for item in value.split(",")] if isinstance(value, str) else list(value or [])
+    """Parse comma-separated or YAML-list names, ignoring blank entries."""
+    items = value.split(",") if isinstance(value, str) else (value or [])
+    return [str(item).strip().strip('"\\\'') for item in items if str(item).strip().strip('"\\\'')]
 
 
 def is_fail(value, configured):
