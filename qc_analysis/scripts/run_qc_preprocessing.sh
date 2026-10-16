@@ -44,6 +44,7 @@ Steps:
 Run modes:
   --submit                         Submit this wrapper to Slurm from a login/frontend node.
   --incremental                    Skip validated completed per-sample VCFs when submitting; rerun global reports.
+  --start-from STEP                With --submit all, start at STEP and submit following steps.
                                    Without --submit, bash runs the requested step immediately.
 
 Environment overrides:
@@ -63,7 +64,7 @@ Environment overrides:
   SLURM_LOG_DIR                    Override the step-specific scheduler log directory.
   SLURM_JOB_NAME                   Job name for --submit (default: qc_preprocessing_<step>).
 
-Options: --incremental, --array-concurrency N, --task-file PATH, --prepare-only,
+Options: --incremental, --start-from STEP, --array-concurrency N, --task-file PATH, --prepare-only,
          --prepare-retry, --dry-run-submit. Direct mode remains sequential;
          --submit is recommended for HPC execution.
 
@@ -74,6 +75,7 @@ are left untouched; move them manually only after confirming no old job uses the
 
 Examples:
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit all config/qc_preprocessing.yaml
+  bash qc_analysis/scripts/run_qc_preprocessing.sh --dry-run-submit --incremental --start-from discover_global_anchor all config/qc_preprocessing_incremental_strict.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit collect_variant_calling_results config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit discover_global_anchor config/qc_preprocessing.yaml
   bash qc_analysis/scripts/run_qc_preprocessing.sh --submit coordinate_liftover config/qc_preprocessing.yaml
@@ -91,7 +93,7 @@ Examples:
 USAGE
 }
 
-SUBMIT_TO_SLURM=0; DRY_RUN_SUBMIT=0; PREPARE_ONLY=0; PREPARE_RETRY=0; ARRAY_TASK_MODE=0; RUNTIME_ELIGIBILITY_MODE=0; INCREMENTAL_MODE=0
+SUBMIT_TO_SLURM=0; DRY_RUN_SUBMIT=0; PREPARE_ONLY=0; PREPARE_RETRY=0; ARRAY_TASK_MODE=0; RUNTIME_ELIGIBILITY_MODE=0; INCREMENTAL_MODE=0; START_FROM=""
 SAMPLE="${SAMPLE:-}"; TASK_FILE=""; ARRAY_CONCURRENCY="${SLURM_ARRAY_CONCURRENCY:-20}"
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
@@ -100,6 +102,10 @@ while [[ "${1:-}" == --* ]]; do
     --prepare-only) PREPARE_ONLY=1; shift ;;
     --prepare-retry) PREPARE_RETRY=1; shift ;;
     --incremental) INCREMENTAL_MODE=1; shift ;;
+    --start-from)
+      [[ $# -ge 2 && -n "$2" ]] || { echo 'ERROR: --start-from requires a workflow step' >&2; exit 2; }
+      START_FROM="$2"; shift 2 ;;
+
     --runtime-eligibility) RUNTIME_ELIGIBILITY_MODE=1; shift ;;
     --sample)
       [[ $# -ge 2 ]] || { echo "ERROR: --sample requires a value" >&2; exit 2; }
@@ -135,6 +141,9 @@ case "$STEP" in
  collect_variant_calling_results|pre_liftover_variant_qc|pre_liftover_variant_qc_merge|local_heteroplasmy_qc|discover_global_anchor|coordinate_liftover|interspecies_contamination|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|rrna_match_merge|intraspecies_contamination|sample_variant_filtering|final_filter|all) ;;
  -h|--help|help) usage; exit 0;; *) echo "ERROR: unknown step: $STEP" >&2; exit 2;; esac
 [[ -s "$CONFIG" ]] || { echo "ERROR: missing or empty config file: $CONFIG" >&2; exit 1; }
+if [[ -n "$START_FROM" && ( "$STEP" != all || "$SUBMIT_TO_SLURM" != 1 || "$ARRAY_TASK_MODE" == 1 ) ]]; then
+  echo 'ERROR: --start-from is only supported with --submit all' >&2; exit 2
+fi
 export SAMPLE
 
 classify_step() { case "$1" in pre_liftover_variant_qc|coordinate_liftover|codon_match|trna_match|rrna_match) echo sample;; mitos2_annotation) echo reference;; *) echo singleton;; esac; }
@@ -220,8 +229,17 @@ submit_array() {
 }
 submit_workflow() {
  local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results sample_variant_filtering pre_liftover_variant_qc pre_liftover_variant_qc_merge local_heteroplasmy_qc intraspecies_contamination discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
- for s in "${steps[@]}"; do
-   TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep";dep="$LAST_JOB_ID"
+ local start_index=0 found=0 i s
+ if [[ -n "$START_FROM" ]]; then
+   for i in "${!steps[@]}"; do
+     if [[ "${steps[$i]}" == "$START_FROM" ]]; then start_index="$i"; found=1; break; fi
+   done
+   if [[ "$found" != 1 ]]; then echo "ERROR: --start-from step is not in production workflow: $START_FROM" >&2; return 2; fi
+ fi
+ printf "[qc_preprocessing] workflow_start=%s skipped_prior_steps=%s\n" "${steps[$start_index]}" "$start_index" >&2
+ for ((i=start_index; i<${#steps[@]}; i++)); do
+   s="${steps[$i]}"
+   TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep"; dep="$LAST_JOB_ID"
  done
 }
 if [[ "$ARRAY_TASK_MODE" == "1" ]]; then
