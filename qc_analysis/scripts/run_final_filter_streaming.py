@@ -365,6 +365,104 @@ def trna_compensation_failures(vcf_path, eligible_classes, min_dp, max_stem_dist
     return flags
 
 
+TRNA_PAIR_COLUMNS = (
+    "sample species primary_chrom primary_pos primary_ref primary_alt "
+    "co_chrom co_pos co_ref co_alt tRNA_identity primary_class co_class "
+    "primary_element co_element primary_local co_local primary_pair_local co_pair_local "
+    "linear_distance_nt same_element stem_pair_rank_distance "
+    "direct_base_pair same_stem_within_2bp same_loop_within_2nt "
+    "primary_trna_status co_trna_status"
+).split()
+
+
+def trna_covariant_rows(vcf_path, sample, species, min_dp):
+    """Report same-tRNA source-HOM co-variants; no extra filtering.
+
+    Structural distances are in species-specific tRNA local coordinates.
+    For a stem, pair rank is min(local, paired_local), matching the
+    proximity filter's definition (not an experimentally verified structure).
+    """
+    calls = []
+    with open_vcf(vcf_path) as handle:
+        for line in handle:
+            if line.startswith("#") or not line.strip():
+                continue
+            f = line.rstrip("\n").split("\t")
+            if len(f) < 8 or f[6] != "PASS":
+                continue
+            info, _, dp = variant_evidence(f)
+            if info_value(info, "SOURCE_CALL_CLASS") != "HOM":
+                continue
+            source_dp = number(info.get("SOURCE_DP"))
+            if (source_dp if source_dp is not None else dp) is None:
+                continue
+            if (source_dp if source_dp is not None else dp) < min_dp:
+                continue
+            identity = info_value(info, "MTTRNA_S_IDENTITY")
+            if identity == "NOT_AVAILABLE":
+                continue
+            local = number(info.get("MTTRNA_S_LOCAL"))
+            paired = number(info.get("MTTRNA_S_PAIR_LOCAL"))
+            cls = info_value(info, "MTTRNA_S_CLASS").lower()
+            calls.append(dict(
+                chrom=f[0], pos=f[1], ref=f[3], alt=f[4],
+                identity=identity, cls=cls,
+                element=info_value(info, "MTTRNA_S_ELEMENT"),
+                local=local, paired=paired,
+                status=info_value(info, "MTTRNA_STATUS"),
+            ))
+    grouped = defaultdict(list)
+    for c in calls:
+        grouped[c["identity"]].append(c)
+    for members in grouped.values():
+        for i, a in enumerate(members):
+            for b in members[i + 1:]:
+                if (a["chrom"], a["pos"], a["ref"], a["alt"]) == (
+                    b["chrom"], b["pos"], b["ref"], b["alt"]
+                ):
+                    continue
+                same_element = (
+                    a["cls"] == b["cls"] and
+                    a["element"] == b["element"] and
+                    a["element"] != "NOT_AVAILABLE"
+                )
+                stem_dist = (
+                    abs(min(a["local"], a["paired"]) - min(b["local"], b["paired"]))
+                    if same_element and a["cls"] == "stem" and
+                    None not in (a["local"], a["paired"], b["local"], b["paired"])
+                    else None
+                )
+                loop_dist = (
+                    abs(a["local"] - b["local"])
+                    if same_element and a["cls"] == "loop" and
+                    a["local"] is not None and b["local"] is not None
+                    else None
+                )
+                direct_pair = (
+                    a["local"] == b["paired"] and b["local"] == a["paired"]
+                    if None not in (a["local"], a["paired"], b["local"], b["paired"])
+                    else None
+                )
+                try:
+                    linear_dist = abs(int(a["pos"]) - int(b["pos"])) if a["chrom"] == b["chrom"] else None
+                except ValueError:
+                    linear_dist = None
+                yield dict(
+                    sample=sample, species=species,
+                    primary_chrom=a["chrom"], primary_pos=a["pos"], primary_ref=a["ref"], primary_alt=a["alt"],
+                    co_chrom=b["chrom"], co_pos=b["pos"], co_ref=b["ref"], co_alt=b["alt"],
+                    tRNA_identity=a["identity"], primary_class=a["cls"], co_class=b["cls"],
+                    primary_element=a["element"], co_element=b["element"],
+                    primary_local=a["local"], co_local=b["local"],
+                    primary_pair_local=a["paired"], co_pair_local=b["paired"],
+                    linear_distance_nt=linear_dist, same_element=same_element,
+                    stem_pair_rank_distance=stem_dist, direct_base_pair=direct_pair,
+                    same_stem_within_2bp=stem_dist is not None and stem_dist <= 2,
+                    same_loop_within_2nt=loop_dist is not None and 1 <= loop_dist <= 2,
+                    primary_trna_status=a["status"], co_trna_status=b["status"],
+                )
+
+
 def bgzip_and_index(plain, dest):
     try:
         import pysam
@@ -541,6 +639,19 @@ def main():
         )
         sample_rows.append(sample_row)
         sample_context[sample] = sample_row
+
+    # Independent report: all same-tRNA Source HOM variant pairs, including
+    # pairs that will fail final QC. This does not change final_variant_qc.tsv.
+    pair_report = out / "reports" / "trna_covariant_pairs.tsv"
+    with pair_report.open("w", newline="", encoding="utf-8") as pair_handle:
+        pair_writer = csv.DictWriter(pair_handle, fieldnames=TRNA_PAIR_COLUMNS, delimiter="\t")
+        pair_writer.writeheader()
+        for pair_sample, pair_src in sorted(passing.items()):
+            for pair_row in trna_covariant_rows(
+                pair_src, pair_sample, sample_context[pair_sample].get("species", "NOT_AVAILABLE"),
+                float(sec.get("variant_dp_min", 100))
+            ):
+                pair_writer.writerow(pair_row)
 
     db_path = out / ".work" / "variant_reports.sqlite3"
     report_store = build_variant_report_store(db_path, sec.get("variant_reports") or {}, set(passing))
