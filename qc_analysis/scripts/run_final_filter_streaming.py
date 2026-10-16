@@ -319,7 +319,7 @@ def trna_compensation_failures(vcf_path, eligible_classes, min_dp, max_stem_dist
         for line in handle:
             if line.startswith("#"):
                 continue
-            fields = line.rstrip("\\n").split("\\t")
+            fields = line.rstrip("\n").split("\t")
             info, af, dp = variant_evidence(fields)
             source_class = info_value(info, "SOURCE_CALL_CLASS")
             effective_dp = number(info.get("SOURCE_DP"))
