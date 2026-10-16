@@ -457,6 +457,12 @@ activate_mitos2_environment() {
     echo "ERROR: module command is unavailable; cannot load ${MITOS2_CONDA_MODULE}." >&2
     exit 1
   fi
+  # MITOS2 uses miniconda, which conflicts with the site Python module on McCleary.
+  # This job runs in its own Slurm shell, so unloading Python here cannot affect
+  # other QC array tasks or the login shell. Unload dependent Biopython first.
+  module unload Biopython 2>/dev/null || true
+  module unload Python 2>/dev/null || true
+  echo "[qc_preprocessing] Loading MITOS2 conda module after removing conflicting Python modules" >&2
   module load "$MITOS2_CONDA_MODULE"
   source "$(conda info --base)/etc/profile.d/conda.sh"
   echo "[qc_preprocessing] Activating MITOS2 conda environment: ${MITOS2_CONDA_ENV}" >&2
