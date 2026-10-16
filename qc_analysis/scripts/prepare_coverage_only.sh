@@ -16,6 +16,16 @@ cfg="config/qc_preprocessing_coverage_only.yaml"
 [[ "$source_root" != "$target_root" ]] || { echo "ERROR: use a separate Git clone for coverage-only" >&2; exit 1; }
 [[ ! -e "$target" && ! -L "$target" ]] || { echo "ERROR: destination already exists: $target" >&2; exit 1; }
 command -v rsync >/dev/null || { echo "ERROR: rsync required" >&2; exit 127; }
+if [[ ! -e references && -d "$source_root/references" ]]; then
+  ln -s "$source_root/references" references
+fi
+if [[ ! -d data/reference_tables && -d "$source_root/data/reference_tables" ]]; then
+  mkdir -p data/reference_tables
+  rsync -a "$source_root/data/reference_tables/" data/reference_tables/
+fi
+if [[ ! -s config/sample_ref_file.tsv && -s "$source_root/config/sample_ref_file.tsv" ]]; then
+  cp "$source_root/config/sample_ref_file.tsv" config/sample_ref_file.tsv
+fi
 mkdir -p "$target"
 echo "[coverage_only] Copying per-sample results and source metadata from $source"
 rsync -a --exclude='job_arrays/' --exclude='logs/' --exclude='final_filter/' \
@@ -41,7 +51,7 @@ import csv
 from pathlib import Path
 p=Path("results/qc_coverage_only/updated_collection_summary.tsv")
 with p.open(newline="") as f:
-    r=csv.DictReader(f,delimiter="\\t")
+    r=csv.DictReader(f,delimiter=chr(9))
     assert r.fieldnames and {"sample","status","Percent_100"} <= set(r.fieldnames)
     rows=list(r)
 assert len(rows)==len({x["sample"] for x in rows}), "duplicate sample"
