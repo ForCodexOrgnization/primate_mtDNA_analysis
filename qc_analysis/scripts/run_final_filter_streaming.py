@@ -598,6 +598,21 @@ def main():
                                 if has_trna and (trna_status != "OK" or trna_strict != "yes"):
                                     why.append("trna_match:strict_fail")
                                 why.extend(sorted(trna_proximity.get(key, ())))
+                            # Matching filters apply only to annotated, applicable regions.
+                            # Noncoding codon status and unannotated rRNA regions are not failures.
+                            match_cfg = sec.get("matching_filters") or {}
+                            if match_cfg.get("codon", False):
+                                codon_status = info_value(info, "MTCODON_STATUS")
+                                codon_fail = {
+                                    "GENE_MISMATCH", "PHASE_MISMATCH", "MISMATCH",
+                                    "SOURCE_REF_MISMATCH",
+                                }
+                                if codon_status in codon_fail:
+                                    why.append("codon_match:" + codon_status)
+                            if match_cfg.get("rrna", False):
+                                structure = info_value(info, "MTRRNA_STRUCTURE_MATCH")
+                                if structure in {"STEM_LOOP", "LOOP_STEM"}:
+                                    why.append("rrna_match:stem_loop_discordance")
                             source_af = number(info.get("SOURCE_AF"))
                             source_dp = number(info.get("SOURCE_DP"))
                             source_call_class = info_value(info, "SOURCE_CALL_CLASS")
