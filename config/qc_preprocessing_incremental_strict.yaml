@@ -88,6 +88,7 @@ pre_liftover_variant_qc:
 local_heteroplasmy_qc:
   enabled: true
   source_report: results/qc_incremental/pre_liftover_variant_qc/reports/source_variant_qc.tsv
+  sample_qc_report: results/qc_incremental/sample_variant_filtering/reports/sample_qc.tsv
   sample_ref_file: config/sample_ref_file.tsv
   output_dir: results/qc_incremental/local_heteroplasmy_qc
 
