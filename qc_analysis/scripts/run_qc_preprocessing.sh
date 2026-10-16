@@ -235,25 +235,34 @@ contamination_step_enabled() {
       value=$0; sub(/.*enabled:[[:space:]]*/, "", value);
       sub(/[[:space:]#].*$/, "", value); print tolower(value); exit
     }
-  ' "$CONFIG" | grep -Eq '^(true|yes|1) local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results sample_variant_filtering pre_liftover_variant_qc pre_liftover_variant_qc_merge local_heteroplasmy_qc intraspecies_contamination discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
- local start_index=0 found=0 i s
- if [[ -n "$START_FROM" ]]; then
-   for i in "${!steps[@]}"; do
-     if [[ "${steps[$i]}" == "$START_FROM" ]]; then start_index="$i"; found=1; break; fi
-   done
-   if [[ "$found" != 1 ]]; then echo "ERROR: --start-from step is not in production workflow: $START_FROM" >&2; return 2; fi
- fi
- printf "[qc_preprocessing] workflow_start=%s skipped_prior_steps=%s\n" "${steps[$start_index]}" "$start_index" >&2
- for ((i=start_index; i<${#steps[@]}; i++)); do
-   s="${steps[$i]}"
-   if [[ "$s" == intraspecies_contamination || "$s" == interspecies_contamination ]]; then
-     if ! contamination_step_enabled "$s"; then
-       printf "[qc_preprocessing] step=%s state=skipped_disabled_by_config\n" "$s" >&2
-       continue
-     fi
-   fi
-   TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep"; dep="$LAST_JOB_ID"
- done
+  ' "$CONFIG" | grep -Eq '^(true|yes|1)$'
+}
+submit_workflow() {
+  local dep="" s i start_index=0 found=0
+  SAMPLE=""
+  local steps=(collect_variant_calling_results sample_variant_filtering pre_liftover_variant_qc pre_liftover_variant_qc_merge local_heteroplasmy_qc intraspecies_contamination discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
+  if [[ -n "$START_FROM" ]]; then
+    for i in "${!steps[@]}"; do
+      if [[ "${steps[$i]}" == "$START_FROM" ]]; then start_index="$i"; found=1; break; fi
+    done
+    if [[ "$found" != 1 ]]; then
+      echo "ERROR: --start-from step is not in production workflow: $START_FROM" >&2
+      return 2
+    fi
+  fi
+  printf '[qc_preprocessing] workflow_start=%s skipped_prior_steps=%s\n' "${steps[$start_index]}" "$start_index" >&2
+  for ((i=start_index; i<${#steps[@]}; i++)); do
+    s="${steps[$i]}"
+    if [[ "$s" == intraspecies_contamination || "$s" == interspecies_contamination ]]; then
+      if ! contamination_step_enabled "$s"; then
+        printf '[qc_preprocessing] step=%s state=skipped_disabled_by_config\n' "$s" >&2
+        continue
+      fi
+    fi
+    TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""
+    submit_array "$s" "$dep"
+    dep="$LAST_JOB_ID"
+  done
 }
 if [[ "$ARRAY_TASK_MODE" == "1" ]]; then
  [[ -n "$TASK_FILE" ]] || { echo "ERROR: --array-task requires --task-file" >&2; exit 2; }
