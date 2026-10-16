@@ -506,6 +506,10 @@ activate_trnascan_environment() {
     echo "ERROR: failed to activate tRNAscan environment." >&2
     exit 1
   fi
+  # McCleary miniconda conflicts with the site Python/Biopython modules.
+  # These changes are local to this Slurm task shell.
+  module unload Biopython 2>/dev/null || true
+  module unload Python 2>/dev/null || true
   if ! module load "$TRNASCAN_CONDA_MODULE"; then
     echo "ERROR: failed to load tRNAscan conda module: ${TRNASCAN_CONDA_MODULE}." >&2
     echo "ERROR: failed to activate tRNAscan environment." >&2
