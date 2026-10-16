@@ -595,7 +595,7 @@ def main():
                                     info_value(info, tag) != "NOT_AVAILABLE"
                                     for tag in ("MTTRNA_S_ID", "MTTRNA_H_ID")
                                 )
-                                if has_trna and (trna_status != "OK" or trna_strict == "no"):
+                                if has_trna and (trna_status != "OK" or trna_strict != "yes"):
                                     why.append("trna_match:strict_fail")
                                 why.extend(sorted(trna_proximity.get(key, ())))
                             source_af = number(info.get("SOURCE_AF"))
