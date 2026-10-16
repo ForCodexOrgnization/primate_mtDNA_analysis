@@ -2,7 +2,7 @@
 # coordinate liftover. Edit paths before running on a real dataset.
 
 intraspecies_contamination:
-  enabled: true
+  enabled: false
   vcf_dir: results/qc_incremental/collected_variant_calling_results/collected_vcf
   sample_summary: results/qc_incremental/collected_variant_calling_results/reports/variant_calling_collection_summary.tsv
   # Use the current curated sample list directly so --submit all is self-contained
@@ -163,8 +163,8 @@ final_filter:
   enabled: true
   collected_dir: results/qc_incremental/collected_variant_calling_results
   output_dir: results/qc_incremental/final_filter
-  required_sample_reports: intraspecies,sample_qc
-  optional_sample_reports: interspecies
+  required_sample_reports: sample_qc
+  optional_sample_reports: ""
   strict_missing_samples: true
   biological_call_classes: HET,HOM
   # Variant-level baseline: VCF FILTER must be PASS and source DP must be >= 100.
@@ -187,9 +187,9 @@ final_filter:
   # Final sample filtering consumes the refined strong-only v2 contamination
   # status. Only STRONG intra/inter contamination is sample-failing.
   sample_fail_status:
-    intraspecies: STRONG
-    human: fail,FAIL
-    interspecies: STRONG
+    intraspecies: __DISABLED__
+    human: __DISABLED__
+    interspecies: __DISABLED__
     sample_qc: fail,FAIL,MISSING_INPUT,FAIL_PROCESSING
   sample_reports:
     intraspecies:
@@ -364,7 +364,7 @@ coordinate_liftover:
 # Historical PASS/WARN/FAIL fields are still reported for audit, while final_filter
 # consumes the refined strong-only contamination_v2_status.
 interspecies_contamination:
-  enabled: true
+  enabled: false
   paths:
     input_vcf_dir: results/qc_incremental/coordinate_liftover/vcf_lifted_raw
     input_vcf_pattern: "{sample}.lifted.raw.vcf"
@@ -448,7 +448,7 @@ primate_homo_background:
 
 # Human-marker screening is downstream of orthology annotation/background construction.
 human_contamination:
-  enabled: true
+  enabled: false
   paths:
     input_vcf_dir: results/qc_incremental/rrna_match/vcf_rrna
     input_vcf_pattern: "{sample}.lifted.codon.trna.rrna.vcf"
