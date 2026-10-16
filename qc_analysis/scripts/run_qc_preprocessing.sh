@@ -227,6 +227,434 @@ submit_array() {
  local submission="${TASK_FILE%.tasks.txt}.submission.tsv" submitted_at; submitted_at=$(date -u +%FT%TZ)
  printf 'step\tjob_id\ttask_file\tmanifest\tlog_dir\tarray\tsubmitted_at\n%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$step" "$LAST_JOB_ID" "$TASK_FILE" "${MANIFEST:-}" "$logs" "$array" "$submitted_at" >"$submission"
 }
+contamination_step_enabled() {
+  local section="$1"
+  awk -v section="$section" '
+    /^[^[:space:]#][^:]*:/ { name=$0; sub(/:.*/, "", name); in_section=(name==section) }
+    in_section && /^[[:space:]]+enabled:[[:space:]]*/ {
+      value=$0; sub(/.*enabled:[[:space:]]*/, "", value);
+      sub(/[[:space:]#].*$/, "", value); print tolower(value); exit
+    }
+  ' "$CONFIG" | grep -Eq '^(true|yes|1) local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results sample_variant_filtering pre_liftover_variant_qc pre_liftover_variant_qc_merge local_heteroplasmy_qc intraspecies_contamination discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
+ local start_index=0 found=0 i s
+ if [[ -n "$START_FROM" ]]; then
+   for i in "${!steps[@]}"; do
+     if [[ "${steps[$i]}" == "$START_FROM" ]]; then start_index="$i"; found=1; break; fi
+   done
+   if [[ "$found" != 1 ]]; then echo "ERROR: --start-from step is not in production workflow: $START_FROM" >&2; return 2; fi
+ fi
+ printf "[qc_preprocessing] workflow_start=%s skipped_prior_steps=%s\n" "${steps[$start_index]}" "$start_index" >&2
+ for ((i=start_index; i<${#steps[@]}; i++)); do
+   s="${steps[$i]}"
+   if [[ "$s" == intraspecies_contamination || "$s" == interspecies_contamination ]]; then
+     if ! contamination_step_enabled "$s"; then
+       printf "[qc_preprocessing] step=%s state=skipped_disabled_by_config\n" "$s" >&2
+       continue
+     fi
+   fi
+   TASK_FILE=""; MANIFEST=""; OUTPUT_DIR=""; CONFIG_LOG_DIR=""; submit_array "$s" "$dep"; dep="$LAST_JOB_ID"
+ done
+}
+if [[ "$ARRAY_TASK_MODE" == "1" ]]; then
+ [[ -n "$TASK_FILE" ]] || { echo "ERROR: --array-task requires --task-file" >&2; exit 2; }
+ resolve_array_item
+fi
+if [[ "$SUBMIT_TO_SLURM" == 1 ]]; then
+ [[ -z "${SLURM_JOB_ID:-}" ]] || { echo 'ERROR: cannot submit from a Slurm job' >&2;exit 2; }
+ if [[ "$STEP" == all ]];then submit_workflow
+ else submit_array "$STEP"; producer="$LAST_JOB_ID"
+   if [[ -n "$producer" && "${AUTO_SUBMIT_MERGE:-true}" == true ]];then case "$STEP" in codon_match) TASK_FILE=""; submit_array codon_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; trna_match) TASK_FILE=""; submit_array trna_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; rrna_match) TASK_FILE=""; submit_array rrna_match_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; mitos2_annotation) TASK_FILE=""; submit_array mitos2_merge "$producer";echo "Submitted producer=$producer merge=$LAST_JOB_ID";; esac;fi
+ fi
+ exit 0
+fi
+
+BASE_PYTHON="${PYTHON:-python3}"
+RUNTIME_ELIGIBILITY_PYTHON="${RUNTIME_ELIGIBILITY_PYTHON:-python3}"
+COLLECT_SCRIPT="qc_analysis/scripts/collect_variant_calling_results.py"
+LIFTOVER_SCRIPT="qc_analysis/scripts/run_coordinate_liftover.py"
+INTERSPECIES_SCRIPT="qc_analysis/scripts/run_interspecies_contamination.py"
+CODON_SCRIPT="qc_analysis/scripts/run_codon_match.py"
+CODON_TABLE_SCRIPT="qc_analysis/scripts/build_primate_codon_table.py"
+MITOS2_SCRIPT="qc_analysis/scripts/run_mitos2_annotation.py"
+COMPARISON_SCRIPT="qc_analysis/scripts/compare_genbank_mitos2_reference_annotations.py"
+TRNA_SCRIPT="qc_analysis/scripts/run_trna_match.py"
+TRNA_MERGE_SCRIPT="qc_analysis/scripts/merge_trna_match_summaries.py"
+TRNA_INDEX_SCRIPT="qc_analysis/scripts/build_all_trna_indexes.py"
+RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
+RRNA_MERGE_SCRIPT="qc_analysis/scripts/merge_rrna_match_summaries.py"
+INTRASPECIES_SCRIPT="qc_analysis/scripts/run_intraspecies_contamination.py"
+FINAL_FILTER_SCRIPT="qc_analysis/scripts/run_final_filter_with_heteroplasmy.py"
+SAMPLE_FILTER_SCRIPT="qc_analysis/scripts/run_sample_variant_filtering.py"
+PRE_LIFTOVER_QC_SCRIPT="qc_analysis/scripts/run_pre_liftover_variant_qc.py"
+LOCAL_HET_QC_SCRIPT="qc_analysis/scripts/run_local_heteroplasmy_qc_with_expansion.sh"
+GLOBAL_ANCHOR_SCRIPT="qc_analysis/scripts/discover_global_liftover_anchor.py"
+HUMAN_CONTAMINATION_SCRIPT="qc_analysis/scripts/run_human_contamination.py"
+PRIMATE_BACKGROUND_SCRIPT="qc_analysis/scripts/build_primate_homo_background.py"
+RUNTIME_ELIGIBILITY_SCRIPT="qc_analysis/scripts/qc_sample_runtime_eligibility.py"
+
+configured_biopython_value() {
+  local requested_key="$1"
+  awk -v requested_key="$requested_key" '
+    function indent(line) { match(line, /^[[:space:]]*/); return RLENGTH }
+    function trim(value) { sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); return value }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      if (line !~ /[^[:space:]]/) next
+      level = indent(line)
+      content = trim(line)
+      if (content == "environment:") { environment_indent = level; in_environment = 1; in_biopython = 0; next }
+      if (in_environment && level <= environment_indent) { in_environment = 0; in_biopython = 0 }
+      if (in_environment && content == "biopython:") { biopython_indent = level; in_biopython = 1; next }
+      if (in_biopython && level <= biopython_indent) in_biopython = 0
+      if (in_biopython && content ~ ("^" requested_key ":[[:space:]]*")) {
+        sub("^" requested_key ":[[:space:]]*", "", content)
+        print trim(content)
+        exit
+      }
+    }
+  ' "$CONFIG"
+}
+
+configured_mitos2_value() {
+  local requested_key="$1"
+  awk -v requested_key="$requested_key" '
+    function indent(line) { match(line, /^[[:space:]]*/); return RLENGTH }
+    function trim(value) { sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); return value }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      if (line !~ /[^[:space:]]/) next
+      level = indent(line)
+      content = trim(line)
+      if (content == "mitos2_annotation:") { mitos2_indent = level; in_mitos2 = 1; in_settings = 0; next }
+      if (in_mitos2 && level <= mitos2_indent) { in_mitos2 = 0; in_settings = 0 }
+      if (in_mitos2 && content == "settings:") { settings_indent = level; in_settings = 1; next }
+      if (in_settings && level <= settings_indent) in_settings = 0
+      if (in_settings && content ~ ("^" requested_key ":[[:space:]]*")) {
+        sub("^" requested_key ":[[:space:]]*", "", content)
+        print trim(content)
+        exit
+      }
+    }
+  ' "$CONFIG"
+}
+
+configured_trnascan_value() {
+  local requested_key="$1"
+  awk -v requested_key="$requested_key" '
+    function indent(line) { match(line, /^[[:space:]]*/); return RLENGTH }
+    function trim(value) { sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); return value }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      if (line !~ /[^[:space:]]/) next
+      level = indent(line)
+      content = trim(line)
+      if (content == "trna_match:") { trna_indent = level; in_trna = 1; in_settings = 0; next }
+      if (in_trna && level <= trna_indent) { in_trna = 0; in_settings = 0 }
+      if (in_trna && content == "settings:") { settings_indent = level; in_settings = 1; next }
+      if (in_settings && level <= settings_indent) in_settings = 0
+      if (in_settings && content ~ ("^" requested_key ":[[:space:]]*")) {
+        sub("^" requested_key ":[[:space:]]*", "", content)
+        print trim(content)
+        exit
+      }
+    }
+  ' "$CONFIG"
+}
+
+if [[ -z "${BIOPYTHON_USE_MODULE+x}" ]]; then
+  configured_use_module="$(configured_biopython_value use_module)"
+  case "$configured_use_module" in
+    0|false|False|FALSE|no|No|NO) BIOPYTHON_USE_MODULE=0 ;;
+    *) BIOPYTHON_USE_MODULE=1 ;;
+  esac
+fi
+BIOPYTHON_MODULE="${BIOPYTHON_MODULE:-$(configured_biopython_value module_load)}"
+BIOPYTHON_MODULE="${BIOPYTHON_MODULE:-Biopython/1.83-foss-2022b}"
+MITOS2_CONDA_MODULE="$(configured_mitos2_value conda_module)"
+MITOS2_CONDA_ENV="$(configured_mitos2_value conda_env)"
+TRNASCAN_CONDA_MODULE="$(configured_trnascan_value conda_module)"
+TRNASCAN_CONDA_ENV="$(configured_trnascan_value conda_env)"
+TRNASCAN_BIN="$(configured_trnascan_value trnascan_bin)"
+
+runtime_sample_eligible() {
+  [[ "$RUNTIME_ELIGIBILITY_MODE" == 1 ]] || return 0
+  # Runtime eligibility is only defined for downstream annotation steps.
+  # pre_liftover_variant_qc must run before liftover and therefore must not be
+  # sent through qc_sample_runtime_eligibility.py (which requires liftover QC).
+  case "$STEP" in
+    codon_match|trna_match|rrna_match) ;;
+    *) return 0 ;;
+  esac
+  local output eligible reason
+  output=$("$RUNTIME_ELIGIBILITY_PYTHON" "$RUNTIME_ELIGIBILITY_SCRIPT" "$STEP" "$SAMPLE" "$CONFIG")
+  eligible=$(printf '%s\n' "$output" | sed -n 's/^ELIGIBLE=//p')
+  reason=$(printf '%s\n' "$output" | sed -n 's/^REASON=//p')
+  if [[ "$eligible" != 1 ]]; then
+    printf '[qc_preprocessing] step=%s sample=%s runtime_status=skipped reason=%s\n' "$STEP" "$SAMPLE" "${reason:-not_eligible}" >&2
+    return 1
+  fi
+  printf '[qc_preprocessing] step=%s sample=%s runtime_status=eligible\n' "$STEP" "$SAMPLE" >&2
+  return 0
+}
+
+run_collect_variant_calling_results() {
+  echo "[qc_preprocessing] Running collect_variant_calling_results with config: ${CONFIG}" >&2
+  "$BASE_PYTHON" "$COLLECT_SCRIPT" --config "$CONFIG"
+}
+
+run_discover_global_anchor() {
+  echo "[qc_preprocessing] Running discover_global_anchor with config: ${CONFIG}" >&2
+  echo "[qc_preprocessing] MAFFT environment preflight:" >&2
+  "$BASE_PYTHON" "$GLOBAL_ANCHOR_SCRIPT" --config "$CONFIG" --check-environment | while IFS= read -r line; do
+    echo "[qc_preprocessing] ${line}" >&2
+  done
+  "$BASE_PYTHON" "$GLOBAL_ANCHOR_SCRIPT" --config "$CONFIG"
+}
+
+run_coordinate_liftover() {
+  echo "[qc_preprocessing] Running coordinate_liftover with config: ${CONFIG}" >&2
+  local cmd=("$BASE_PYTHON" "$LIFTOVER_SCRIPT" --config "$CONFIG")
+  if [[ -n "${SAMPLE:-}" ]]; then
+    cmd+=(--sample "$SAMPLE")
+  fi
+  "${cmd[@]}"
+}
+
+run_mitos2_annotation() {
+  local mode="${1:-}"
+  activate_mitos2_environment
+  echo "[qc_preprocessing] Running mitos2_annotation ${mode} with config: ${CONFIG}" >&2
+  local cmd=("$MITOS2_PYTHON" "$MITOS2_SCRIPT" --config "$CONFIG")
+  [[ -n "$mode" ]] && cmd+=("$mode")
+  if [[ "$STEP" == mitos2_annotation && "${ITEM:-}" == task:* ]]; then cmd+=(--task-id "${ITEM#task:}")
+  elif [[ "$STEP" == mitos2_annotation && "${ITEM:-}" == reference:* ]]; then cmd+=(--reference "${ITEM#reference:}")
+  elif [[ -n "${SAMPLE:-}" ]]; then cmd+=(--sample "$SAMPLE"); fi
+  "${cmd[@]}"
+}
+
+activate_mitos2_environment() {
+  if [[ -z "$MITOS2_CONDA_MODULE" || -z "$MITOS2_CONDA_ENV" ]]; then
+    echo "ERROR: mitos2_annotation.settings must define conda_module and conda_env." >&2
+    exit 1
+  fi
+  echo "[qc_preprocessing] Loading MITOS2 conda module: ${MITOS2_CONDA_MODULE}" >&2
+  if ! command -v module >/dev/null 2>&1; then
+    if [[ -f /etc/profile.d/modules.sh ]]; then source /etc/profile.d/modules.sh; fi
+  fi
+  if ! command -v module >/dev/null 2>&1; then
+    echo "ERROR: module command is unavailable; cannot load ${MITOS2_CONDA_MODULE}." >&2
+    exit 1
+  fi
+  module load "$MITOS2_CONDA_MODULE"
+  source "$(conda info --base)/etc/profile.d/conda.sh"
+  echo "[qc_preprocessing] Activating MITOS2 conda environment: ${MITOS2_CONDA_ENV}" >&2
+  conda activate "$MITOS2_CONDA_ENV"
+  hash -r
+  if [[ -z "${CONDA_PREFIX:-}" ]]; then
+    echo "ERROR: conda activation did not set CONDA_PREFIX for MITOS2 environment: ${MITOS2_CONDA_ENV}." >&2
+    exit 1
+  fi
+  MITOS2_PYTHON="${CONDA_PREFIX}/bin/python"
+  if [[ ! -x "$MITOS2_PYTHON" ]]; then
+    echo "ERROR: MITOS2 Python is missing or not executable: ${MITOS2_PYTHON}" >&2
+    exit 1
+  fi
+  echo "[qc_preprocessing] CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-}" >&2
+  echo "[qc_preprocessing] CONDA_PREFIX=${CONDA_PREFIX}" >&2
+  echo "[qc_preprocessing] command -v python=$(command -v python || true)" >&2
+  echo "[qc_preprocessing] MITOS2_PYTHON=${MITOS2_PYTHON}" >&2
+  echo "[qc_preprocessing] MITOS2_PYTHON version=$($MITOS2_PYTHON --version 2>&1)" >&2
+  if ! "$MITOS2_PYTHON" -c 'import sys, Bio; from Bio import SeqIO; print(sys.executable); print(Bio.__version__)'; then
+    echo "ERROR: Biopython is not importable in the MITOS2 conda environment: ${MITOS2_CONDA_ENV}." >&2
+    exit 1
+  fi
+  echo "[qc_preprocessing] Biopython version=$($MITOS2_PYTHON -c 'import Bio; print(Bio.__version__)')" >&2
+  echo "[qc_preprocessing] command -v runmitos=$(command -v runmitos || true)" >&2
+}
+
+activate_trnascan_environment() {
+  if [[ -z "$TRNASCAN_CONDA_MODULE" || -z "$TRNASCAN_CONDA_ENV" ]]; then
+    echo "ERROR: trna_match.settings must define conda_module and conda_env." >&2
+    exit 1
+  fi
+  if [[ -z "$TRNASCAN_BIN" ]]; then
+    echo "ERROR: trna_match.settings must define trnascan_bin." >&2
+    exit 1
+  fi
+  echo "[qc_preprocessing] Loading tRNAscan-SE conda module: ${TRNASCAN_CONDA_MODULE}" >&2
+  if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile.d/modules.sh ]]; then source /etc/profile.d/modules.sh; fi
+  if ! command -v module >/dev/null 2>&1; then
+    echo "ERROR: module command is unavailable; cannot load ${TRNASCAN_CONDA_MODULE}." >&2
+    echo "ERROR: failed to activate tRNAscan environment." >&2
+    exit 1
+  fi
+  if ! module load "$TRNASCAN_CONDA_MODULE"; then
+    echo "ERROR: failed to load tRNAscan conda module: ${TRNASCAN_CONDA_MODULE}." >&2
+    echo "ERROR: failed to activate tRNAscan environment." >&2
+    exit 1
+  fi
+  local conda_base
+  if ! conda_base="$(conda info --base)" || [[ -z "$conda_base" || ! -f "$conda_base/etc/profile.d/conda.sh" ]]; then
+    echo "ERROR: could not locate conda initialization script for tRNAscan-SE." >&2
+    echo "ERROR: failed to activate tRNAscan environment." >&2
+    exit 1
+  fi
+  source "$conda_base/etc/profile.d/conda.sh"
+  echo "[qc_preprocessing] Activating tRNAscan conda environment: ${TRNASCAN_CONDA_ENV}" >&2
+  if ! conda activate "$TRNASCAN_CONDA_ENV"; then
+    echo "ERROR: failed to activate tRNAscan environment: ${TRNASCAN_CONDA_ENV}." >&2
+    exit 1
+  fi
+  hash -r
+  if [[ -z "${CONDA_PREFIX:-}" ]]; then
+    echo "ERROR: conda activation did not set CONDA_PREFIX for tRNAscan environment: ${TRNASCAN_CONDA_ENV}." >&2
+    exit 1
+  fi
+  local trnascan_executable trnascan_version
+  if ! trnascan_executable="$(command -v "$TRNASCAN_BIN")"; then
+    echo "ERROR: tRNAscan-SE was not found after activating conda environment: ${TRNASCAN_CONDA_ENV}" >&2
+    echo "Configured executable: ${TRNASCAN_BIN}" >&2
+    exit 127
+  fi
+  trnascan_version="$("$TRNASCAN_BIN" --version 2>&1 || true)"
+  if [[ -z "$trnascan_version" ]]; then "$TRNASCAN_BIN" -h >/dev/null 2>&1 || true; fi
+  echo "[qc_preprocessing] CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-}" >&2
+  echo "[qc_preprocessing] CONDA_PREFIX=${CONDA_PREFIX}" >&2
+  echo "[qc_preprocessing] tRNAscan-SE executable=${trnascan_executable}" >&2
+  echo "[qc_preprocessing] tRNAscan-SE version/info=${trnascan_version}" >&2
+}
+
+run_build_trna_indexes() {
+  activate_trnascan_environment
+  echo "[qc_preprocessing] Running build_trna_indexes with config: ${CONFIG}" >&2
+  local workers
+  workers="$(trna_setting index_build_workers)"; workers="${workers:-1}"
+  [[ "$workers" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: index_build_workers must be >= 1: $workers" >&2; exit 2; }
+  "$BASE_PYTHON" "$TRNA_INDEX_SCRIPT" --config "$CONFIG" --workers "$workers"
+}
+
+run_trna_match() {
+  activate_trnascan_environment
+  run_annotation trna_match "$TRNA_SCRIPT"
+}
+
+run_build_primate_codon_table() {
+  echo "[qc_preprocessing] Running build_primate_codon_table with config: ${CONFIG}" >&2
+  if [[ "${BIOPYTHON_USE_MODULE}" == "1" ]]; then
+    echo "[qc_preprocessing] Loading Biopython module: ${BIOPYTHON_MODULE}" >&2
+    if command -v module >/dev/null 2>&1; then
+      module load "${BIOPYTHON_MODULE}"
+    elif [[ -f /etc/profile.d/modules.sh ]]; then
+      source /etc/profile.d/modules.sh
+      module load "${BIOPYTHON_MODULE}"
+    else
+      echo "WARNING: BIOPYTHON_USE_MODULE=1 but module command is unavailable." >&2
+    fi
+  fi
+  if ! "$BASE_PYTHON" - <<'PY'
+from Bio import Entrez, SeqIO
+print("Biopython import OK")
+PY
+  then
+    echo "ERROR: Biopython is not importable after loading the configured module." >&2
+    echo "Tried module: ${BIOPYTHON_MODULE}" >&2
+    echo "Please check the HPC module name or set BIOPYTHON_USE_MODULE=0 if using a Python environment that already has Biopython." >&2
+    exit 1
+  fi
+  local cmd=("$BASE_PYTHON" "$CODON_TABLE_SCRIPT" --config "$CONFIG")
+  [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
+  local workers="${CODON_TABLE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
+  if [[ "$workers" =~ ^[1-9][0-9]*$ ]]; then cmd+=(--workers "$workers"); else echo "WARNING: ignoring invalid CODON_TABLE_WORKERS value: ${workers}" >&2; fi
+  if [[ -n "${CODON_TABLE_DOWNLOAD_WORKERS:-}" ]]; then
+    if [[ "${CODON_TABLE_DOWNLOAD_WORKERS}" =~ ^[1-9][0-9]*$ ]]; then cmd+=(--download-workers "${CODON_TABLE_DOWNLOAD_WORKERS}"); else echo "WARNING: ignoring invalid CODON_TABLE_DOWNLOAD_WORKERS value: ${CODON_TABLE_DOWNLOAD_WORKERS}" >&2; fi
+  fi
+  "${cmd[@]}"
+}
+
+run_compare_genbank_mitos2() {
+  echo "[qc_preprocessing] Running compare_genbank_mitos2 with config: ${CONFIG}" >&2
+  "$BASE_PYTHON" "$COMPARISON_SCRIPT" --config "$CONFIG"
+}
+
+comparison_enabled() {
+  awk '
+    /^[^[:space:]]/ { in_section = ($0 ~ /^genbank_mitos2_comparison:/) }
+    in_section && /^[[:space:]]+enabled:[[:space:]]*/ { value=$0; sub(/.*enabled:[[:space:]]*/, "", value); print value; exit }
+  ' "$CONFIG" | grep -Eiq '^(true|yes|1)$'
+}
+
+run_annotation() {
+  local name="$1" script="$2"
+  echo "[qc_preprocessing] Running ${name} with config: ${CONFIG}" >&2
+  local cmd=("$BASE_PYTHON" "$script" --config "$CONFIG")
+  [[ -n "${SAMPLE:-}" ]] && cmd+=(--sample "$SAMPLE")
+  "${cmd[@]}"
+}
+
+if ! runtime_sample_eligible; then
+  exit 0
+fi
+
+case "$STEP" in
+  collect_variant_calling_results) run_collect_variant_calling_results ;;
+  discover_global_anchor) run_discover_global_anchor ;;
+  coordinate_liftover) run_coordinate_liftover ;;
+  interspecies_contamination) "$BASE_PYTHON" "$INTERSPECIES_SCRIPT" --config "$CONFIG" ;;
+  human_contamination) "$BASE_PYTHON" "$HUMAN_CONTAMINATION_SCRIPT" --config "$CONFIG" ;;
+  build_primate_homo_background) "$BASE_PYTHON" "$PRIMATE_BACKGROUND_SCRIPT" --config "$CONFIG" ;;
+  mitos2_prepare_tasks) run_mitos2_annotation --prepare-tasks ;;
+  mitos2_merge) run_mitos2_annotation --merge-only ;;
+  mitos2_annotation) run_mitos2_annotation ;;
+  build_primate_codon_table) run_build_primate_codon_table ;;
+  compare_genbank_mitos2) run_compare_genbank_mitos2 ;;
+  codon_match) run_annotation codon_match "$CODON_SCRIPT" ;;
+  codon_match_validate) "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --validate-inputs ;;
+  codon_match_merge) "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --merge-summaries ;;
+  build_trna_indexes) run_build_trna_indexes ;;
+  trna_match) run_trna_match ;;
+  trna_match_merge) "$BASE_PYTHON" "$TRNA_MERGE_SCRIPT" --config "$CONFIG" ;;
+  trna_gene_qc) echo 'Run run_trna_gene_liftover_qc.py with source index, human index, and coordinate map for each sample.' ;;
+  rrna_match) run_annotation rrna_match "$RRNA_SCRIPT" ;;
+  rrna_match_merge) "$BASE_PYTHON" "$RRNA_MERGE_SCRIPT" --config "$CONFIG" ;;
+  intraspecies_contamination) "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG" ;;
+  sample_variant_filtering) "$BASE_PYTHON" "$SAMPLE_FILTER_SCRIPT" --config "$CONFIG" ;;
+  pre_liftover_variant_qc)
+    pre_args=(--config "$CONFIG")
+    [[ -n "${SAMPLE:-}" ]] && pre_args+=(--sample "$SAMPLE")
+    [[ "$INCREMENTAL_MODE" == 1 ]] && pre_args+=(--skip-missing)
+    "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" "${pre_args[@]}" ;;
+  pre_liftover_variant_qc_merge) "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" --config "$CONFIG" --merge-reports ;;
+  local_heteroplasmy_qc) PYTHON="$BASE_PYTHON" bash "$LOCAL_HET_QC_SCRIPT" "$CONFIG" ;;
+  final_filter) "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG" ;;
+  all)
+    run_collect_variant_calling_results
+    "$BASE_PYTHON" "$SAMPLE_FILTER_SCRIPT" --config "$CONFIG"
+    "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" --config "$CONFIG"
+    PYTHON="$BASE_PYTHON" bash "$LOCAL_HET_QC_SCRIPT" "$CONFIG"
+    if contamination_step_enabled intraspecies_contamination; then "$BASE_PYTHON" "$INTRASPECIES_SCRIPT" --config "$CONFIG"; fi
+    run_discover_global_anchor
+    run_coordinate_liftover
+    if contamination_step_enabled interspecies_contamination; then "$BASE_PYTHON" "$INTERSPECIES_SCRIPT" --config "$CONFIG"; fi
+    run_mitos2_annotation
+    "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --validate-inputs
+    run_annotation codon_match "$CODON_SCRIPT"
+    "$BASE_PYTHON" "$CODON_SCRIPT" --config "$CONFIG" --merge-summaries
+    run_build_trna_indexes
+    run_trna_match
+    "$BASE_PYTHON" "$TRNA_MERGE_SCRIPT" --config "$CONFIG"
+    run_annotation rrna_match "$RRNA_SCRIPT"
+    "$BASE_PYTHON" "$RRNA_MERGE_SCRIPT" --config "$CONFIG"
+    "$BASE_PYTHON" "$PRIMATE_BACKGROUND_SCRIPT" --config "$CONFIG"
+    # Human contamination is intentionally paused. Keep the standalone
+    # human_contamination step above so it can be run explicitly when resumed.
+    "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG"
+    ;;
+esac
+
+}
 submit_workflow() {
  local dep=""; SAMPLE=""; local steps=(collect_variant_calling_results sample_variant_filtering pre_liftover_variant_qc pre_liftover_variant_qc_merge local_heteroplasmy_qc intraspecies_contamination discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
  local start_index=0 found=0 i s
