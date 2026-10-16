@@ -170,6 +170,9 @@ final_filter:
   # Variant-level baseline: VCF FILTER must be PASS and source DP must be >= 100.
   variant_dp_min: 100
   # Per-sample species-specific tRNA proximity candidates; no species recurrence gate.
+  matching_filters:
+    codon: true
+    rrna: true
   trna_compensation:
     enabled: true
     max_stem_pair_distance: 2
