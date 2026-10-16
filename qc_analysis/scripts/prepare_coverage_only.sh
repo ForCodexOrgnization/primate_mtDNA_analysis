@@ -42,9 +42,11 @@ for p in \
   "$target/rrna_match/reports/rrna_match_summary.tsv"; do
   [[ ! -f "$p" ]] || mv "$p" "$p.precoverage_snapshot"
 done
-# Prefer the latest current collection inventory; never rewrite source collection.
-summary="$source/collected_variant_calling_results/reports/variant_calling_collection_summary.tsv"
-[[ -s "$summary" ]] || { echo "ERROR: missing current source collection summary: $summary" >&2; exit 1; }
+# Use the curated updated collection summary, not raw collection output.
+# This preserves manual nuclear coverage/mtCN corrections and the exact
+# inventory used by the strict incremental sample QC.
+summary="$source/updated_collection_summary.tsv"
+[[ -s "$summary" ]] || { echo "ERROR: missing curated updated collection summary: $summary" >&2; exit 1; }
 cp "$summary" "$target/updated_collection_summary.tsv"
 python3 - <<'PY'
 import csv
