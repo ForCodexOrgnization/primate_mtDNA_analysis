@@ -57,7 +57,7 @@ FALLBACK_OUTPUTS = {
 
 def resolve_runtime_paths(step, cfg):
     section=cfg.get(STEP_SECTIONS.get(step,''),{}) or {}; paths=section.get('paths',{}) or {}
-    explicit=paths.get('job_array_dir'); output=paths.get('output_dir') or section.get('outdir')
+    explicit=paths.get('job_array_dir'); output=paths.get('output_dir') or section.get('output_dir') or section.get('outdir')
     if not output:
         reports=paths.get('reports_dir')
         if reports: output=str(Path(reports).parent)
