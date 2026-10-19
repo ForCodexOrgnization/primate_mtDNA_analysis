@@ -159,6 +159,9 @@ local_heteroplasmy_qc:
 # NOT_AVAILABLE and do not fail a sample; paths can be enabled as they are added.
 final_filter:
   enabled: true
+  # Include QC-failed samples with available lifted VCFs in the variant report only.
+  # Final VCF, coverage and mtCN outputs still require sample PASS.
+  report_all_samples: true
   collected_dir: results/qc/collected_variant_calling_results
   output_dir: results/qc/final_filter
   required_sample_reports: intraspecies,sample_qc
