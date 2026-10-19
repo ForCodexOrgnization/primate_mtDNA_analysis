@@ -72,6 +72,56 @@ def test_final_filter_excludes_failed_sample_and_failed_variant(tmp_path):
     assert variants[0]["human_chrom"]=="chrM"
     assert variants[0]["source_chrom"]==variants[0]["original_chrom"]=="NOT_AVAILABLE"
 
+
+def test_report_all_samples_keeps_failed_sample_variants_out_of_final_vcf(tmp_path):
+    if not ((shutil.which("bgzip") and shutil.which("tabix")) or __import__("importlib").util.find_spec("pysam")):
+        pytest.skip("pysam or bgzip/tabix is required for production VCF output")
+    collected = tmp_path / "collected"
+    (collected / "reports").mkdir(parents=True)
+    (collected / "reports/variant_calling_collection_summary.tsv").write_text(
+        "sample\tspecies\nA\tsp\nB\tsp\n"
+    )
+    intra = tmp_path / "intra.tsv"
+    intra.write_text("sample\tcontamination_status\nA\tno_strong_evidence\nB\tno_strong_evidence\n")
+    sample_qc = tmp_path / "sample_qc.tsv"
+    sample_qc.write_text(
+        "sample\tqc_status\tPercent_100\tfailed_criteria\n"
+        "A\tPASS\t98\t\nB\tFAIL\t75\tPercent_100\n"
+    )
+    downstream = tmp_path / "rrna"
+    downstream.mkdir()
+    write_vcf(downstream / "A.lifted.codon.trna.rrna.vcf", "A", [(100, .96)])
+    write_vcf(downstream / "B.lifted.codon.trna.rrna.vcf", "B", [(101, .96)])
+    out = tmp_path / "final"
+    cfg = tmp_path / "qc.yaml"
+    cfg.write_text(f"""final_filter:
+  collected_dir: {collected}
+  output_dir: {out}
+  report_all_samples: true
+  sample_reports:
+    intraspecies:
+      path: {intra}
+    sample_qc:
+      path: {sample_qc}
+  vcf_sources: {downstream}
+""")
+    run = subprocess.run([sys.executable, str(FINAL), "--config", str(cfg)], text=True, capture_output=True)
+    assert run.returncode == 0, run.stderr
+    with (out / "reports/final_variant_qc.tsv").open() as handle:
+        variants = list(csv.DictReader(handle, delimiter="\t"))
+    assert {row["sample"] for row in variants} == {"A", "B"}
+    a = next(row for row in variants if row["sample"] == "A")
+    b = next(row for row in variants if row["sample"] == "B")
+    assert a["final_sample_status"] == a["final_call_status"] == "PASS"
+    assert b["final_sample_status"] == "FAIL"
+    assert b["final_variant_status"] == "PASS"
+    assert b["final_call_status"] == "FAIL"
+    assert (out / "final_vcf/A.final.vcf.gz").is_file()
+    assert not (out / "final_vcf/B.final.vcf.gz").exists()
+    with (out / "reports/final_sample_qc.tsv").open() as handle:
+        samples = list(csv.DictReader(handle, delimiter="\t"))
+    assert {row["sample"] for row in samples} == {"A", "B"}
+
 def final_filter_fixture(tmp_path, records, filtered_positions=()):
     collected=tmp_path/"collected";(collected/"reports").mkdir(parents=True)
     (collected/"reports/variant_calling_collection_summary.tsv").write_text("sample\tspecies\nA\tsp\n")
