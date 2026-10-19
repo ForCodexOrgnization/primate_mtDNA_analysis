@@ -24,7 +24,7 @@ SAMPLE_COLUMNS = "sample species intraspecies_status human_contamination_status 
 VARIANT_COLUMNS = (
     "sample species human_chrom human_pos human_ref human_alt source_chrom source_pos source_ref source_alt "
     "AF DP source_af source_dp source_call_class target_af liftover_allele_status vcf_filter variant_class call_class snv_type mt_median_coverage Percent_100 nuclear_median_coverage mtcn_median MAD "
-    "sample_level_qc_status sample_failed_criteria intraspecies_status human_contamination_status interspecies_status "
+    "sample_level_qc_status sample_failed_criteria final_sample_status final_sample_fail_reasons final_call_status intraspecies_status human_contamination_status interspecies_status "
     "region_type orthology_match_status orthology_fail_reason codon_match_status trna_match_status rrna_match_status "
     "final_variant_status final_variant_fail_reasons original_chrom original_pos original_ref original_alt liftover_status sample_variant_qc_status match_status"
 ).split()
@@ -592,6 +592,8 @@ def main():
     sample_rows = []
     sample_context = {}
     passing = {}
+    reportable = {}
+    report_all_samples = sec.get("report_all_samples", False) is True
     sample_qc_rows = indexed["sample_qc"]
     for sample, row in sorted(collection.items()):
         statuses = {name: pick(indexed[name].get(sample, {}), fields[name]) for name in defaults}
@@ -623,6 +625,8 @@ def main():
         if not reasons and src is None:
             reasons.append("vcf:missing_downstream_source")
         status = "FAIL" if reasons else "PASS"
+        if src is not None and (status == "PASS" or report_all_samples):
+            reportable[sample] = src
         if status == "PASS":
             passing[sample] = src
         sample_row = dict(
@@ -654,7 +658,7 @@ def main():
                 pair_writer.writerow(pair_row)
 
     db_path = out / ".work" / "variant_reports.sqlite3"
-    report_store = build_variant_report_store(db_path, sec.get("variant_reports") or {}, set(passing))
+    report_store = build_variant_report_store(db_path, sec.get("variant_reports") or {}, set(reportable))
     kept = {}
     n_variants = 0
     n_variants_fail = 0
@@ -672,7 +676,7 @@ def main():
             variant_report_tmp = Path(report_handle.name)
             variant_writer = csv.DictWriter(report_handle, fieldnames=VARIANT_COLUMNS, delimiter="\t")
             variant_writer.writeheader()
-            for sample, src in sorted(passing.items()):
+            for sample, src in sorted(reportable.items()):
                 variant_flags, variant_annotations = load_sample_variant_evidence(report_store, sample)
                 trna_cfg = sec.get("trna_compensation") or {}
                 trna_enabled = trna_cfg.get("enabled", False)
@@ -782,6 +786,9 @@ def main():
                                     MAD=pick(qc, ["MAD"]),
                                     sample_level_qc_status=context["sample_level_qc_status"],
                                     sample_failed_criteria=pick(qc, ["failed_criteria"], ""),
+                                    final_sample_status=context["final_sample_status"],
+                                    final_sample_fail_reasons=context["final_sample_fail_reasons"],
+                                    final_call_status="PASS" if context["final_sample_status"] == "PASS" and final_status == "PASS" else "FAIL",
                                     intraspecies_status=context["intraspecies_status"],
                                     human_contamination_status=context["human_contamination_status"],
                                     interspecies_status=context["interspecies_status"],
@@ -808,6 +815,10 @@ def main():
                             else:
                                 target.write(line)
                                 n += 1
+                # Report failing samples, but never emit their final VCF/coverage/mtCN.
+                if sample not in passing:
+                    plain.unlink(missing_ok=True)
+                    continue
                 dest = out / "final_vcf" / f"{sample}.final.vcf.gz"
                 sorted_plain = None
                 try:
@@ -844,6 +855,7 @@ def main():
                 ("n_samples_fail", len(collection) - len(passing)),
                 ("n_variants_pass", sum(kept.values())),
                 ("n_variants_fail", n_variants_fail),
+                ("n_samples_with_variant_report", len(reportable)),
             )
         )
     shutil.rmtree(out / ".work", ignore_errors=True)
