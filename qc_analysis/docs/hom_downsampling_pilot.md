@@ -1,4 +1,49 @@
-# Homoplasmic mtDNA downsampling pilot (McCleary)
+# Recommended accelerated experiment: proportional mtDNA + NUMT candidate downsampling
+
+The **recommended** pilot now starts from each sample's existing Round-1 `EXTRACT_CANDIDATE_READS` output, `<sample>.with_mates.bam`. The older whole-WGS scripts are retained only as a comparison/control, not replaced. Do not submit their full array by mistake.
+
+**Scientific interpretation:** The candidate BAM already selects primary read pairs from chrM + sample-specific NUMT intervals (both mates required). Subsampling by QNAME with one common fraction reduces chrM and NUMT-associated records proportionally *in expectation*. This does NOT independently keep nuclear depth constant, and raw BAM chrM depth is NOT the final Round-2 callable depth. It also does not regenerate read extraction from a downsampled WGS CRAM; compare the two methods on a small sample if their equivalence matters.
+
+## Accelerated workflow on McCleary
+
+From `/vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis_coverage_only`:
+
+```bash
+git pull origin main
+BASE=results/qc_coverage_only/downsampling_pilot
+# Must exist and include sample, species, mt_median_coverage:
+head -n 3 "$BASE/pilot_samples.tsv"
+# Inspect location of source candidate BAMs:
+find results -name 'ERS12091908.with_mates.bam' -print
+```
+
+If candidate BAMs are outside this repository's `results/` folder, set `CANDIDATE_ROOT` to the **Round-1 pipeline outdir that directly contains `<sample>/round_1/candidate_reads`**. Do not set it to the candidate_reads directory itself. Candidate BAMs must already exist; if not, first run `EXTRACT_CANDIDATE_READS` once for each sample using the same reference and NUMT BED as the original run.
+
+**Step 1: calibration once per sample (Slurm job):**
+
+```bash
+CANDIDATE_ROOT=/path/to/round1/pipeline/outdir \
+  bash qc_analysis/scripts/submit_candidate_downsampling.sh --prepare
+```
+
+This computes source median depth using `samtools depth -aa -r chrM`, and writes `$BASE/candidate_downsampling_jobs.tsv` with 60 tasks and measured fractions. It requires `chrM` in every candidate BAM; if a sample uses another MT contig, prepare needs a sample-specific contig feature before including that sample. It does **not** derive fractions from the old QC summary.
+
+Check `$BASE/logs/candidate_prepare_*.out` and `$BASE/logs/candidate_prepare_*.err`, and inspect the manifest.
+
+**Step 2: one-task pilot, then full Slurm array:**
+
+```bash
+bash qc_analysis/scripts/submit_candidate_downsampling.sh --pilot
+# After confirming output metrics and BAM:
+MAX_CONCURRENT=4 bash qc_analysis/scripts/submit_candidate_downsampling.sh --all
+```
+
+Each task uses one `samtools view --subsample-seed --subsample` over an already-filtered candidate BAM, preserving read pair consistency. Output is `$BASE/candidate_downsampled/<sample>/` with an indexed BAM and metrics TSV (including actual raw chrM median/mean and mapped chrM/non-chrM counts before and after).
+
+**Important:** Test task 1 is part of the 60-task manifest; full array will encounter it again and reuse an existing BAM. Do not run full array while pilot is still active. Generated BAMs are **not yet automatically routed** into the Round-1/2 callers; a separate restart-from-candidate entrypoint is required for HOM recall validation. The initial raw coverage fraction may not lead to exact desired median because sampling is stochastic, and especially not to precise final calling coverage. Always analyze actual measured depth.
+
+## Legacy whole-WGS experiment (optional control)
+
 
 This is **Stage 1 only**: directly read WGS CRAM/CRAI from `/home`, subsample WGS reads with Slurm arrays, and write BAM/depth metrics to scratch. It does not run Round 1/Round 2 variant calling or establish HOM recall.
 
