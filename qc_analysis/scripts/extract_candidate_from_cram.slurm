@@ -41,8 +41,19 @@ mkdir "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 echo "SAMPLE=$SAMPLE INPUT=$CRAM BED=$BED OUTPUT=$OUT"
 samtools quickcheck -v "$CRAM"
-# -M activates indexed multi-region iteration; -L alone filters a full scan.
-samtools view -@ "$T" "${REF[@]}" -b -F 0x900 -M -L "$BED" \
+echo "samtools=$(command -v samtools)"
+samtools --version | head -n 2
+# -M is supported in current samtools but may not be available in the
+# login node's older conda binary. Prefer indexed multi-region iteration
+# when supported; fall back safely to -L if this binary lacks -M.
+EXTRACT_REGION_ARGS=(-L "$BED")
+if samtools view --help 2>&1 | grep -Eq -- '(^|[[:space:]])-M([,[:space:]]|$)|--use-index'; then
+  EXTRACT_REGION_ARGS=(-M -L "$BED")
+  echo "Using indexed -M -L extraction"
+else
+  echo "WARNING: samtools binary lacks -M; using slower -L BED filtering"
+fi
+samtools view -@ "$T" "${REF[@]}" -b -F 0x900 "${EXTRACT_REGION_ARGS[@]}" \
   -o "$WORK/target.bam" "$CRAM"
 samtools sort -n -@ "$T" -o "$WORK/name.bam" "$WORK/target.bam"
 # Reproduce the original Round-1 QNAME-group filter (n >= 2 primary records).
