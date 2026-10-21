@@ -41,7 +41,8 @@ mkdir "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 echo "SAMPLE=$SAMPLE INPUT=$CRAM BED=$BED OUTPUT=$OUT"
 samtools quickcheck -v "$CRAM"
-samtools view -@ "$T" "${REF[@]}" -b -F 0x900 -L "$BED" \
+# -M activates indexed multi-region iteration; -L alone filters a full scan.
+samtools view -@ "$T" "${REF[@]}" -b -F 0x900 -M -L "$BED" \
   -o "$WORK/target.bam" "$CRAM"
 samtools sort -n -@ "$T" -o "$WORK/name.bam" "$WORK/target.bam"
 # Reproduce the original Round-1 QNAME-group filter (n >= 2 primary records).
