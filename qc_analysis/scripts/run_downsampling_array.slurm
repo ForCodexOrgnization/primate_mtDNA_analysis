@@ -21,8 +21,10 @@ IFS=$'\t' read -r SAMPLE SPECIES ORIGINAL_EST TARGET SEED FRACTION <<< "$line"
 [[ "$FRACTION" =~ ^0?\.[0-9]+$|^1(\.0+)?$ ]] || {
   echo "Invalid fraction $FRACTION" >&2; exit 1;
 }
-IN="$BASE/wgs_input/$SAMPLE/$SAMPLE.cram"
+INPUT_ROOT=${WGS_INPUT_ROOT:-/home/lt692/ycga_work/primate_downsampling_pilot/wgs_input}
+IN="$INPUT_ROOT/$SAMPLE/$SAMPLE.cram"
 [[ -s "$IN" && -s "$IN.crai" ]] || { echo "Missing CRAM/CRAI: $IN" >&2; exit 1; }
+echo "Input CRAM: $IN (read-only); BAM output on scratch"
 
 REF_ARGS=()
 if [[ -n ${CRAM_REFERENCE_FASTA:-} ]]; then
