@@ -42,3 +42,16 @@ find results/qc_coverage_only/downsampling_pilot/downsampled -name '*.metrics.ts
 The resulting site coverage is raw BAM depth on one mt contig; it is not equivalent to round2 merged or shifted max-depth coverage. Input CRAM/CRAI are **read directly from `/home`, unchanged**. All generated BAM, BAI and metrics are written to scratch. `stage_pilot_wgs.sh` remains available as an optional, separate backup/staging operation and is not needed for the main workflow. If a large `stage_pilot_wgs.sh` job is currently running, cancel that job or interrupt it before launching this workflow to avoid duplicate I/O. Incomplete scratch copies can be left alone until inspected.
 
 Before using these BAMs for HOM recovery analysis, confirm they are valid inputs to the actual Round 1/Round 2 workflows and relax the appropriate HOM-specific site DP filters in a separate QC config.
+
+## Troubleshooting: many short nuclear contigs
+
+Earlier versions failed on fragmented primate reference assemblies with thousands of 14-20 kb nuclear scaffolds (for example, 6,795 for ERS12091908). The updated Slurm worker ranks 14-20 kb contigs by mapped reads per base and requires the top candidate to have >=100 mapped reads/base and >=20-fold lead over the second candidate. It prints only the top ten. This is a **candidate selection**, not definitive mtDNA identification: verify the selected contig against the original species reference manifest before interpreting biological results. If ambiguous, the worker stops. The safe manual override is to run one species' pilot task with `MT_CONTIG=<correct_contig> bash qc_analysis/scripts/submit_downsampling.sh --pilot`. Do not export a single MT_CONTIG for a multi-species batch unless the same contig identifier is correct for all samples.
+
+Re-run after pulling updated `main`:
+
+```bash
+git pull origin main
+bash qc_analysis/scripts/submit_downsampling.sh --pilot
+```
+
+No CRAM/CRAI need to be copied. The original failed task quit before downsampling.
