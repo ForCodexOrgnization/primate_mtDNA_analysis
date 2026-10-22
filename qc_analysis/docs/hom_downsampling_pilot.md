@@ -40,7 +40,7 @@ MAX_CONCURRENT=4 bash qc_analysis/scripts/submit_candidate_downsampling.sh --all
 
 Each task uses one `samtools view --subsample-seed --subsample` over an already-filtered candidate BAM, preserving read pair consistency. Output is `$BASE/candidate_downsampled/<sample>/` with an indexed BAM and metrics TSV (including actual raw chrM median/mean and mapped chrM/non-chrM counts before and after).
 
-**Important:** Test task 1 is part of the 60-task manifest; full array will encounter it again and reuse an existing BAM. Do not run full array while pilot is still active. Generated BAMs are **not yet automatically routed** into the Round-1/2 callers; a separate restart-from-candidate entrypoint is required for HOM recall validation. The initial raw coverage fraction may not lead to exact desired median because sampling is stochastic, and especially not to precise final calling coverage. Always analyze actual measured depth.
+**Important:** Test task 1 is part of the 60-task manifest; full array will encounter it again and reuse an existing BAM. Do not run full array while pilot is still active. The full **variant-calling** repository now implements the Round-1 restart-from-candidate input; the analysis repository only prepares downsampled BAMs. See `ForCodexOrgnization/primate_mt_variant_calling/scripts/launch_hom_downsampling_round1.sh`. Do not use the stale `variant_calling/` mirror in this analysis repo. Run the single-sample calling pilot from the complete variant-calling repository, then wire Round 2 using its authoritative outputs. The initial raw coverage fraction may not lead to exact desired median because sampling is stochastic, and especially not to precise final calling coverage. Always analyze actual measured depth.
 
 ## Legacy whole-WGS experiment (optional control)
 
@@ -100,3 +100,19 @@ bash qc_analysis/scripts/submit_downsampling.sh --pilot
 ```
 
 No CRAM/CRAI need to be copied. The original failed task quit before downsampling.
+
+
+## Repository ownership for HOM pilot (2026-10-22)
+
+- **Analysis, extraction, calibration, subsampling:** `ForCodexOrgnization/primate_mtDNA_analysis` (`qc_analysis/scripts/*candidate*`). Output: `$BASE/candidate_downsampled/<sample>/<sample>.candidate.ds<target>x.seed<seed>.bam` and its index.
+- **Round 1/2 variant calling:** `ForCodexOrgnization/primate_mt_variant_calling` (complete production Nextflow/WDL pipeline). The optional Round 1 parameters `--candidate_bam_root`, `--candidate_target_depth`, and `--candidate_seed` bypass `EXTRACT_CANDIDATE_READS` without changing the normal production path.
+
+Example after generating the indexed **100x** BAM:
+
+```bash
+cd /home/lt692/project_pi_njl27/lt692/primate_mt_variant_calling
+git pull origin main
+bash scripts/launch_hom_downsampling_round1.sh ERS12091908 100 101
+```
+
+Use a distinct output directory per target/seed and keep `--consensus_min_dp` fixed/recorded unless intentionally testing altered consensus rules. **100x here means raw candidate depth, not the final Round-2 callable depth.** The Round-2 handoff and HOM comparison are not yet automated; do not interpret Round-1 completion alone as validation. The original analysis repo's `variant_calling/` folder is an incomplete mirror and is not the execution source for this experiment.
