@@ -76,22 +76,9 @@ workflow {
     //   2) name-sort
     //   3) keep only templates with both mates present in the target subset
     // This avoids rescuing arbitrary NUMT/chrM mates from elsewhere in the genome.
-    // Optional pilot mode: consume an already-extracted, QNAME-downsampled
-    // candidate BAM. All downstream decoy alignment and variant calling
-    // remains unchanged; standard production runs still extract from CRAM.
-    if (params.candidate_bam_root) {
-        ch_candidate_bams = ch_samples.map { meta, species_name, ref_name ->
-            def input_bam = file("${params.candidate_bam_root}/${meta.id}/${meta.id}.candidate.ds${params.candidate_target_depth}x.seed${params.candidate_seed}.bam")
-            if (!input_bam.exists()) {
-                error "Missing pilot candidate BAM for ${meta.id}: ${input_bam}"
-            }
-            tuple(meta, species_name, ref_name, input_bam)
-        }
-        ch_bam_plus_ref = ch_candidate_bams.join(PREPARE_DECOY_REFERENCE.out.decoy_ref, by: [0,1,2])
-    } else {
-        EXTRACT_CANDIDATE_READS(LOCATE_CRAM.out.cram_info)
-        ch_bam_plus_ref = EXTRACT_CANDIDATE_READS.out.bam_with_mates.join(PREPARE_DECOY_REFERENCE.out.decoy_ref, by: [0,1,2])
-    }
+    EXTRACT_CANDIDATE_READS(LOCATE_CRAM.out.cram_info)
+
+    ch_bam_plus_ref = EXTRACT_CANDIDATE_READS.out.bam_with_mates.join(PREPARE_DECOY_REFERENCE.out.decoy_ref, by: [0,1,2])
     REALIGN_TO_DECOY(ch_bam_plus_ref)
 
     ch_numt_call_input = REALIGN_TO_DECOY.out.realign_bam.join(PREPARE_DECOY_REFERENCE.out.decoy_ref_for_numt_calling, by: [0,1,2])
