@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import filecmp
 import os
 import re
 import shutil
@@ -67,7 +68,7 @@ def publish(src: Path, dst: Path, mode: str, dry_run: bool):
             if dst.is_symlink() and dst.resolve() == src.resolve():
                 return "already_collected"
         else:
-            if dst.is_file() and dst.stat().st_size == src.stat().st_size:
+            if dst.is_file() and filecmp.cmp(src, dst, shallow=False):
                 # Do not overwrite anything of the same name, even if sizes match.
                 return "already_collected"
         raise RuntimeError(f"Destination conflict (refusing overwrite): {dst}")
@@ -134,12 +135,12 @@ def main():
             key = (sample, depth, seed)
             if key not in jobs:
                 continue
-            trial = (sample, depth, seed, cdp)
+            trial = (sample, depth, seed, cdp, run.name)
             if trial in seen:
                 raise RuntimeError(f"Two directories map to same experimental condition: {trial}")
             seen.add(trial)
             species = jobs[key]["species"]
-            prefix = f"{sample}__ds{depth}x__seed{seed}__cdp{cdp}"
+            prefix = f"{sample}__ds{depth}x__seed{seed}__cdp{cdp}" + ("__legacy" if not RUN_RE.fullmatch(run.name).group("cdp") else "")
             missing = []
             exported = 0
             for kind, subdir, suffix, required in FILES:
@@ -154,6 +155,7 @@ def main():
                     exported += 1
                 inventory.append({
                     "sample": sample, "species": species,
+                    "run_directory": run.name,
                     "target_depth": depth, "seed": seed, "consensus_min_dp": cdp,
                     "file_type": kind, "required": int(required),
                     "status": state, "source": str(src),
@@ -184,6 +186,7 @@ def main():
                 })
             overview.append({
                 "sample": sample, "species": species,
+                "run_directory": run.name,
                 "target_depth": depth, "seed": seed, "consensus_min_dp": cdp,
                 "required_files_complete": "YES" if not missing else "NO",
                 "missing_required_types": ",".join(missing),
