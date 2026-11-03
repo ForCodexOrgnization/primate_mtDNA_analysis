@@ -6,7 +6,7 @@ Use `homoplasmy_qc` **after** `final_filter`. It does not rerun FASTQ alignment,
 
 For each sample:
 - Adjust `nuclear_median_coverage` from exactly zero to **1**; otherwise retain the original median.
-- Recalculate `mtcn_median_recalculated = 2 * mt_median_coverage / nuclear_median_coverage_adjusted`. Missing mt or nuclear medians are NOT imputed. A nonzero nuclear median below 1 is not modified.
+- For original nuclear median **exactly zero**, recalculate `mtcn_median_recalculated = 2 * mt_median_coverage / 1`; for all other samples retain the original `mtcn_median` without recalculating it. Missing mt coverage is not imputed.
 - Calculate `Percent_50` from `collected_cov/{sample}.merged.max_depth.per_base_coverage.tsv` (number of covered positions at depth >=50 divided by number of recorded positions, percentage). This uses the existing merged maximum-depth coverage definition. At least 14,000 recorded positions are required by default as a coverage-file completeness guard.
 - A homoplasmic candidate passes if `mtCN >=20` **and** `Percent_50 >=50`, both inclusive.
 - These new criteria affect **only** previously FINAL PASS records with `source_call_class=HOM`. HET calls and prior FAIL records remain unchanged.
