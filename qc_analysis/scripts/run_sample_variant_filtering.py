@@ -154,7 +154,7 @@ def homoplasmy_assessment(row, cfg, collected_dir):
     seen, passing = set(), set()
     if cov.is_file():
         with cov.open(newline="", encoding="utf-8") as stream:
-            reader = csv.DictReader(stream, delimiter="\\t")
+            reader = csv.DictReader(stream, delimiter="\t")
             required = {"chrom", "pos", "target", "coverage"}
             if not required.issubset(reader.fieldnames or []):
                 raise ValueError(f"Invalid merged coverage columns: {cov}")
@@ -233,7 +233,7 @@ def main():
     )
     with inp.open(newline="", encoding="utf-8") as h:
         rows = []
-        for r in csv.DictReader(h, delimiter="\\t"):
+        for r in csv.DictReader(h, delimiter="\t"):
             result = evaluate(
                 r, t, mad_enabled=mad_enabled,
                 mt_coverage_enabled=mt_coverage_enabled,
