@@ -164,7 +164,7 @@ def candidate_samples(step,cfg):
 
 def incremental_eligible_samples(cfg):
     """Determine strict sample eligibility from the immutable, updated summary."""
-    from qc_analysis.scripts.run_sample_variant_filtering import evaluate
+    from qc_analysis.scripts.run_sample_variant_filtering import evaluate, homoplasmy_assessment
     section=cfg.get('sample_variant_filtering') or {}
     input_summary=Path(section.get('input_summary',''))
     if not input_summary.is_file():
@@ -186,7 +186,14 @@ def incremental_eligible_samples(cfg):
                 percent_column=str(section.get('percent_coverage_column','Percent_100')),
                 strict_greater_than=section.get('strict_greater_than',False) is True,
             )
-            if result['qc_status']=='PASS' and result['collection_status']=='OK':
+            hom_cfg=cfg.get('homoplasmy_qc') or {}
+            dual=hom_cfg.get('reassess_all_samples',False) is True
+            hom_pass=False
+            if dual:
+                collected=Path((cfg.get('final_filter') or {}).get('collected_dir','results/qc/collected_variant_calling_results'))
+                if not collected.is_absolute(): collected=ROOT/collected
+                hom_pass=homoplasmy_assessment(row,hom_cfg,collected)['homoplasmy_qc_status']=='PASS'
+            if (result['qc_status']=='PASS' or hom_pass) and result['collection_status']=='OK':
                 eligible.add(result['sample'])
     return eligible
 
