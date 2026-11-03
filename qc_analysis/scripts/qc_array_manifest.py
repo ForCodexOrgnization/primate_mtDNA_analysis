@@ -2,7 +2,8 @@
 """Build immutable, race-safe task manifests for QC Slurm arrays."""
 import argparse, csv, datetime, gzip, os, re, sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
 from qc_analysis.lib.reference_utils import normalized_fasta_sequence_sha256
 
@@ -12,7 +13,7 @@ WORKFLOW_REVALIDATE_STEPS = set(SAMPLE_STEPS)  # ordinary all mode; incremental 
 GLOBAL_STEPS = {"collect_variant_calling_results", "pre_liftover_variant_qc_merge", "discover_global_anchor", "build_primate_codon_table",
  "compare_genbank_mitos2", "mitos2_prepare_tasks", "mitos2_merge", "codon_match_validate",
  "codon_match_merge", "build_trna_indexes", "trna_match_merge", "trna_gene_qc", "rrna_match_merge", "build_primate_homo_background",
- "intraspecies_contamination", "sample_variant_filtering", "local_heteroplasmy_qc", "human_contamination", "final_filter", "interspecies_contamination"}
+ "intraspecies_contamination", "sample_variant_filtering", "homoplasmy_qc", "local_heteroplasmy_qc", "human_contamination", "final_filter", "interspecies_contamination"}
 
 STEP_SECTIONS = {
     "collect_variant_calling_results": "collect_variant_calling",
@@ -33,6 +34,7 @@ STEP_SECTIONS = {
     "intraspecies_contamination": "intraspecies_contamination",
     "sample_variant_filtering": "sample_variant_filtering",
     "final_filter": "final_filter",
+    "homoplasmy_qc": "homoplasmy_qc",
 }
 FALLBACK_OUTPUTS = {
     "collect_variant_calling_results": "results/qc/variant_calling_collection",
