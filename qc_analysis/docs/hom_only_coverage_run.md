@@ -1,33 +1,37 @@
-# HOM-only coverage-only rerun
+# HOM-selected cohort, both HOM and HET variants
 
-**Purpose:** Analyze only samples meeting the revised HOM gate, without processing
-HET-only samples or changing existing mixed/HET final results.
+**Clarification (2026-11-03):** HOM QC selects the **samples only**.
+The downstream pipeline keeps the original variant-level filtering and emits
+both HOM and HET calls for each HOM-eligible sample.
+The filename `final_filter_hom_only` is a legacy directory name for this
+HOM-selected cohort, **not** a HOM-only variant file.
 
-The dedicated configuration `config/qc_preprocessing_coverage_hom_only.yaml`
-inherits the original coverage-only upstream paths, but selects
-`homoplasmy_qc.pipeline_call_class: HOM` and sets
-`final_filter.biological_call_classes: HOM`.
+The configuration `config/qc_preprocessing_coverage_hom_only.yaml` sets
+`homoplasmy_qc.pipeline_call_class: HOM`,
+`homoplasmy_qc.sample_selection_only: true`, and
+`final_filter.biological_call_classes: HET,HOM`.
 
-HOM eligibility is `median mtCN >=20` and `Percent_50 >=50`, where
-`Percent_50` denotes positions with depth >=50x. When median nuclear
-coverage is exactly zero, the denominator is set to 1 and
-`median mtCN = 2 * median mitochondrial coverage / 1`.
+Eligibility: median mtCN >=20 and >=50% of mtDNA positions covered at >=50x.
+For exactly zero nuclear median coverage, use nuclear median 1 when recalculating
+median mtCN; otherwise preserve the original mtCN.
 
-This config **reuses** the existing
-`results/qc_coverage_only/sample_variant_filtering/reports/sample_qc.tsv`
-created from the 3,332 sample inventory (2,346 HOM-pass samples).
-Only HOM-eligible samples are eligible for incremental per-sample tasks. Final
-filtering restricts samples to HOM PASS and skips all HET calls entirely.
+The sample cohort is selected from the existing
+`sample_variant_filtering/reports/sample_qc.tsv`, where 2,346 samples
+previously passed the HOM criteria. The array planner uses HOM-only sample
+eligibility, and final_filter also checks HOM sample eligibility.
 
-Before running ensure the earlier sample-QC job has finished and the report
-has the `homoplasmy_qc_status` column. The `--incremental` task scheduler
-additionally requires collection `status=OK`, and later steps require
-successful liftover, usable references and available source variants; thus
-2,346 is the cohort *eligibility* count, not a guaranteed final output count.
+**Original final filtering:** In sample-selection-only mode, neither
+HOM calls nor HET calls receive additional class-specific QC failures.
+Existing VCF/DP, annotation, contamination, and other configured final
+filters continue to apply. Both classes appear in
+`final_filter_hom_only/reports/final_variant_qc.tsv`, including PASS and FAIL
+records (for samples reaching final variant reporting). Output VCFs include
+PASS calls from both classes.
 
 ```bash
 cd /vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis_coverage_only
 git pull --ff-only
+python3 -m py_compile qc_analysis/scripts/run_final_filter_streaming.py
 bash qc_analysis/scripts/run_qc_preprocessing.sh \
   --dry-run-submit --incremental --start-from pre_liftover_variant_qc all \
   config/qc_preprocessing_coverage_hom_only.yaml
@@ -36,32 +40,34 @@ bash qc_analysis/scripts/run_qc_preprocessing.sh \
   config/qc_preprocessing_coverage_hom_only.yaml
 ```
 
-The new HOM-only output paths are
-`results/qc_coverage_only/final_filter_hom_only/reports/final_variant_qc.tsv`,
-`results/qc_coverage_only/final_filter_hom_only/final_vcf/`, and
-`results/qc_coverage_only/homoplasmy_qc_only/reports/`.
+If the per-sample annotations have already completed, **only the last step**
+needs rerunning to apply the new final variant inclusion behavior:
 
-The prior `results/qc_coverage_only/final_filter/` is **not overwritten**.
-Upstream annotation, merged reports, and intermediate output paths are shared
-with the old workspace; do not run concurrent mixed and HOM-only workflows
-against the same directories. The HOM-only command may recompute missing
-annotation outputs for newly eligible samples and regenerate global reports.
+```bash
+bash qc_analysis/scripts/run_qc_preprocessing.sh --submit final_filter \
+  config/qc_preprocessing_coverage_hom_only.yaml
+```
 
-After completion, check:
+This final-only command rebuilds the dedicated
+`results/qc_coverage_only/final_filter_hom_only/` directory; backup its
+reports first if previous output comparisons are needed.
+The existing mixed project directory `results/qc_coverage_only/final_filter/`
+is never targeted by the dedicated configuration.
+
+Verify:
 
 ```bash
 python3 - <<'PY'
 import csv
-from pathlib import Path
-p=Path("results/qc_coverage_only/final_filter_hom_only/reports/final_variant_qc.tsv")
-with p.open() as h:
-    reader=csv.DictReader(h,delimiter="\t")
-    rows=list(reader)
-passing=[r for r in rows if r["final_variant_status"]=="PASS"
-         and r["final_call_status"]=="PASS"]
-print("final passing variant rows:",len(passing))
-print("final passing samples:",len({r["sample"] for r in passing}))
-print("HET rows:",sum(r["source_call_class"]=="HET" for r in rows))
-assert all(r["source_call_class"]=="HOM" for r in rows), "Non-HOM record found"
+p='results/qc_coverage_only/final_filter_hom_only/reports/final_variant_qc.tsv'
+with open(p) as h:
+    rows=list(csv.DictReader(h,delimiter='\t'))
+print('Rows by source class:', {k:sum(r['source_call_class']==k for r in rows) for k in ('HOM','HET')})
+print('PASS by source class:', {k:sum(r['source_call_class']==k and r['final_variant_status']=='PASS' and r['final_call_status']=='PASS' for r in rows) for k in ('HOM','HET')})
 PY
 ```
+
+The 2,346 is the number **sample-QC eligible**, not the guaranteed number
+with complete liftover/annotations or final PASS calls.
+Shared upstream intermediate directories must not be modified by two
+concurrent pipelines.
