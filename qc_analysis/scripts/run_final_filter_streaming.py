@@ -747,6 +747,19 @@ def main():
                             is_canonical_snv = len(ref) == len(alt) == 1 and ref in "ACGT" and alt in "ACGT" and "," not in alt
                             if not is_canonical_snv:
                                 why.append("variant_class:" + variant_class)
+                            # Dual-class eligibility: a sample may be admitted by
+                            # HOM or HET, but each call must satisfy its own gate.
+                            qc_sample = sample_qc_rows.get(sample, {})
+                            if (cfg.get("homoplasmy_qc") or {}).get("reassess_all_samples", False) is True:
+                                class_name = authoritative_class.upper()
+                                if class_name == "HOM":
+                                    class_gate = pick(qc_sample, ["homoplasmy_qc_status"])
+                                    if class_gate != "PASS":
+                                        why.append("homoplasmy_sample_qc:" + class_gate)
+                                elif class_name == "HET":
+                                    class_gate = pick(qc_sample, ["heteroplasmy_qc_status"])
+                                    if class_gate != "PASS":
+                                        why.append("heteroplasmy_sample_qc:" + class_gate)
                             final_status = "FAIL" if why else "PASS"
                             context = sample_context[sample]
                             qc = sample_qc_rows.get(sample, {})
