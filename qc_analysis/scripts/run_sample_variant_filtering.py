@@ -280,11 +280,23 @@ def main():
         f"mtcn_enabled={mtcn_enabled} "
         f"strict_greater_than={strict_greater_than} "
         f"percent_coverage_column={percent_column} "
-        f"percent_coverage_min={t.get('percent_coverage_min', t['percent_100_min'])}\n"
+        f"percent_coverage_min={t.get('percent_coverage_min', t['percent_100_min'])} "
+        f"hom_reassess_all_samples={enable_dual} "
+        f"hom_coverage_metric=Percent_50 "
+        f"hom_coverage_depth_min=50 "
+        f"hom_percent_50_min={hom_cfg.get('min_percent_50', 50)} "
+        f"hom_mtcn_min={hom_cfg.get('min_mtcn', 20)} "
+        f"hom_pass={sum(r['homoplasmy_qc_status'] == 'PASS' for r in rows)} "
+        f"het_pass={sum(r['heteroplasmy_qc_status'] == 'PASS' for r in rows)} "
+        f"hom_only_pass={sum(r['homoplasmy_qc_status'] == 'PASS' and r['heteroplasmy_qc_status'] != 'PASS' for r in rows)} "
+        f"both_pass={sum(r['homoplasmy_qc_status'] == 'PASS' and r['heteroplasmy_qc_status'] == 'PASS' for r in rows)}\n"
     )
     print(
         f"[sample_variant_filtering] report={report} samples={len(rows)} "
-        f"percent_metric={percent_column}"
+        f"het_percent_metric={percent_column} "
+        f"hom_percent_metric=Percent_50 hom_min_percent={hom_cfg.get('min_percent_50', 50)} "
+        f"hom_pass={sum(r['homoplasmy_qc_status'] == 'PASS' for r in rows)} "
+        f"het_pass={sum(r['heteroplasmy_qc_status'] == 'PASS' for r in rows)}"
     )
     return 0
 
