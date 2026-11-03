@@ -595,6 +595,9 @@ def main():
     reportable = {}
     report_all_samples = sec.get("report_all_samples", False) is True
     sample_qc_rows = indexed["sample_qc"]
+    pipeline_class = str((cfg.get("homoplasmy_qc") or {}).get("pipeline_call_class", "BOTH")).upper()
+    if pipeline_class not in {"BOTH", "HOM", "HET"}:
+        raise ValueError(f"invalid homoplasmy_qc.pipeline_call_class: {pipeline_class}")
     for sample, row in sorted(collection.items()):
         statuses = {name: pick(indexed[name].get(sample, {}), fields[name]) for name in defaults}
         reasons = []
@@ -614,6 +617,13 @@ def main():
                 warnings.append(name + ":" + value)
             elif value == "NOT_AVAILABLE" and name in required:
                 reasons.append(name + ":missing")
+        # A class-specific run must not admit samples solely eligible for
+        # the other class. The original combined QC remains untouched.
+        if pipeline_class != "BOTH":
+            field = "homoplasmy_qc_status" if pipeline_class == "HOM" else "heteroplasmy_qc_status"
+            gate = pick(sample_qc_rows.get(sample, {}), [field])
+            if gate != "PASS":
+                reasons.append(f"{pipeline_class.lower()}_sample_qc:{gate}")
         lift = liftover_status(sample, cfg)
         if lift != "completed":
             reasons.append("liftover:" + lift)
@@ -734,6 +744,10 @@ def main():
                             # Annotated VCFs use SOURCE_CALL_CLASS as authority.
                             # Legacy lifted VCFs retain the historical AF fallback.
                             authoritative_class = source_call_class if source_call_class != "NOT_AVAILABLE" else call_class(af)
+                            # Separate HOM/HET outputs: do not report or emit calls
+                            # belonging to the other class.
+                            if pipeline_class != "BOTH" and authoritative_class.upper() != pipeline_class:
+                                continue
                             if source_call_class != "NOT_AVAILABLE" and source_call_class.upper() not in eligible_source_classes:
                                 why.append("source_call_class:" + source_call_class)
                             # Use native/source DP when available; fall back to the
