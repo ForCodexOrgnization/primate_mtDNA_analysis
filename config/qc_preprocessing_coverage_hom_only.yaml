@@ -1,4 +1,5 @@
-# HOM-only run: shared upstream coverage/liftover/annotation inputs, independent final output.
+# HOM-selected sample cohort: shared upstream inputs; retain BOTH HOM and HET calls.
+# Output name final_filter_hom_only refers to sample eligibility, not call-class filtering.
 # Do not alter the existing coverage-only combined/HET config.
 # Preprocessing QC configuration for variant-calling result collection and
 # coordinate liftover. Edit paths before running on a real dataset.
@@ -167,6 +168,8 @@ homoplasmy_qc:
   enabled: true
   reassess_all_samples: true
   pipeline_call_class: HOM
+  # HOM gate selects the sample cohort only; retain HOM and HET variant calls.
+  sample_selection_only: true
   input_summary: results/qc_coverage_only/updated_collection_summary.tsv
   output_dir: results/qc_coverage_only/homoplasmy_qc_only
   min_mtcn: 20
@@ -180,7 +183,7 @@ final_filter:
   required_sample_reports: sample_qc
   optional_sample_reports: ""
   strict_missing_samples: true
-  biological_call_classes: HOM
+  biological_call_classes: HET,HOM
   # Variant-level baseline: VCF FILTER must be PASS and source DP must be >= 100.
   variant_dp_min: 100
   # Per-sample species-specific tRNA proximity candidates; no species recurrence gate.
