@@ -139,7 +139,7 @@ done
 [[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
 STEP="$1"; CONFIG="${2:-config/qc_preprocessing.yaml}"
 case "$STEP" in
- collect_variant_calling_results|pre_liftover_variant_qc|pre_liftover_variant_qc_merge|local_heteroplasmy_qc|discover_global_anchor|coordinate_liftover|interspecies_contamination|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|rrna_match_merge|intraspecies_contamination|sample_variant_filtering|final_filter|all) ;;
+ collect_variant_calling_results|pre_liftover_variant_qc|pre_liftover_variant_qc_merge|local_heteroplasmy_qc|discover_global_anchor|coordinate_liftover|interspecies_contamination|build_primate_homo_background|human_contamination|build_primate_codon_table|compare_genbank_mitos2|mitos2_prepare_tasks|mitos2_merge|mitos2_annotation|codon_match|codon_match_validate|codon_match_merge|build_trna_indexes|trna_match|trna_match_merge|trna_gene_qc|rrna_match|rrna_match_merge|intraspecies_contamination|sample_variant_filtering|final_filter|homoplasmy_qc|all) ;;
  -h|--help|help) usage; exit 0;; *) echo "ERROR: unknown step: $STEP" >&2; exit 2;; esac
 [[ -s "$CONFIG" ]] || { echo "ERROR: missing or empty config file: $CONFIG" >&2; exit 1; }
 if [[ -n "$START_FROM" && ( "$STEP" != all || "$SUBMIT_TO_SLURM" != 1 || "$ARRAY_TASK_MODE" == 1 ) ]]; then
