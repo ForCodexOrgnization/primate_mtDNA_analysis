@@ -195,7 +195,13 @@ def incremental_eligible_samples(cfg):
                 collected=Path((cfg.get('final_filter') or {}).get('collected_dir','results/qc/collected_variant_calling_results'))
                 if not collected.is_absolute(): collected=ROOT/collected
                 hom_pass=homoplasmy_assessment(row,hom_cfg,collected)['homoplasmy_qc_status']=='PASS'
-            if (result['qc_status']=='PASS' or hom_pass) and result['collection_status']=='OK':
+            requested_class=str(hom_cfg.get('pipeline_call_class','BOTH')).upper()
+            if requested_class not in {'BOTH','HOM','HET'}:
+                raise SystemExit(f'ERROR: invalid pipeline_call_class: {requested_class}')
+            gate_pass = (hom_pass if requested_class=='HOM' else
+                         result['qc_status']=='PASS' if requested_class=='HET' else
+                         result['qc_status']=='PASS' or hom_pass)
+            if gate_pass and result['collection_status']=='OK':
                 eligible.add(result['sample'])
     return eligible
 
