@@ -39,6 +39,7 @@ Steps:
   rrna_match                       Annotate VCFs with rRNA matching.
   rrna_match_merge                 Atomically merge per-sample rRNA summaries.
   final_filter                     Materialize final files and apply SOURCE-keyed NUMT/indel removals.
+  homoplasmy_qc                   Recalculate mtCN (nuclear zero -> 1) and apply HOM-only 50x/mtCN gates using cached outputs.
   all                              Run production preprocessing/annotation steps, currently excluding human_contamination.
 
 Run modes:
@@ -240,7 +241,7 @@ contamination_step_enabled() {
 submit_workflow() {
   local dep="" s i start_index=0 found=0
   SAMPLE=""
-  local steps=(collect_variant_calling_results sample_variant_filtering pre_liftover_variant_qc pre_liftover_variant_qc_merge local_heteroplasmy_qc intraspecies_contamination discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter)
+  local steps=(collect_variant_calling_results sample_variant_filtering pre_liftover_variant_qc pre_liftover_variant_qc_merge local_heteroplasmy_qc intraspecies_contamination discover_global_anchor coordinate_liftover interspecies_contamination mitos2_prepare_tasks mitos2_annotation mitos2_merge codon_match_validate codon_match codon_match_merge build_trna_indexes trna_match trna_match_merge rrna_match rrna_match_merge build_primate_homo_background final_filter homoplasmy_qc)
   if [[ -n "$START_FROM" ]]; then
     for i in "${!steps[@]}"; do
       if [[ "${steps[$i]}" == "$START_FROM" ]]; then start_index="$i"; found=1; break; fi
@@ -293,6 +294,7 @@ RRNA_SCRIPT="qc_analysis/scripts/run_rrna_match.py"
 RRNA_MERGE_SCRIPT="qc_analysis/scripts/merge_rrna_match_summaries.py"
 INTRASPECIES_SCRIPT="qc_analysis/scripts/run_intraspecies_contamination.py"
 FINAL_FILTER_SCRIPT="qc_analysis/scripts/run_final_filter_with_heteroplasmy.py"
+HOMOPLASMY_QC_SCRIPT="qc_analysis/scripts/run_homoplasmy_qc.py"
 SAMPLE_FILTER_SCRIPT="qc_analysis/scripts/run_sample_variant_filtering.py"
 PRE_LIFTOVER_QC_SCRIPT="qc_analysis/scripts/run_pre_liftover_variant_qc.py"
 LOCAL_HET_QC_SCRIPT="qc_analysis/scripts/run_local_heteroplasmy_qc_with_expansion.sh"
@@ -648,6 +650,7 @@ case "$STEP" in
   pre_liftover_variant_qc_merge) "$BASE_PYTHON" "$PRE_LIFTOVER_QC_SCRIPT" --config "$CONFIG" --merge-reports ;;
   local_heteroplasmy_qc) PYTHON="$BASE_PYTHON" bash "$LOCAL_HET_QC_SCRIPT" "$CONFIG" ;;
   final_filter) "$BASE_PYTHON" "$FINAL_FILTER_SCRIPT" --config "$CONFIG" ;;
+  homoplasmy_qc) "$BASE_PYTHON" "$HOMOPLASMY_QC_SCRIPT" --config "$CONFIG" ;;
   all)
     run_collect_variant_calling_results
     "$BASE_PYTHON" "$SAMPLE_FILTER_SCRIPT" --config "$CONFIG"
