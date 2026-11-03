@@ -20,7 +20,9 @@ FIELDS = (
     "percent_coverage_value nuclear_median_coverage mtcn_median MAD "
     "pass_mt_coverage pass_percent_100 pass_percent_coverage "
     "pass_nuclear_coverage pass_mtcn pass_mad n_failed_criteria "
-    "failed_criteria qc_status collection_status"
+    "failed_criteria qc_status collection_status homoplasmy_qc_status homoplasmy_qc_fail_reasons "
+    "homoplasmy_mtcn_recalculated homoplasmy_adjusted_nuclear_coverage Percent_50 "
+    "homoplasmy_coverage_positions heteroplasmy_qc_status"
 ).split()
 
 ALIASES = {
@@ -138,6 +140,48 @@ def evaluate(
     }
 
 
+
+def homoplasmy_assessment(row, cfg, collected_dir):
+    """Independent HOM gate calculated from prior aggregated QC inputs."""
+    mt = value(row, ALIASES["mt_median_coverage"])
+    nuclear = value(row, ALIASES["nuclear_median_coverage"])
+    prior_mtcn = value(row, ALIASES["mtcn_median"])
+    adjusted_nuclear = 1.0 if nuclear == 0 else nuclear
+    mtcn = (2.0 * mt if mt is not None else None) if nuclear == 0 else prior_mtcn
+
+    sample = row.get("sample", row.get("Sample", ""))
+    cov = collected_dir / "collected_cov" / f"{sample}.merged.max_depth.per_base_coverage.tsv"
+    seen, passing = set(), set()
+    if cov.is_file():
+        with cov.open(newline="", encoding="utf-8") as stream:
+            reader = csv.DictReader(stream, delimiter="\\t")
+            required = {"chrom", "pos", "target", "coverage"}
+            if not required.issubset(reader.fieldnames or []):
+                raise ValueError(f"Invalid merged coverage columns: {cov}")
+            for site in reader:
+                depth = value(site, ("coverage",))
+                if depth is None:
+                    continue
+                key = (site["chrom"], site["pos"], site["target"])
+                seen.add(key)
+                if depth >= 50:
+                    passing.add(key)
+    min_positions = int(cfg.get("min_coverage_positions", 14000))
+    pct50 = (100.0 * len(passing) / len(seen)) if len(seen) >= min_positions else None
+    reasons = []
+    if mtcn is None or mtcn < float(cfg.get("min_mtcn", 20)):
+        reasons.append("hom_mtcn_below_20_or_missing")
+    if pct50 is None or pct50 < float(cfg.get("min_percent_50", 50)):
+        reasons.append("hom_percent_50_below_50_or_missing")
+    return dict(
+        homoplasmy_qc_status="PASS" if not reasons else "FAIL",
+        homoplasmy_qc_fail_reasons=";".join(reasons),
+        homoplasmy_mtcn_recalculated="NA" if mtcn is None else mtcn,
+        homoplasmy_adjusted_nuclear_coverage="NA" if adjusted_nuclear is None else adjusted_nuclear,
+        Percent_50="NA" if pct50 is None else pct50,
+        homoplasmy_coverage_positions=len(seen),
+    )
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", type=Path, required=True)
@@ -180,20 +224,45 @@ def main():
     mtcn_enabled = sec.get("mtcn_enabled", True) is not False
     strict_greater_than = sec.get("strict_greater_than", False) is True
 
+    hom_cfg = (read_simple_yaml(a.config).get("homoplasmy_qc") or {})
+    enable_dual = hom_cfg.get("reassess_all_samples", False) is True
+    collection_dir = resolve(
+        (read_simple_yaml(a.config).get("final_filter") or {}).get(
+            "collected_dir", "results/qc/collected_variant_calling_results"
+        )
+    )
     with inp.open(newline="", encoding="utf-8") as h:
-        rows = [
-            evaluate(
-                r,
-                t,
-                mad_enabled=mad_enabled,
+        rows = []
+        for r in csv.DictReader(h, delimiter="\\t"):
+            result = evaluate(
+                r, t, mad_enabled=mad_enabled,
                 mt_coverage_enabled=mt_coverage_enabled,
                 nuclear_coverage_enabled=nuclear_coverage_enabled,
                 mtcn_enabled=mtcn_enabled,
                 percent_column=percent_column,
                 strict_greater_than=strict_greater_than,
             )
-            for r in csv.DictReader(h, delimiter="\t")
-        ]
+            result["heteroplasmy_qc_status"] = result["qc_status"]
+            if enable_dual:
+                hom = homoplasmy_assessment(r, hom_cfg, collection_dir)
+                result.update(hom)
+                # A sample is eligible for annotation if EITHER call class
+                # passes. Final filtering applies the class-specific gate.
+                if hom["homoplasmy_qc_status"] == "PASS":
+                    result["qc_status"] = "PASS"
+                    if result["heteroplasmy_qc_status"] == "FAIL":
+                        result["failed_criteria"] = ""
+                        result["n_failed_criteria"] = 0
+            else:
+                result.update(dict(
+                    homoplasmy_qc_status="NOT_APPLIED",
+                    homoplasmy_qc_fail_reasons="",
+                    homoplasmy_mtcn_recalculated="NA",
+                    homoplasmy_adjusted_nuclear_coverage="NA",
+                    Percent_50="NA",
+                    homoplasmy_coverage_positions="NA",
+                ))
+            rows.append(result)
 
     out.joinpath("reports").mkdir(parents=True, exist_ok=True)
     out.joinpath("logs").mkdir(exist_ok=True)
