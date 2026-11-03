@@ -163,6 +163,7 @@ local_heteroplasmy_qc:
 # Original final_filter reports and HET decisions remain unchanged.
 homoplasmy_qc:
   enabled: true
+  reassess_all_samples: true
   input_summary: results/qc_coverage_only/updated_collection_summary.tsv
   output_dir: results/qc_coverage_only/homoplasmy_qc
   min_mtcn: 20
