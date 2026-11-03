@@ -159,6 +159,16 @@ local_heteroplasmy_qc:
 
 # Terminal decision step. Missing optional reports are represented as
 # NOT_AVAILABLE and do not fail a sample; paths can be enabled as they are added.
+# Post-final homoplasmic-only eligibility. Reuses staged summary + collected coverage.
+# Original final_filter reports and HET decisions remain unchanged.
+homoplasmy_qc:
+  enabled: true
+  input_summary: results/qc_coverage_only/updated_collection_summary.tsv
+  output_dir: results/qc_coverage_only/homoplasmy_qc
+  min_mtcn: 20
+  min_percent_50: 50
+  min_coverage_positions: 14000
+
 final_filter:
   enabled: true
   collected_dir: results/qc_coverage_only/collected_variant_calling_results
