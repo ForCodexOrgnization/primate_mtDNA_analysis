@@ -110,8 +110,12 @@ def main():
         nuclear = number(sample.get("nuclear_median_coverage"))
         original = number(sample.get("mtcn_median"))
         nuclear_adjusted = 1.0 if nuclear == 0 else nuclear
-        recalculated = (2.0 * mt / nuclear_adjusted
-                        if mt is not None and nuclear_adjusted is not None and nuclear_adjusted > 0 else None)
+        # Preserve previously calculated mtCN for all samples except
+        # those whose ORIGINAL median nuclear coverage is exactly zero.
+        # This avoids silently changing established QC for other samples.
+        recalculated = original
+        if nuclear == 0:
+            recalculated = 2.0 * mt / 1.0 if mt is not None else None
         cov_path = collected / "collected_cov" / f"{name}.merged.max_depth.per_base_coverage.tsv"
         pct, n_positions, coverage_status = percent_50_from_merged_coverage(cov_path, min_positions)
         failures = []
