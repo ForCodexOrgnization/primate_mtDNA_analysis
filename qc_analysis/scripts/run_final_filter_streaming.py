@@ -595,7 +595,9 @@ def main():
     reportable = {}
     report_all_samples = sec.get("report_all_samples", False) is True
     sample_qc_rows = indexed["sample_qc"]
-    pipeline_class = str((cfg.get("homoplasmy_qc") or {}).get("pipeline_call_class", "BOTH")).upper()
+    hom_cfg = cfg.get("homoplasmy_qc") or {}
+    pipeline_class = str(hom_cfg.get("pipeline_call_class", "BOTH")).upper()
+    sample_selection_only = hom_cfg.get("sample_selection_only", False) is True
     if pipeline_class not in {"BOTH", "HOM", "HET"}:
         raise ValueError(f"invalid homoplasmy_qc.pipeline_call_class: {pipeline_class}")
     for sample, row in sorted(collection.items()):
@@ -744,9 +746,9 @@ def main():
                             # Annotated VCFs use SOURCE_CALL_CLASS as authority.
                             # Legacy lifted VCFs retain the historical AF fallback.
                             authoritative_class = source_call_class if source_call_class != "NOT_AVAILABLE" else call_class(af)
-                            # Separate HOM/HET outputs: do not report or emit calls
-                            # belonging to the other class.
-                            if pipeline_class != "BOTH" and authoritative_class.upper() != pipeline_class:
+                            # Filter call class only when explicitly requested.
+                            # HOM-selected sample cohorts can retain both HOM/HET variants.
+                            if not sample_selection_only and pipeline_class != "BOTH" and authoritative_class.upper() != pipeline_class:
                                 continue
                             if source_call_class != "NOT_AVAILABLE" and source_call_class.upper() not in eligible_source_classes:
                                 why.append("source_call_class:" + source_call_class)
@@ -764,7 +766,7 @@ def main():
                             # Dual-class eligibility: a sample may be admitted by
                             # HOM or HET, but each call must satisfy its own gate.
                             qc_sample = sample_qc_rows.get(sample, {})
-                            if (cfg.get("homoplasmy_qc") or {}).get("reassess_all_samples", False) is True:
+                            if hom_cfg.get("reassess_all_samples", False) is True and not sample_selection_only:
                                 class_name = authoritative_class.upper()
                                 if class_name == "HOM":
                                     class_gate = pick(qc_sample, ["homoplasmy_qc_status"])
