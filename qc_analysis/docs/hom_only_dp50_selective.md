@@ -24,31 +24,38 @@ counts. Those historical counts remain in the staged symlinked summary; for
 DP50 reporting, use the freshly generated final variant report or perform a
 separate collection recount. Do not treat those old count columns as DP50 counts.
 
-## Run
+## Run via Slurm
+
+This is now a dependent Slurm job chain, with one source-QC array task per sample
+(default concurrency 20) and separate merge, local-artifact, refresh, final and
+HOM-QC jobs. The merged native report and VCF source lookup use bounded-memory
+streaming/SQLite rather than an all-cohort Python dictionary.
 
 From the repository root:
 
 ```bash
 git pull --ff-only
-python3 qc_analysis/scripts/run_hom_only_dp50_selective.py
-# Prints plan only: no changes
-python3 qc_analysis/scripts/run_hom_only_dp50_selective.py --execute
+bash qc_analysis/scripts/submit_hom_only_dp50_selective.sh
 ```
 
-Outputs:
+The launcher calls `--phase prepare` and *resumes* a pre-existing DP50
+workspace left by an interrupted run. It then submits the new Slurm chain.
+**Do not submit two DP50 chains simultaneously**. The completed array results
+may be regenerated, while the original DP100 tree is not overwritten.
 
+Logs: `results/qc_coverage_only_dp50/slurm_logs/`. Use `squeue -u "$USER"`
+and `sacct -j JOBID --format=JobID,State,Elapsed,MaxRSS,ReqMem` to diagnose
+OOM and job timing. 24h is a per-job walltime limit, not an estimated runtime.
+
+Outputs:
 - `results/qc_coverage_only_dp50/pre_liftover_variant_qc/`
 - `results/qc_coverage_only_dp50/local_heteroplasmy_qc/`
 - `results/qc_coverage_only_dp50/final_filter_hom_only/`
 - `results/qc_coverage_only_dp50/homoplasmy_qc_only/`
 - `config/qc_preprocessing_coverage_hom_only_dp50_selective.yaml`
 
-The DP50 root contains symlinks to unchanged old outputs and refreshed copies
-of VCF files; do **not** move the original `results/qc_coverage_only` directory
-while the staged analysis exists. The first run refuses an existing DP50 output
-root. Use a filesystem snapshot/backup and a fresh destination before repeating.
-Run where storage, CPU, and runtime limits can accommodate a cohort-scale
-sequential job; this is **not** a Slurm array launcher.
+Only the historical unchanged data directories are symlinked. Do not move
+`results/qc_coverage_only` while the staged analysis exists.
 
 ## Important limitations / verification
 
