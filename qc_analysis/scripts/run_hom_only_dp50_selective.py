@@ -149,7 +149,21 @@ def choose_source_record(lookup, key, info, fields, src):
         def af_match(row):
             try:
                 expected = 1.0-float(af) if flip else float(af)
-                return abs(float(row[3])-expected) <= 0.00001
+                # Source QC AF is formatted with ~3 significant decimals
+                # (e.g. 0.989), whereas the lifted FORMAT AF has more
+                # precision (e.g. 0.0111397 after ALT_REF_FLIP).
+                # Respect the source value's displayed precision.
+                original = str(row[3])
+                if 'e' in original.lower():
+                    from decimal import Decimal
+                    half_unit = float(Decimal(original).as_tuple().exponent and
+                                      Decimal(5).scaleb(Decimal(original).as_tuple().exponent - 1)
+                                      or Decimal('0.5'))
+                elif '.' in original:
+                    half_unit = 0.5 * 10 ** (-len(original.split('.', 1)[1]))
+                else:
+                    half_unit = 0.5
+                return abs(float(original)-expected) <= half_unit + 1e-8
             except (ValueError,TypeError):
                 return False
         candidates = [r for r in candidates if af_match(r)]
