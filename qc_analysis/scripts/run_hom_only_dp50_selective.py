@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import sqlite3
 import gzip
 import os
@@ -73,7 +74,7 @@ def initialize(old_root, new_root, source_config, staged_config):
     print("Generated config:", staged_config)
 
 def source_lookup(prelift, work_root):
-    """Disk-backed index; collapse only identical native variant records."""
+    """Index records by native identity, allowing multiple depth/AF observations."""
     source = prelift / 'reports/source_variant_qc.tsv'
     if not source.is_file():
         raise RuntimeError('Missing merged source QC: ' + str(source))
@@ -81,34 +82,62 @@ def source_lookup(prelift, work_root):
     if database.exists():
         database.unlink()
     db = sqlite3.connect(str(database))
-    db.execute('CREATE TABLE v (sample TEXT, chrom TEXT, pos TEXT, ref TEXT, alt TEXT, qc TEXT, dp TEXT, klass TEXT, af TEXT, filter TEXT, PRIMARY KEY(sample,chrom,pos,ref,alt)) WITHOUT ROWID')
-    db.execute('CREATE TABLE diagnostics (sample TEXT, chrom TEXT, pos TEXT, ref TEXT, alt TEXT, existing TEXT, incoming TEXT)')
+    db.execute('CREATE TABLE v (sample TEXT, chrom TEXT, pos TEXT, ref TEXT, alt TEXT, qc TEXT, dp TEXT, klass TEXT, af TEXT, source_filter TEXT)')
+    rows = []
     count = 0
-    repeats = 0
-    def normalize_value(v):
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return v
     with source.open(newline='') as handle:
         for row in csv.DictReader(handle, delimiter='\t'):
-            key = tuple(row[k] for k in ('sample','source_chrom','source_pos','source_ref','source_alt'))
-            evidence = tuple(row[k] for k in ('source_variant_qc','source_dp','source_call_class','source_af','source_filter'))
-            cur = db.execute('INSERT OR IGNORE INTO v VALUES (?,?,?,?,?,?,?,?,?,?)', key + evidence)
-            if cur.rowcount == 0:
-                repeats += 1
-                previous = db.execute('SELECT qc,dp,klass,af,filter FROM v WHERE sample=? AND chrom=? AND pos=? AND ref=? AND alt=?',key).fetchone()
-                if not (previous[0] == evidence[0] and normalize_value(previous[1]) == normalize_value(evidence[1]) and previous[2] == evidence[2] and normalize_value(previous[3]) == normalize_value(evidence[3]) and previous[4] == evidence[4]):
-                    db.execute('INSERT INTO diagnostics VALUES (?,?,?,?,?,?,?)',key+(repr(previous),repr(evidence)))
-                    db.commit()
-                    raise RuntimeError('Conflicting duplicate native variant: %s; details in %s diagnostics table' % (key,database))
-            else:
-                count += 1
+            rows.append(tuple(row[k] for k in ('sample','source_chrom','source_pos','source_ref','source_alt','source_variant_qc','source_dp','source_call_class','source_af','source_filter')))
+            if len(rows) >= 10000:
+                db.executemany('INSERT INTO v VALUES (?,?,?,?,?,?,?,?,?,?)', rows)
+                count += len(rows)
+                rows.clear()
+        if rows:
+            db.executemany('INSERT INTO v VALUES (?,?,?,?,?,?,?,?,?,?)', rows)
+            count += len(rows)
+    db.execute('CREATE INDEX v_native_key ON v(sample,chrom,pos,ref,alt)')
     db.commit()
     if not count:
         raise RuntimeError('Empty source QC report')
-    print('Indexed %d unique source variants; collapsed %d exact duplicate rows' % (count,repeats),flush=True)
+    print('Indexed %d source VCF rows; duplicated native identities are retained for DP/AF matching' % count, flush=True)
     return db
+
+def same_numeric(a, b, tol=1e-8):
+    try:
+        x, y = float(a), float(b)
+        return math.isfinite(x) and math.isfinite(y) and abs(x - y) <= tol
+    except (ValueError, TypeError):
+        return False
+
+def choose_source_record(lookup, key, info, src):
+    candidates = lookup.execute(
+        'SELECT qc,dp,klass,af,source_filter FROM v WHERE sample=? AND chrom=? AND pos=? AND ref=? AND alt=?',
+        key,
+    ).fetchall()
+    if not candidates:
+        raise RuntimeError('Missing native source record %r in %s' % (key,src))
+    dp = info.get('SOURCE_DP')
+    af = info.get('SOURCE_AF')
+    klass = info.get('SOURCE_CALL_CLASS')
+    source_filter = info.get('SOURCE_FILTER')
+    # When two records share a position, depth and source AF identify
+    # the exact native observation. Never choose the first by position alone.
+    if dp not in (None, '.', ''):
+        candidates = [row for row in candidates if same_numeric(row[1], dp, tol=0.0)]
+    if af not in (None, '.', ''):
+        candidates = [row for row in candidates if same_numeric(row[3], af)]
+    if klass not in (None, '.', ''):
+        candidates = [row for row in candidates if row[2] == klass]
+    if source_filter not in (None, '.', ''):
+        candidates = [row for row in candidates if row[4] == source_filter]
+    if not candidates:
+        raise RuntimeError('No source DP/AF/class match for %r in %s (DP=%s, AF=%s, class=%s)' % (key,src,dp,af,klass))
+    decisions = {row[0] for row in candidates}
+    if len(decisions) != 1:
+        raise RuntimeError('Ambiguous source QC decisions for %r in %s: %r' % (key,src,candidates))
+    # Multiple indistinguishable records carrying the same decision are safe
+    # for refreshing QC only; the original VCF records are never deduplicated.
+    return candidates[0][0]
 
 def op(path, mode):
     return gzip.open(path, mode + "t") if path.suffix == ".gz" else path.open(mode, encoding="utf-8")
@@ -127,23 +156,9 @@ def refresh_vcf(src, dst, sample, lookup):
             if any(not info.get(k) or info[k] == "." for k in source_names):
                 raise RuntimeError(f"Unverifiable native key in {src}, line {count + 1}")
             key = (sample, *(info[k] for k in source_names))
-            result = lookup.execute('SELECT qc, dp, klass FROM v WHERE sample=? AND chrom=? AND pos=? AND ref=? AND alt=?', key).fetchone()
-            if result is None:
-                raise RuntimeError(f"No matching native variant for {key} in {src}")
-            fresh = {'source_variant_qc':result[0], 'source_dp':result[1], 'source_call_class':result[2]}
-            # Original DP/AF/class must agree; their biological meaning does NOT
-            # change with the QC threshold. Only SOURCE_VARIANT_QC is refreshed.
-            for name, column in (("SOURCE_CALL_CLASS", "source_call_class"),
-                                 ("SOURCE_DP", "source_dp")):
-                if info.get(name) not in (None, fresh[column]):
-                    try:
-                        same = float(info[name]) == float(fresh[column]) if name == "SOURCE_DP" else False
-                    except (ValueError, TypeError):
-                        same = False
-                    if not same:
-                        raise RuntimeError(f"Conflicting {name} for {key} in {src}")
+            fresh_qc = choose_source_record(lookup, key, info, src)
             tokens = [t for t in tokens if not t.startswith("SOURCE_VARIANT_QC=")]
-            tokens.append("SOURCE_VARIANT_QC=" + fresh["source_variant_qc"])
+            tokens.append("SOURCE_VARIANT_QC=" + fresh_qc)
             fields[7] = ";".join(tokens)
             fout.write("\t".join(fields) + "\n")
             count += 1
