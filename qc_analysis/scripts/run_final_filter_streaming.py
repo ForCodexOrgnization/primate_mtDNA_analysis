@@ -588,6 +588,7 @@ def main():
     eligible_source_classes = {str(x).upper() for x in names(sec.get("biological_call_classes", ["HET", "HOM"]))}
     variant_dp_min = float(sec.get("variant_dp_min", 100))
     exclude_duplicate_source_variants = bool(sec.get("exclude_duplicate_source_variants", False))
+    require_source_call_class = sec.get("require_source_call_class", False) is True
 
     fail_cfg = sec.get("sample_fail_status") or {}
     fail_defaults = {
@@ -778,7 +779,9 @@ def main():
                             # HOM-selected sample cohorts can retain both HOM/HET variants.
                             if not sample_selection_only and pipeline_class != "BOTH" and authoritative_class.upper() != pipeline_class:
                                 continue
-                            if source_call_class != "NOT_AVAILABLE" and source_call_class.upper() not in eligible_source_classes:
+                            if require_source_call_class and source_call_class.upper() not in eligible_source_classes:
+                                why.append("source_call_class_missing_or_ineligible:" + source_call_class)
+                            elif source_call_class != "NOT_AVAILABLE" and source_call_class.upper() not in eligible_source_classes:
                                 why.append("source_call_class:" + source_call_class)
                             # Use native/source DP when available; fall back to the
                             # current VCF DP for legacy records. Production
