@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sqlite3
 import gzip
 import os
 import shutil
@@ -71,21 +72,32 @@ def initialize(old_root, new_root, source_config, staged_config):
     print("Created isolated tree:", new_root)
     print("Generated config:", staged_config)
 
-def source_lookup(prelift):
-    path = prelift / "reports/source_variant_qc.tsv"
+def source_lookup(prelift, work_root):
+    path = prelift / 'reports/source_variant_qc.tsv'
     if not path.is_file():
-        raise RuntimeError(f"Missing merged source QC: {path}")
-    lookup = {}
-    with path.open(newline="") as f:
-        for row in csv.DictReader(f, delimiter="\t"):
-            key = tuple(row[k] for k in
-                        ("sample", "source_chrom", "source_pos", "source_ref", "source_alt"))
-            if key in lookup:
-                raise RuntimeError(f"Duplicate native key: {key}")
-            lookup[key] = row
-    if not lookup:
-        raise RuntimeError("Empty source QC report; stopping")
-    return lookup
+        raise RuntimeError('Missing merged source QC: ' + str(path))
+    database = work_root / 'dp50_source_lookup.sqlite'
+    if database.exists():
+        database.unlink()
+    db = sqlite3.connect(str(database))
+    db.execute('CREATE TABLE v (sample TEXT, chrom TEXT, pos TEXT, ref TEXT, alt TEXT, qc TEXT, dp TEXT, klass TEXT, PRIMARY KEY(sample,chrom,pos,ref,alt)) WITHOUT ROWID')
+    batch = []
+    count = 0
+    with path.open(newline='') as handle:
+        for row in csv.DictReader(handle, delimiter='\t'):
+            batch.append(tuple(row[k] for k in ('sample','source_chrom','source_pos','source_ref','source_alt','source_variant_qc','source_dp','source_call_class')))
+            if len(batch) >= 10000:
+                db.executemany('INSERT INTO v VALUES (?,?,?,?,?,?,?,?)', batch)
+                count += len(batch)
+                batch.clear()
+        if batch:
+            db.executemany('INSERT INTO v VALUES (?,?,?,?,?,?,?,?)', batch)
+            count += len(batch)
+    db.commit()
+    if not count:
+        raise RuntimeError('Source report empty')
+    print('Indexed %d native variants in SQLite' % count, flush=True)
+    return db
 
 def op(path, mode):
     return gzip.open(path, mode + "t") if path.suffix == ".gz" else path.open(mode, encoding="utf-8")
@@ -104,9 +116,10 @@ def refresh_vcf(src, dst, sample, lookup):
             if any(not info.get(k) or info[k] == "." for k in source_names):
                 raise RuntimeError(f"Unverifiable native key in {src}, line {count + 1}")
             key = (sample, *(info[k] for k in source_names))
-            if key not in lookup:
+            result = lookup.execute('SELECT qc, dp, klass FROM v WHERE sample=? AND chrom=? AND pos=? AND ref=? AND alt=?', key).fetchone()
+            if result is None:
                 raise RuntimeError(f"No matching native variant for {key} in {src}")
-            fresh = lookup[key]
+            fresh = {'source_variant_qc':result[0], 'source_dp':result[1], 'source_call_class':result[2]}
             # Original DP/AF/class must agree; their biological meaning does NOT
             # change with the QC threshold. Only SOURCE_VARIANT_QC is refreshed.
             for name, column in (("SOURCE_CALL_CLASS", "source_call_class"),
@@ -126,7 +139,7 @@ def refresh_vcf(src, dst, sample, lookup):
     return count
 
 def refresh_all(old_root, new_root):
-    lookup = source_lookup(new_root / "pre_liftover_variant_qc")
+    lookup = source_lookup(new_root / "pre_liftover_variant_qc", new_root)
     total_files, total_variants = 0, 0
     for stage, folder in VCFS.items():
         srcdir = old_root / stage / folder
@@ -141,6 +154,7 @@ def refresh_all(old_root, new_root):
             dest = dstdir / src.name
             total_variants += refresh_vcf(src, dest, sample, lookup)
             total_files += 1
+    lookup.close()
     if not total_files:
         raise RuntimeError("No annotated VCF files were refreshed")
     print(f"Refreshed {total_variants} VCF rows across {total_files} files")
