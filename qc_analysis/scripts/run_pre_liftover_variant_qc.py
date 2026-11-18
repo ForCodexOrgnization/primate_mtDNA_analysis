@@ -37,19 +37,26 @@ def evidence(p):
 def fmt(v): return f"{v:.10g}" if isinstance(v,float) else str(v)
 
 def rebuild(out):
+    """Stream sample reports to merged TSV without retaining every variant in RAM."""
     reports=out/"reports"; lock=reports/".merge.lock"
     with lock.open("w") as h:
         fcntl.flock(h,fcntl.LOCK_EX)
-        rows=[]
-        for path in sorted(reports.glob("*.source_variant_qc.tsv")):
-            with path.open() as f: rows.extend(csv.DictReader(f,delimiter="\t"))
-        with (reports/"source_variant_qc.tsv").open("w",newline="") as f:
-            w=csv.DictWriter(f,fieldnames=FIELDS,delimiter="\t");w.writeheader();w.writerows(rows)
         counts={}
-        for r in rows: counts[(r["sample"],r["source_call_class"],r["source_variant_qc"])]=counts.get((r["sample"],r["source_call_class"],r["source_variant_qc"]),0)+1
+        dest=reports/"source_variant_qc.tsv"
+        with dest.open("w",newline="") as merged:
+            w=csv.DictWriter(merged,fieldnames=FIELDS,delimiter="\\t")
+            w.writeheader()
+            for path in sorted(reports.glob("*.source_variant_qc.tsv")):
+                with path.open() as fh:
+                    for row in csv.DictReader(fh,delimiter="\\t"):
+                        w.writerow(row)
+                        key=(row["sample"],row["source_call_class"],row["source_variant_qc"])
+                        counts[key]=counts.get(key,0)+1
         with (reports/"source_variant_qc_summary.tsv").open("w",newline="") as f:
-            w=csv.writer(f,delimiter="\t");w.writerow(("sample","source_call_class","source_variant_qc","n_variants"))
-            for key,n in sorted(counts.items()):w.writerow((*key,n))
+            w=csv.writer(f,delimiter="\\t")
+            w.writerow(("sample","source_call_class","source_variant_qc","n_variants"))
+            for key,n in sorted(counts.items()):
+                w.writerow((*key,n))
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument("--config",type=Path,required=True);ap.add_argument("--sample");ap.add_argument("--merge-reports",action="store_true");ap.add_argument("--skip-missing",action="store_true");a=ap.parse_args()
@@ -69,7 +76,7 @@ def main():
                 print(f"[pre_liftover_variant_qc] SKIPPED_MISSING_INPUT sample={sample}",file=sys.stderr)
                 continue
             raise FileNotFoundError(f"source VCF not found for {sample}")
-        dest=out/"vcf_source_qc"/f"{sample}.source_qc.vcf.gz"; rows=[]
+        dest=out/"vcf_source_qc"/f"{sample}.source_qc.vcf.gz"\n        report=out/"reports"/f"{sample}.source_variant_qc.tsv"\n        rows=[]
         with op(src) as ih,gzip.open(dest,"wt") as oh:
             for line in ih:
                 if line.startswith("#CHROM"):
