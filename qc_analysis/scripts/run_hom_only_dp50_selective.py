@@ -123,7 +123,29 @@ def choose_source_record(lookup, key, info, fields, src):
     if dp not in (None,'.',''):
         candidates = [r for r in candidates if same_numeric(r[1],dp,tol=0)]
     if af not in (None,'.',''):
-        flip = info.get('LIFTOVER_ALLELE_STATUS') == 'REF_ALT_FLIP'
+        status = info.get('LIFTOVER_ALLELE_STATUS')
+        if status in ('ALT_REF_FLIP', 'REF_ALT_FLIP'):
+            flip = True
+        elif status in ('REF_MATCH', 'NO_FLIP', None, '', '.'):
+            # Verify orientation with the immutable native alleles if
+            # the original VCF did not annotate the flip status.
+            source_ref, source_alt = key[3], key[4]
+            target_ref, target_alt = fields[3], fields[4]
+            if (target_ref, target_alt) == (source_alt, source_ref):
+                flip = True
+            elif (target_ref, target_alt) == (source_ref, source_alt):
+                flip = False
+            else:
+                raise RuntimeError(
+                    'Unverifiable REF/ALT orientation for %r in %s: '
+                    'target=%s>%s status=%s'
+                    % (key, src, target_ref, target_alt, status)
+                )
+        else:
+            raise RuntimeError(
+                'Unexpected liftover allele status for %r in %s: %s'
+                % (key, src, status)
+            )
         def af_match(row):
             try:
                 expected = 1.0-float(af) if flip else float(af)
