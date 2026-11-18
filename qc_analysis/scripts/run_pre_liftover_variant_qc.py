@@ -76,7 +76,7 @@ def main():
                 print(f"[pre_liftover_variant_qc] SKIPPED_MISSING_INPUT sample={sample}",file=sys.stderr)
                 continue
             raise FileNotFoundError(f"source VCF not found for {sample}")
-        dest=out/"vcf_source_qc"/f"{sample}.source_qc.vcf.gz"\n        report=out/"reports"/f"{sample}.source_variant_qc.tsv"\n        rows=[]
+        dest=out/"vcf_source_qc"/f"{sample}.source_qc.vcf.gz"; rows=[]
         with op(src) as ih,gzip.open(dest,"wt") as oh:
             for line in ih:
                 if line.startswith("#CHROM"):
