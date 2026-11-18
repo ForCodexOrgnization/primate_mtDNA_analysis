@@ -186,6 +186,43 @@ def refresh_all(old_root, new_root):
     print(f"Refreshed {total_variants} VCF rows across {total_files} files")
     return total_files
 
+def reuse_annotated_vcfs(old_root, new_root):
+    """Symlink original annotation VCFs, preserving all old files.
+
+    Existing SOURCE_VARIANT_QC may still reflect DP100. Current final filter
+    uses SOURCE_DP and VCF FILTER directly; use refresh if updated provenance
+    tags are needed in exported VCFs.
+    """
+    counts = {}
+    for stage, folder in VCFS.items():
+        srcdir = old_root / stage / folder
+        dstdir = new_root / stage / folder
+        if not srcdir.is_dir() or not dstdir.is_dir():
+            raise RuntimeError('Missing source/staged VCF directory: %s %s' % (srcdir, dstdir))
+        created = 0
+        existing = 0
+        for src in sorted(srcdir.iterdir()):
+            if not src.is_file() or not src.name.endswith(('.vcf', '.vcf.gz')):
+                continue
+            dst = dstdir / src.name
+            if dst.is_symlink():
+                if dst.resolve() != src.resolve():
+                    raise RuntimeError('Refusing conflicting symlink: '+str(dst))
+                existing += 1
+            elif dst.exists():
+                if dst.stat().st_size == 0:
+                    raise RuntimeError('Refusing empty staged VCF: '+str(dst))
+                existing += 1
+            else:
+                dst.symlink_to(src.resolve())
+                created += 1
+        counts[stage] = created + existing
+        print('%s: %d VCFs available (%d links created; %d existing)' % (stage,counts[stage],created,existing),flush=True)
+    if not counts.get('rrna_match'):
+        raise RuntimeError('No final annotated rRNA VCFs available')
+    print('NOTE: Existing SOURCE_VARIANT_QC tags are historical; final filter recomputes DP gate from SOURCE_DP.',flush=True)
+    return counts
+
 def diagnose_final_inputs(config_path):
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
@@ -220,7 +257,7 @@ def diagnose_final_inputs(config_path):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--execute", action="store_true", help="Legacy sequential execution")
-    p.add_argument("--phase", choices=["prepare","refresh","diagnose","final","hom"], help="Slurm stage")
+    p.add_argument("--phase", choices=["prepare","refresh","reuse","diagnose","final","hom"], help="Slurm stage")
     p.add_argument("--old-root", default=OLD)
     p.add_argument("--new-root", default=NEW)
     p.add_argument("--config", default=CONFIG)
@@ -250,6 +287,9 @@ def main():
             raise RuntimeError("Missing staged workspace")
         if a.phase == "refresh":
             refresh_all(old, new)
+        elif a.phase == "reuse":
+            reuse_annotated_vcfs(old, new)
+            diagnose_final_inputs(staged)
         elif a.phase == "diagnose":
             diagnose_final_inputs(staged)
         elif a.phase == "final":
