@@ -239,34 +239,89 @@ def refresh_vcf(src, dst, sample, lookup):
         tmp.unlink(missing_ok=True)
     return count
 
-def refresh_all(old_root,new_root,stage='rrna_match',samples=None):
-    if stage not in VCFS:
-        raise RuntimeError('Unsupported refresh stage %s'%stage)
-    lookup = source_lookup(new_root/'pre_liftover_variant_qc',new_root)
-    folder = VCFS[stage]
-    srcdir = old_root/stage/folder
-    dstdir = new_root/stage/folder
-    if not srcdir.is_dir():
-        raise RuntimeError('Missing original annotated VCF directory: '+str(srcdir))
-    count=0
-    rows=0
+def open_existing_lookup(new_root):
+    database = new_root / 'dp50_source_lookup.sqlite'
+    if not database.is_file():
+        raise RuntimeError('Missing shared SOURCE lookup: %s. Run --phase refresh-index first.' % database)
+    db = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)
     try:
-        for src in sorted(srcdir.iterdir()):
-            if not src.is_file() or not src.name.endswith(('.vcf','.vcf.gz')):
+        n = db.execute('SELECT COUNT(*) FROM v').fetchone()[0]
+        if n < 100000:
+            raise RuntimeError('SOURCE lookup is unexpectedly small: %s rows' % n)
+    except Exception:
+        db.close()
+        raise
+    print('Opened existing read-only SOURCE lookup (%d rows): %s' % (n, database), flush=True)
+    return db
+
+
+def is_complete_refreshed_vcf(path):
+    # Only skip locally materialized, nonempty VCFs already carrying
+    # native provenance on their records. Never count a symlink as done.
+    if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+        return False
+    try:
+        with op(path, 'r') as handle:
+            for line in handle:
+                if line.startswith('#'):
+                    continue
+                fields = line.rstrip('\\n').split('\\t')
+                if len(fields) < 8:
+                    return False
+                info = fields[7]
+                return all((';' + info + ';').find(';' + tag + '=') >= 0 for tag in
+                           ('SOURCE_CHROM', 'SOURCE_POS', 'SOURCE_REF', 'SOURCE_ALT',
+                            'SOURCE_AF', 'SOURCE_DP', 'SOURCE_CALL_CLASS', 'SOURCE_VARIANT_QC'))
+    except (OSError, EOFError):
+        return False
+    return False
+
+
+def refresh_all(old_root, new_root, stage='rrna_match', samples=None,
+                shard_index=None, shard_count=None, reuse_index=False,
+                skip_complete=False):
+    if stage not in VCFS:
+        raise RuntimeError('Unsupported refresh stage %s' % stage)
+    if (shard_index is None) != (shard_count is None):
+        raise RuntimeError('Both shard-index and shard-count must be provided together')
+    if shard_count is not None and not (0 <= shard_index < shard_count):
+        raise RuntimeError('Invalid shard index/count: %s/%s' % (shard_index, shard_count))
+    lookup = open_existing_lookup(new_root) if reuse_index else source_lookup(
+        new_root / 'pre_liftover_variant_qc', new_root)
+    folder = VCFS[stage]
+    srcdir = old_root / stage / folder
+    dstdir = new_root / stage / folder
+    if not srcdir.is_dir():
+        raise RuntimeError('Missing original annotated VCF directory: ' + str(srcdir))
+    count = 0
+    rows = 0
+    skipped = 0
+    selected = 0
+    try:
+        sources = [src for src in sorted(srcdir.iterdir())
+                   if src.is_file() and src.name.endswith(('.vcf', '.vcf.gz'))]
+        for i, src in enumerate(sources):
+            if shard_count is not None and i % shard_count != shard_index:
                 continue
-            sample=src.name.split('.',1)[0]
+            sample = src.name.split('.', 1)[0]
             if samples is not None and sample not in samples:
                 continue
-            dest=dstdir/src.name
-            rows+=refresh_vcf(src,dest,sample,lookup)
-            count+=1
-            if count%100==0:
-                print('Refreshed %d VCFs, %d variants'%(count,rows),flush=True)
+            selected += 1
+            dest = dstdir / src.name
+            if skip_complete and is_complete_refreshed_vcf(dest):
+                skipped += 1
+                continue
+            rows += refresh_vcf(src, dest, sample, lookup)
+            count += 1
+            if count % 20 == 0:
+                print('shard=%s refreshed=%d skipped=%d total_records=%d'
+                      % (shard_index, count, skipped, rows), flush=True)
     finally:
         lookup.close()
-    if not count:
-        raise RuntimeError('No annotated VCF files refreshed')
-    print('Refreshed %d %s VCFs and %d records'%(count,stage,rows),flush=True)
+    if not selected:
+        raise RuntimeError('No VCF files selected for refresh')
+    print('DONE shard=%s selected=%d refreshed=%d skipped=%d records=%d'
+          % (shard_index, selected, count, skipped, rows), flush=True)
     return count
 
 def reuse_annotated_vcfs(old_root, new_root):
@@ -341,7 +396,11 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--execute", action="store_true", help="Legacy sequential execution")
     p.add_argument("--sample", help="Refresh only one sample (validation before full cohort)")
-    p.add_argument("--phase", choices=["prepare","refresh","reuse","diagnose","final","hom"], help="Slurm stage")
+    p.add_argument("--shard-index", type=int, help="Zero-based shard index")
+    p.add_argument("--shard-count", type=int, help="Number of independent refresh shards")
+    p.add_argument("--reuse-index", action="store_true", help="Read shared SQLite index, never rebuild it")
+    p.add_argument("--skip-complete", action="store_true", help="Skip already refreshed independent VCFs")
+    p.add_argument("--phase", choices=["prepare","refresh-index","refresh","reuse","diagnose","final","hom"], help="Slurm stage")
     p.add_argument("--old-root", default=OLD)
     p.add_argument("--new-root", default=NEW)
     p.add_argument("--config", default=CONFIG)
@@ -369,8 +428,14 @@ def main():
     if a.phase:
         if not new.is_dir() or not staged.is_file():
             raise RuntimeError("Missing staged workspace")
-        if a.phase == "refresh":
-            refresh_all(old, new, stage="rrna_match", samples={a.sample} if a.sample else None)
+        if a.phase == "refresh-index":
+            db = source_lookup(new / "pre_liftover_variant_qc", new)
+            db.close()
+        elif a.phase == "refresh":
+            refresh_all(old, new, stage="rrna_match",
+                        samples={a.sample} if a.sample else None,
+                        shard_index=a.shard_index, shard_count=a.shard_count,
+                        reuse_index=a.reuse_index, skip_complete=a.skip_complete)
         elif a.phase == "reuse":
             reuse_annotated_vcfs(old, new)
             diagnose_final_inputs(staged)
