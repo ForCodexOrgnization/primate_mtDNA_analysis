@@ -265,7 +265,7 @@ def is_complete_refreshed_vcf(path):
             for line in handle:
                 if line.startswith('#'):
                     continue
-                fields = line.rstrip('\\n').split('\\t')
+                fields = line.rstrip('\n').split('\t')
                 if len(fields) < 8:
                     return False
                 info = fields[7]
