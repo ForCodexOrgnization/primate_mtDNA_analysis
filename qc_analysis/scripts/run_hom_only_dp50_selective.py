@@ -187,6 +187,8 @@ def refresh_all(old_root, new_root):
     return total_files
 
 def diagnose_final_inputs(config_path):
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     from qc_analysis.lib.simple_yaml import read_simple_yaml
     cfg = read_simple_yaml(config_path)
     sec = cfg.get('final_filter') or {}
