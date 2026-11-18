@@ -294,8 +294,8 @@ def main():
             diagnose_final_inputs(staged)
         elif a.phase == "final":
             found, eligible = diagnose_final_inputs(staged)
-            if eligible and found == 0:
-                raise RuntimeError("No HOM-eligible sample has a matching downstream VCF; refusing to create all-FAIL report")
+            if eligible and found < int(eligible * 0.95):
+                raise RuntimeError("Only %d/%d HOM-eligible samples have annotated VCF; refusing incomplete final QC" % (found, eligible))
             # Only alter the isolated DP50 staged YAML, never the original QC config.
             config_text = staged.read_text()
             if "final_filter:\n" not in config_text:
