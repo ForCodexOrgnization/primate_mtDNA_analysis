@@ -109,82 +109,127 @@ def same_numeric(a, b, tol=1e-8):
     except (ValueError, TypeError):
         return False
 
-def choose_source_record(lookup, key, info, src):
+def choose_source_record(lookup, key, info, fields, src):
     candidates = lookup.execute(
-        'SELECT qc,dp,klass,af,source_filter FROM v WHERE sample=? AND chrom=? AND pos=? AND ref=? AND alt=?',
-        key,
+        'SELECT qc,dp,klass,af,source_filter FROM v WHERE sample=? AND chrom=? AND pos=? AND ref=? AND alt=?', key
     ).fetchall()
     if not candidates:
-        raise RuntimeError('Missing native source record %r in %s' % (key,src))
-    dp = info.get('SOURCE_DP')
-    af = info.get('SOURCE_AF')
+        raise RuntimeError('No native source record for %r in %s' % (key,src))
+    fmt = dict(zip(fields[8].split(':'),fields[9].split(':'))) if len(fields)>9 else {}
+    dp = info.get('SOURCE_DP') or fmt.get('DP') or info.get('DP')
+    af = info.get('SOURCE_AF') or fmt.get('AF') or info.get('AF')
     klass = info.get('SOURCE_CALL_CLASS')
     source_filter = info.get('SOURCE_FILTER')
-    # When two records share a position, depth and source AF identify
-    # the exact native observation. Never choose the first by position alone.
-    if dp not in (None, '.', ''):
-        candidates = [row for row in candidates if same_numeric(row[1], dp, tol=0.0)]
-    if af not in (None, '.', ''):
-        candidates = [row for row in candidates if same_numeric(row[3], af)]
-    if klass not in (None, '.', ''):
-        candidates = [row for row in candidates if row[2] == klass]
-    if source_filter not in (None, '.', ''):
-        candidates = [row for row in candidates if row[4] == source_filter]
+    if dp not in (None,'.',''):
+        candidates = [r for r in candidates if same_numeric(r[1],dp,tol=0)]
+    if af not in (None,'.',''):
+        flip = info.get('LIFTOVER_ALLELE_STATUS') == 'REF_ALT_FLIP'
+        def af_match(row):
+            try:
+                expected = 1.0-float(af) if flip else float(af)
+                return abs(float(row[3])-expected) <= 0.00001
+            except (ValueError,TypeError):
+                return False
+        candidates = [r for r in candidates if af_match(r)]
+    if klass not in (None,'.',''):
+        candidates = [r for r in candidates if r[2] == klass]
+    if source_filter not in (None,'.',''):
+        candidates = [r for r in candidates if r[4] == source_filter]
     if not candidates:
-        raise RuntimeError('No source DP/AF/class match for %r in %s (DP=%s, AF=%s, class=%s)' % (key,src,dp,af,klass))
-    decisions = {row[0] for row in candidates}
-    if len(decisions) != 1:
-        raise RuntimeError('Ambiguous source QC decisions for %r in %s: %r' % (key,src,candidates))
-    # Multiple indistinguishable records carrying the same decision are safe
-    # for refreshing QC only; the original VCF records are never deduplicated.
-    return candidates[0][0]
+        raise RuntimeError('No matching native DP/AF evidence: %r in %s DP=%s AF=%s' % (key,src,dp,af))
+    unique = {(r[0],r[1],r[2],r[3]) for r in candidates}
+    if len(unique) != 1:
+        raise RuntimeError('Ambiguous native source records %r in %s: %r' % (key,src,candidates))
+    return candidates[0]
 
 def op(path, mode):
-    return gzip.open(path, mode + "t") if path.suffix == ".gz" else path.open(mode, encoding="utf-8")
+    return gzip.open(path,mode+'t') if path.suffix=='.gz' else path.open(mode,encoding='utf-8')
 
 def refresh_vcf(src, dst, sample, lookup):
+    # NEVER open dst for writing: it can be a symlink to original DP100 VCF.
+    import tempfile
+    tags = (
+        ('SOURCE_CHROM','String'), ('SOURCE_POS','Integer'),
+        ('SOURCE_REF','String'), ('SOURCE_ALT','String'),
+        ('SOURCE_AF','Float'), ('SOURCE_DP','Integer'),
+        ('SOURCE_CALL_CLASS','String'), ('SOURCE_VARIANT_QC','String')
+    )
     count = 0
-    with op(src, "r") as fin, op(dst, "w") as fout:
-        for line in fin:
-            if line.startswith("#"):
-                fout.write(line)
-                continue
-            fields = line.rstrip("\n").split("\t")
-            tokens = fields[7].split(";")
-            info = {t.split("=", 1)[0]: t.split("=", 1)[1] for t in tokens if "=" in t}
-            source_names = ("SOURCE_CHROM", "SOURCE_POS", "SOURCE_REF", "SOURCE_ALT")
-            if any(not info.get(k) or info[k] == "." for k in source_names):
-                raise RuntimeError(f"Unverifiable native key in {src}, line {count + 1}")
-            key = (sample, *(info[k] for k in source_names))
-            fresh_qc = choose_source_record(lookup, key, info, src)
-            tokens = [t for t in tokens if not t.startswith("SOURCE_VARIANT_QC=")]
-            tokens.append("SOURCE_VARIANT_QC=" + fresh_qc)
-            fields[7] = ";".join(tokens)
-            fout.write("\t".join(fields) + "\n")
-            count += 1
+    dst.parent.mkdir(parents=True,exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=dst.parent,prefix='.dp50_refresh_',
+                                 suffix='.vcf.gz' if dst.name.endswith('.gz') else '.vcf',
+                                 delete=False) as fh:
+        tmp = Path(fh.name)
+    try:
+        declared = set()
+        with op(src,'r') as fin,op(tmp,'w') as fout:
+            for line in fin:
+                if line.startswith('##INFO=<ID='):
+                    declared.add(line.split('ID=',1)[1].split(',',1)[0])
+                if line.startswith('#CHROM'):
+                    for tag,typ in tags:
+                        if tag not in declared:
+                            fout.write('##INFO=<ID=%s,Number=1,Type=%s,Description="Native-call provenance for DP50 QC">\n' % (tag,typ))
+                    fout.write(line)
+                    continue
+                if line.startswith('#'):
+                    fout.write(line)
+                    continue
+                f = line.rstrip('\n').split('\t')
+                if len(f)<8:
+                    raise RuntimeError('Malformed VCF record: %s' % src)
+                tokens = f[7].split(';')
+                info = dict(t.split('=',1) for t in tokens if '=' in t)
+                source_keys = ('CHROM','POS','REF','ALT')
+                native = tuple(info.get('SOURCE_'+k) or info.get('SRC_'+k) for k in source_keys)
+                if any(v in (None,'.','') for v in native):
+                    raise RuntimeError('Missing SOURCE/SRC native identity for sample %s in %s' % (sample,src))
+                key = (sample, *native)
+                qc,dp,klass,af,_ = choose_source_record(lookup,key,info,f,src)
+                newinfo = dict(zip(('SOURCE_CHROM','SOURCE_POS','SOURCE_REF','SOURCE_ALT'),native))
+                newinfo.update(SOURCE_AF=af,SOURCE_DP=dp,SOURCE_CALL_CLASS=klass,SOURCE_VARIANT_QC=qc)
+                for k,v in newinfo.items():
+                    old = info.get(k)
+                    if k in ('SOURCE_CHROM','SOURCE_POS','SOURCE_REF','SOURCE_ALT') and old not in (None,'.',v):
+                        raise RuntimeError('Conflicting %s for %r in %s: %s vs %s' % (k,key,src,old,v))
+                cleaned = [t for t in tokens if t.split('=',1)[0] not in newinfo and t!='.']
+                f[7] = ';'.join(cleaned+['%s=%s'%(k,v) for k,v in newinfo.items()])
+                fout.write('\t'.join(f)+'\n')
+                count+=1
+        os.replace(tmp,dst)
+    finally:
+        tmp.unlink(missing_ok=True)
     return count
 
-def refresh_all(old_root, new_root):
-    lookup = source_lookup(new_root / "pre_liftover_variant_qc", new_root)
-    total_files, total_variants = 0, 0
-    for stage, folder in VCFS.items():
-        srcdir = old_root / stage / folder
-        dstdir = new_root / stage / folder
-        if not srcdir.is_dir():
-            print("No VCF directory, skipping:", srcdir)
-            continue
+def refresh_all(old_root,new_root,stage='rrna_match',samples=None):
+    if stage not in VCFS:
+        raise RuntimeError('Unsupported refresh stage %s'%stage)
+    lookup = source_lookup(new_root/'pre_liftover_variant_qc',new_root)
+    folder = VCFS[stage]
+    srcdir = old_root/stage/folder
+    dstdir = new_root/stage/folder
+    if not srcdir.is_dir():
+        raise RuntimeError('Missing original annotated VCF directory: '+str(srcdir))
+    count=0
+    rows=0
+    try:
         for src in sorted(srcdir.iterdir()):
-            if not src.is_file() or (src.suffix != ".vcf" and not src.name.endswith(".vcf.gz")):
+            if not src.is_file() or not src.name.endswith(('.vcf','.vcf.gz')):
                 continue
-            sample = src.name.split(".", 1)[0]
-            dest = dstdir / src.name
-            total_variants += refresh_vcf(src, dest, sample, lookup)
-            total_files += 1
-    lookup.close()
-    if not total_files:
-        raise RuntimeError("No annotated VCF files were refreshed")
-    print(f"Refreshed {total_variants} VCF rows across {total_files} files")
-    return total_files
+            sample=src.name.split('.',1)[0]
+            if samples is not None and sample not in samples:
+                continue
+            dest=dstdir/src.name
+            rows+=refresh_vcf(src,dest,sample,lookup)
+            count+=1
+            if count%100==0:
+                print('Refreshed %d VCFs, %d variants'%(count,rows),flush=True)
+    finally:
+        lookup.close()
+    if not count:
+        raise RuntimeError('No annotated VCF files refreshed')
+    print('Refreshed %d %s VCFs and %d records'%(count,stage,rows),flush=True)
+    return count
 
 def reuse_annotated_vcfs(old_root, new_root):
     """Symlink original annotation VCFs, preserving all old files.
@@ -286,7 +331,7 @@ def main():
         if not new.is_dir() or not staged.is_file():
             raise RuntimeError("Missing staged workspace")
         if a.phase == "refresh":
-            refresh_all(old, new)
+            refresh_all(old, new, stage="rrna_match")
         elif a.phase == "reuse":
             reuse_annotated_vcfs(old, new)
             diagnose_final_inputs(staged)
