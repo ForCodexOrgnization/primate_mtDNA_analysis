@@ -177,6 +177,24 @@ def find_vcf(directory, sample, pattern=None):
     return candidates[0] if candidates else None
 
 
+def duplicated_native_source_keys(vcf_path):
+    """Identify repeated native-variant identities; never decide which call wins."""
+    from collections import Counter
+    counts = Counter()
+    with open_vcf(vcf_path) as handle:
+        for line in handle:
+            if line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            info, _, _ = variant_evidence(fields)
+            source = tuple(info_value(info, name) for name in (
+                "SOURCE_CHROM", "SOURCE_POS", "SOURCE_REF", "SOURCE_ALT"
+            ))
+            if all(part != "NOT_AVAILABLE" for part in source):
+                counts[source] += 1
+    return {key for key, count in counts.items() if count > 1}
+
+
 def liftover_status(sample, cfg):
     section = cfg.get("coordinate_liftover") or {}
     paths = section.get("paths") or {}
@@ -569,6 +587,7 @@ def main():
     reset_managed_outputs(out)
     eligible_source_classes = {str(x).upper() for x in names(sec.get("biological_call_classes", ["HET", "HOM"]))}
     variant_dp_min = float(sec.get("variant_dp_min", 100))
+    exclude_duplicate_source_variants = bool(sec.get("exclude_duplicate_source_variants", False))
 
     fail_cfg = sec.get("sample_fail_status") or {}
     fail_defaults = {
@@ -690,6 +709,10 @@ def main():
             variant_writer.writeheader()
             for sample, src in sorted(reportable.items()):
                 variant_flags, variant_annotations = load_sample_variant_evidence(report_store, sample)
+                duplicate_native_keys = (
+                    duplicated_native_source_keys(src)
+                    if exclude_duplicate_source_variants else set()
+                )
                 trna_cfg = sec.get("trna_compensation") or {}
                 trna_enabled = trna_cfg.get("enabled", False)
                 trna_proximity = (
@@ -740,6 +763,11 @@ def main():
                                 structure = info_value(info, "MTRRNA_STRUCTURE_MATCH")
                                 if structure in {"STEM_LOOP", "LOOP_STEM"}:
                                     why.append("rrna_match:stem_loop_discordance")
+                            native_key = tuple(info_value(info, k) for k in (
+                                "SOURCE_CHROM", "SOURCE_POS", "SOURCE_REF", "SOURCE_ALT"
+                            ))
+                            if native_key in duplicate_native_keys:
+                                why.append("duplicate_native_source_variant")
                             source_af = number(info.get("SOURCE_AF"))
                             source_dp = number(info.get("SOURCE_DP"))
                             source_call_class = info_value(info, "SOURCE_CALL_CLASS")
