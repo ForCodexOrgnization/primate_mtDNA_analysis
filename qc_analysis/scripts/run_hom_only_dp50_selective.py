@@ -302,6 +302,7 @@ def diagnose_final_inputs(config_path):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--execute", action="store_true", help="Legacy sequential execution")
+    p.add_argument("--sample", help="Refresh only one sample (validation before full cohort)")
     p.add_argument("--phase", choices=["prepare","refresh","reuse","diagnose","final","hom"], help="Slurm stage")
     p.add_argument("--old-root", default=OLD)
     p.add_argument("--new-root", default=NEW)
@@ -331,7 +332,7 @@ def main():
         if not new.is_dir() or not staged.is_file():
             raise RuntimeError("Missing staged workspace")
         if a.phase == "refresh":
-            refresh_all(old, new, stage="rrna_match")
+            refresh_all(old, new, stage="rrna_match", samples={a.sample} if a.sample else None)
         elif a.phase == "reuse":
             reuse_annotated_vcfs(old, new)
             diagnose_final_inputs(staged)
