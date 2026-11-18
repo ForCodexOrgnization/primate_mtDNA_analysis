@@ -186,10 +186,39 @@ def refresh_all(old_root, new_root):
     print(f"Refreshed {total_variants} VCF rows across {total_files} files")
     return total_files
 
+def diagnose_final_inputs(config_path):
+    from qc_analysis.lib.simple_yaml import read_simple_yaml
+    cfg = read_simple_yaml(config_path)
+    sec = cfg.get('final_filter') or {}
+    qc_spec = (sec.get('sample_reports') or {}).get('sample_qc') or {}
+    qc_path = ROOT / str(qc_spec.get('path',''))
+    if not qc_path.is_file():
+        raise RuntimeError('Missing sample QC report: ' + str(qc_path))
+    with qc_path.open(newline='') as handle:
+        samples = [r['sample'] for r in csv.DictReader(handle,delimiter='\t') if r.get('homoplasmy_qc_status') == 'PASS']
+    sources = sec.get('vcf_sources') or {}
+    sample_covered = set()
+    print('HOM eligible samples:',len(samples),flush=True)
+    for name,spec in sources.items():
+        directory = ROOT / str(spec['dir'])
+        pattern = str(spec.get('pattern','{sample}.vcf'))
+        found = []
+        for sample in samples:
+            candidate = directory / pattern.format(sample=sample)
+            if candidate.is_file() or Path(str(candidate)+'.gz').is_file():
+                found.append(sample)
+        sample_covered.update(found)
+        print(name, len(found), '/', len(samples), 'directory=',directory,flush=True)
+        print('  actual filenames:', [p.name for p in sorted(directory.iterdir())[:5]] if directory.is_dir() else 'MISSING DIRECTORY',flush=True)
+    print('Eligible samples with any VCF:',len(sample_covered),'/',len(samples),flush=True)
+    for sample in samples[:5]:
+        print('EXAMPLE EXPECTED:',sample,[str(spec['dir'])+'/'+str(spec['pattern']).format(sample=sample) for spec in sources.values()],flush=True)
+    return len(sample_covered),len(samples)
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--execute", action="store_true", help="Legacy sequential execution")
-    p.add_argument("--phase", choices=["prepare","refresh","final","hom"], help="Slurm stage")
+    p.add_argument("--phase", choices=["prepare","refresh","diagnose","final","hom"], help="Slurm stage")
     p.add_argument("--old-root", default=OLD)
     p.add_argument("--new-root", default=NEW)
     p.add_argument("--config", default=CONFIG)
@@ -219,7 +248,12 @@ def main():
             raise RuntimeError("Missing staged workspace")
         if a.phase == "refresh":
             refresh_all(old, new)
+        elif a.phase == "diagnose":
+            diagnose_final_inputs(staged)
         elif a.phase == "final":
+            found, eligible = diagnose_final_inputs(staged)
+            if eligible and found == 0:
+                raise RuntimeError("No HOM-eligible sample has a matching downstream VCF; refusing to create all-FAIL report")
             # Only alter the isolated DP50 staged YAML, never the original QC config.
             config_text = staged.read_text()
             if "final_filter:\n" not in config_text:
