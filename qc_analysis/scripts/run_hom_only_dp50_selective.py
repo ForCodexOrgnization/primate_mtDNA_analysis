@@ -111,65 +111,73 @@ def same_numeric(a, b, tol=1e-8):
 
 def choose_source_record(lookup, key, info, fields, src):
     candidates = lookup.execute(
-        'SELECT qc,dp,klass,af,source_filter FROM v WHERE sample=? AND chrom=? AND pos=? AND ref=? AND alt=?', key
+        'SELECT qc,dp,klass,af,source_filter FROM v WHERE sample=? AND chrom=? AND pos=? AND ref=? AND alt=?',
+        key,
     ).fetchall()
     if not candidates:
-        raise RuntimeError('No native source record for %r in %s' % (key,src))
-    fmt = dict(zip(fields[8].split(':'),fields[9].split(':'))) if len(fields)>9 else {}
+        raise RuntimeError('Missing native source record %r in %s' % (key, src))
+
+    fmt = dict(zip(fields[8].split(':'), fields[9].split(':'))) if len(fields) > 9 else {}
     dp = info.get('SOURCE_DP') or fmt.get('DP') or info.get('DP')
     af = info.get('SOURCE_AF') or fmt.get('AF') or info.get('AF')
     klass = info.get('SOURCE_CALL_CLASS')
     source_filter = info.get('SOURCE_FILTER')
-    if dp not in (None,'.',''):
-        candidates = [r for r in candidates if same_numeric(r[1],dp,tol=0)]
-    if af not in (None,'.',''):
-        status = info.get('LIFTOVER_ALLELE_STATUS')
-        if status in ('ALT_REF_FLIP', 'REF_ALT_FLIP'):
-            flip = True
-        elif status in ('REF_MATCH', 'NO_FLIP', None, '', '.'):
-            # Verify orientation with the immutable native alleles if
-            # the original VCF did not annotate the flip status.
-            source_ref, source_alt = key[3], key[4]
-            target_ref, target_alt = fields[3], fields[4]
-            if (target_ref, target_alt) == (source_alt, source_ref):
-                flip = True
-            elif (target_ref, target_alt) == (source_ref, source_alt):
-                flip = False
-            else:
-                raise RuntimeError(
-                    'Unverifiable REF/ALT orientation for %r in %s: '
-                    'target=%s>%s status=%s'
-                    % (key, src, target_ref, target_alt, status)
-                )
-        else:
-            raise RuntimeError(
-                'Unexpected liftover allele status for %r in %s: %s'
-                % (key, src, status)
-            )
-        def af_match(row):
-            try:
-                expected = 1.0-float(af) if flip else float(af)
-                # Source QC AF is formatted with ~3 significant decimals
-                # (e.g. 0.989), whereas the lifted FORMAT AF has more
-                # precision (e.g. 0.0111397 after ALT_REF_FLIP).
-                # Respect the source value's displayed precision.
-                original = str(row[3])
-                from decimal import Decimal
-                source_value = Decimal(original)
-                half_unit = float(Decimal('0.5').scaleb(source_value.as_tuple().exponent))
-                return abs(float(original)-expected) <= half_unit + 1e-8
-            except (ValueError,TypeError):
-                return False
-        candidates = [r for r in candidates if af_match(r)]
-    if klass not in (None,'.',''):
+
+    # Native key and exact DP are primary evidence. Liftover AF may have been
+    # recomputed from AD, which need not equal 1 - native FORMAT AF.
+    if dp in (None, '.', ''):
+        raise RuntimeError('Missing native depth for %r in %s' % (key, src))
+    candidates = [r for r in candidates if same_numeric(r[1], dp, tol=0)]
+    if klass not in (None, '.', ''):
         candidates = [r for r in candidates if r[2] == klass]
-    if source_filter not in (None,'.',''):
+    if source_filter not in (None, '.', ''):
         candidates = [r for r in candidates if r[4] == source_filter]
     if not candidates:
-        raise RuntimeError('No matching native DP/AF evidence: %r in %s DP=%s AF=%s' % (key,src,dp,af))
-    unique = {(r[0],r[1],r[2],r[3]) for r in candidates}
-    if len(unique) != 1:
-        raise RuntimeError('Ambiguous native source records %r in %s: %r' % (key,src,candidates))
+        raise RuntimeError('No matching native key and exact DP: %r in %s DP=%s' % (key, src, dp))
+
+    status = info.get('LIFTOVER_ALLELE_STATUS')
+    native_ref, native_alt = key[3], key[4]
+    target_ref, target_alt = fields[3], fields[4]
+    if status in ('ALT_REF_FLIP', 'REF_ALT_FLIP'):
+        if (target_ref, target_alt) != (native_alt, native_ref):
+            raise RuntimeError('Flip status conflicts with REF/ALT at %r in %s' % (key, src))
+        flip = True
+    elif status in ('REF_MATCH', 'NO_FLIP'):
+        if (target_ref, target_alt) != (native_ref, native_alt):
+            raise RuntimeError('REF_MATCH conflicts with REF/ALT at %r in %s' % (key, src))
+        flip = False
+    elif status in (None, '', '.'):
+        if (target_ref, target_alt) == (native_alt, native_ref):
+            flip = True
+        elif (target_ref, target_alt) == (native_ref, native_alt):
+            flip = False
+        else:
+            raise RuntimeError('Unverifiable REF/ALT orientation for %r in %s' % (key, src))
+    else:
+        raise RuntimeError('Unexpected allele flip status %s for %r in %s' % (status, key, src))
+
+    # Use AF only to disambiguate records with the *same native key and DP*.
+    # At unique key+DP, use the source AF as authoritative rather than the
+    # lifted AF (which the liftover script derives from AD).
+    if len(candidates) > 1:
+        if af not in (None, '.', ''):
+            from decimal import Decimal
+            expected = 1.0 - float(af) if flip else float(af)
+            def af_matches(row):
+                try:
+                    native = Decimal(str(row[3]))
+                    tol = float(Decimal('0.5').scaleb(native.as_tuple().exponent))
+                    return abs(float(native) - expected) <= tol + 1e-8
+                except (ValueError, TypeError):
+                    return False
+            compatible = [r for r in candidates if af_matches(r)]
+            if compatible:
+                candidates = compatible
+
+    decisions = {(r[0], r[1], r[2], r[3]) for r in candidates}
+    if len(decisions) != 1:
+        raise RuntimeError('Ambiguous source records sharing native key+DP %r in %s: %r'
+                           % (key, src, candidates))
     return candidates[0]
 
 def op(path, mode):
