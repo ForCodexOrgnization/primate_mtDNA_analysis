@@ -154,15 +154,9 @@ def choose_source_record(lookup, key, info, fields, src):
                 # precision (e.g. 0.0111397 after ALT_REF_FLIP).
                 # Respect the source value's displayed precision.
                 original = str(row[3])
-                if 'e' in original.lower():
-                    from decimal import Decimal
-                    half_unit = float(Decimal(original).as_tuple().exponent and
-                                      Decimal(5).scaleb(Decimal(original).as_tuple().exponent - 1)
-                                      or Decimal('0.5'))
-                elif '.' in original:
-                    half_unit = 0.5 * 10 ** (-len(original.split('.', 1)[1]))
-                else:
-                    half_unit = 0.5
+                from decimal import Decimal
+                source_value = Decimal(original)
+                half_unit = float(Decimal('0.5').scaleb(source_value.as_tuple().exponent))
                 return abs(float(original)-expected) <= half_unit + 1e-8
             except (ValueError,TypeError):
                 return False
