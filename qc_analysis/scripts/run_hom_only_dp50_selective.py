@@ -220,6 +220,18 @@ def main():
         if a.phase == "refresh":
             refresh_all(old, new)
         elif a.phase == "final":
+            # Only alter the isolated DP50 staged YAML, never the original QC config.
+            config_text = staged.read_text()
+            if "final_filter:\n" not in config_text:
+                raise RuntimeError("Staged YAML missing final_filter section")
+            import re
+            config_text = re.sub(
+                r"(?m)^(final_filter:\\n)(?:  exclude_duplicate_source_variants:.*\\n)?",
+                lambda m: m.group(1) + "  exclude_duplicate_source_variants: true\\n",
+                config_text,
+                count=1,
+            )
+            staged.write_text(config_text)
             run(sys.executable, ROOT / "qc_analysis/scripts/run_final_filter_with_heteroplasmy.py", "--config", staged)
         elif a.phase == "hom":
             run(sys.executable, ROOT / "qc_analysis/scripts/run_homoplasmy_qc.py", "--config", staged)
