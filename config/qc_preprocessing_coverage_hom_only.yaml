@@ -21,7 +21,7 @@ intraspecies_contamination:
   artifact_removal_report: results/qc_coverage_only/local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv
   build_variant_table: true
   overwrite: false
-  dp_min: 100
+  dp_min: 50
   use_snv_only: true
   pass_only: true
   low_vaf_min: 0.01
@@ -79,7 +79,7 @@ pre_liftover_variant_qc:
   enabled: true
   input_vcf_dir: results/qc_coverage_only/collected_variant_calling_results/collected_vcf
   output_dir: results/qc_coverage_only/pre_liftover_variant_qc
-  dp_min: 100
+  dp_min: 50
   pass_only: true
   snv_only: true
   heteroplasmy_af_min: 0.10
@@ -95,9 +95,9 @@ local_heteroplasmy_qc:
   sample_ref_file: config/sample_ref_file.tsv
   output_dir: results/qc_coverage_only/local_heteroplasmy_qc
 
-  # Strict cluster-discovery HET definition: PASS/QC-PASS, DP >= 100,
+  # Strict cluster-discovery HET definition: PASS/QC-PASS, DP >= 50,
   # 0.10 <= source AF < 0.95.
-  dp_min: 100
+  dp_min: 50
   heteroplasmy_af_min: 0.10
   heteroplasmy_af_max: 0.95
 
@@ -151,7 +151,7 @@ local_heteroplasmy_qc:
     enabled: true
     low_af_min: 0.01
     low_af_max: 0.10
-    dp_min: 100
+    dp_min: 50
     pass_only: true
     indel_af_min: 0.01
     indel_af_max: 0.95
@@ -184,8 +184,8 @@ final_filter:
   optional_sample_reports: ""
   strict_missing_samples: true
   biological_call_classes: HET,HOM
-  # Variant-level baseline: VCF FILTER must be PASS and source DP must be >= 100.
-  variant_dp_min: 100
+  # Variant-level baseline: VCF FILTER must be PASS and source DP must be >= 50.
+  variant_dp_min: 50
   # Per-sample species-specific tRNA proximity candidates; no species recurrence gate.
   matching_filters:
     codon: true
@@ -256,9 +256,9 @@ collect_variant_calling:
   coverage_threshold: 100
   low_hetero: 0.05
   low_homo: 0.95
-  min_vcf_dp: 100
+  min_vcf_dp: 50
 
-  # Only PASS variants with sample FORMAT DP > min_vcf_dp are counted.
+  # Only PASS variants with sample FORMAT DP >= min_vcf_dp are counted.
   copy_files: false
   allow_single_cov: false
 
@@ -405,7 +405,7 @@ interspecies_contamination:
     artifact_removal_report: results/qc_coverage_only/local_heteroplasmy_qc/reports/numt_variants_to_remove.tsv
     output_dir: results/qc_coverage_only/interspecies_contamination
   settings:
-    dp_min: 100
+    dp_min: 50
     low_vaf_min: 0.01
     low_vaf_max: 0.20
     high_vaf_min: 0.99
@@ -463,7 +463,7 @@ primate_homo_background:
     human_marker_table: data/reference_tables/human_phylotree_rcrs_v17.1_snv.tsv
   settings:
     homoplasmy_af_min: 0.95
-    dp_min: 100
+    dp_min: 50
     pass_only: true
     snv_only: true
     accepted_orthology_statuses: PASS
@@ -486,7 +486,7 @@ human_contamination:
     allow_small_marker_reference: false
     marker_version: rcrs-v17.1
   variant_filters:
-    dp_min: 100
+    dp_min: 50
     pass_only: true
     allow_dot_filter: false
     snv_only: true
