@@ -73,30 +73,41 @@ def initialize(old_root, new_root, source_config, staged_config):
     print("Generated config:", staged_config)
 
 def source_lookup(prelift, work_root):
-    path = prelift / 'reports/source_variant_qc.tsv'
-    if not path.is_file():
-        raise RuntimeError('Missing merged source QC: ' + str(path))
+    """Disk-backed index; collapse only identical native variant records."""
+    source = prelift / 'reports/source_variant_qc.tsv'
+    if not source.is_file():
+        raise RuntimeError('Missing merged source QC: ' + str(source))
     database = work_root / 'dp50_source_lookup.sqlite'
     if database.exists():
         database.unlink()
     db = sqlite3.connect(str(database))
-    db.execute('CREATE TABLE v (sample TEXT, chrom TEXT, pos TEXT, ref TEXT, alt TEXT, qc TEXT, dp TEXT, klass TEXT, PRIMARY KEY(sample,chrom,pos,ref,alt)) WITHOUT ROWID')
-    batch = []
+    db.execute('CREATE TABLE v (sample TEXT, chrom TEXT, pos TEXT, ref TEXT, alt TEXT, qc TEXT, dp TEXT, klass TEXT, af TEXT, filter TEXT, PRIMARY KEY(sample,chrom,pos,ref,alt)) WITHOUT ROWID')
+    db.execute('CREATE TABLE diagnostics (sample TEXT, chrom TEXT, pos TEXT, ref TEXT, alt TEXT, existing TEXT, incoming TEXT)')
     count = 0
-    with path.open(newline='') as handle:
+    repeats = 0
+    def normalize_value(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return v
+    with source.open(newline='') as handle:
         for row in csv.DictReader(handle, delimiter='\t'):
-            batch.append(tuple(row[k] for k in ('sample','source_chrom','source_pos','source_ref','source_alt','source_variant_qc','source_dp','source_call_class')))
-            if len(batch) >= 10000:
-                db.executemany('INSERT INTO v VALUES (?,?,?,?,?,?,?,?)', batch)
-                count += len(batch)
-                batch.clear()
-        if batch:
-            db.executemany('INSERT INTO v VALUES (?,?,?,?,?,?,?,?)', batch)
-            count += len(batch)
+            key = tuple(row[k] for k in ('sample','source_chrom','source_pos','source_ref','source_alt'))
+            evidence = tuple(row[k] for k in ('source_variant_qc','source_dp','source_call_class','source_af','source_filter'))
+            cur = db.execute('INSERT OR IGNORE INTO v VALUES (?,?,?,?,?,?,?,?,?,?)', key + evidence)
+            if cur.rowcount == 0:
+                repeats += 1
+                previous = db.execute('SELECT qc,dp,klass,af,filter FROM v WHERE sample=? AND chrom=? AND pos=? AND ref=? AND alt=?',key).fetchone()
+                if not (previous[0] == evidence[0] and normalize_value(previous[1]) == normalize_value(evidence[1]) and previous[2] == evidence[2] and normalize_value(previous[3]) == normalize_value(evidence[3]) and previous[4] == evidence[4]):
+                    db.execute('INSERT INTO diagnostics VALUES (?,?,?,?,?,?,?)',key+(repr(previous),repr(evidence)))
+                    db.commit()
+                    raise RuntimeError('Conflicting duplicate native variant: %s; details in %s diagnostics table' % (key,database))
+            else:
+                count += 1
     db.commit()
     if not count:
-        raise RuntimeError('Source report empty')
-    print('Indexed %d native variants in SQLite' % count, flush=True)
+        raise RuntimeError('Empty source QC report')
+    print('Indexed %d unique source variants; collapsed %d exact duplicate rows' % (count,repeats),flush=True)
     return db
 
 def op(path, mode):
