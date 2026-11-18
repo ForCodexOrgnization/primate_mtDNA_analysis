@@ -301,9 +301,9 @@ def main():
             if "final_filter:\n" not in config_text:
                 raise RuntimeError("Staged YAML missing final_filter section")
             section_start = config_text.index("final_filter:\n") + len("final_filter:\n")
-            existing = "  exclude_duplicate_source_variants: true\n"
-            if "  exclude_duplicate_source_variants:" not in config_text:
-                config_text = config_text[:section_start] + existing + config_text[section_start:]
+            for key in ("exclude_duplicate_source_variants", "require_source_call_class"):
+                if "  " + key + ":" not in config_text:
+                    config_text = config_text[:section_start] + "  " + key + ": true\n" + config_text[section_start:]
             staged.write_text(config_text)
             run(sys.executable, ROOT / "qc_analysis/scripts/run_final_filter_with_heteroplasmy.py", "--config", staged)
         elif a.phase == "hom":
