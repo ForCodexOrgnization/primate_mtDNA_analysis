@@ -316,7 +316,7 @@ removed until `final_filter`. The fully annotated, unfiltered input is
 The primate homoplasmic background is an intermediate calibration dataset used
 to distinguish recurrent/evolutionary primate alleles from more informative
 Human PhyloTree marker hits. By default it contains exact post-liftover
-`human_pos + human_ref + human_alt` SNVs with VCF `FILTER=PASS`, DP > 100,
+`human_pos + human_ref + human_alt` SNVs with VCF `FILTER=PASS`, DP >= 50,
 AF >= 0.95, and orthology status `PASS`. It does not read Human or interspecies
 contamination status and is never a final-output VCF source. Human QC retains
 its historical all-marker screen and reports background and informative subsets;
