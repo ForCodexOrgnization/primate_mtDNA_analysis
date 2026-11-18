@@ -148,7 +148,8 @@ def refresh_all(old_root, new_root):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--execute", action="store_true", help="Actually perform staging and rerun")
+    p.add_argument("--execute", action="store_true", help="Legacy sequential execution")
+    p.add_argument("--phase", choices=["prepare","refresh","final","hom"], help="Slurm stage")
     p.add_argument("--old-root", default=OLD)
     p.add_argument("--new-root", default=NEW)
     p.add_argument("--config", default=CONFIG)
@@ -165,18 +166,27 @@ def main():
     print("      refresh immutable-key SOURCE_VARIANT_QC in annotated VCF copies;")
     print("      rerun final_filter and homoplasmy_qc; reuse all original read data")
     print("      and original reference/functional annotations.")
-    if not a.execute:
-        print("DRY RUN ONLY. Pass --execute to run.")
+    if a.phase == "prepare":
+        if not new.exists() and not staged.exists():
+            initialize(old, new, source, staged)
+        elif new.is_dir() and staged.is_file():
+            print("Resuming existing workspace; preserving partial files")
+        else:
+            raise RuntimeError("Partial staging requires manual inspection")
         return
-    initialize(old, new, source, staged)
-    run(sys.executable, ROOT / "qc_analysis/scripts/run_pre_liftover_variant_qc.py", "--config", staged)
-    run("bash", ROOT / "qc_analysis/scripts/run_local_heteroplasmy_qc_with_expansion.sh", staged)
-    refresh_all(old, new)
-    # Final filter reads original HOM sample eligibility through the staged
-    # symlink, but writes solely into final_filter_hom_only in new_root.
-    run(sys.executable, ROOT / "qc_analysis/scripts/run_final_filter_with_heteroplasmy.py", "--config", staged)
-    run(sys.executable, ROOT / "qc_analysis/scripts/run_homoplasmy_qc.py", "--config", staged)
-    print("COMPLETE:", new)
+    if a.phase:
+        if not new.is_dir() or not staged.is_file():
+            raise RuntimeError("Missing staged workspace")
+        if a.phase == "refresh":
+            refresh_all(old, new)
+        elif a.phase == "final":
+            run(sys.executable, ROOT / "qc_analysis/scripts/run_final_filter_with_heteroplasmy.py", "--config", staged)
+        elif a.phase == "hom":
+            run(sys.executable, ROOT / "qc_analysis/scripts/run_homoplasmy_qc.py", "--config", staged)
+        return
+    if a.execute:
+        raise RuntimeError("Sequential execution disabled; use Slurm submit script")
+    print("DRY RUN ONLY. Submit via submit_hom_only_dp50_selective.sh")
 
 if __name__ == "__main__":
     try:
