@@ -44,16 +44,16 @@ def rebuild(out):
         counts={}
         dest=reports/"source_variant_qc.tsv"
         with dest.open("w",newline="") as merged:
-            w=csv.DictWriter(merged,fieldnames=FIELDS,delimiter="\\t")
+            w=csv.DictWriter(merged,fieldnames=FIELDS,delimiter="\t")
             w.writeheader()
             for path in sorted(reports.glob("*.source_variant_qc.tsv")):
                 with path.open() as fh:
-                    for row in csv.DictReader(fh,delimiter="\\t"):
+                    for row in csv.DictReader(fh,delimiter="\t"):
                         w.writerow(row)
                         key=(row["sample"],row["source_call_class"],row["source_variant_qc"])
                         counts[key]=counts.get(key,0)+1
         with (reports/"source_variant_qc_summary.tsv").open("w",newline="") as f:
-            w=csv.writer(f,delimiter="\\t")
+            w=csv.writer(f,delimiter="\t")
             w.writerow(("sample","source_call_class","source_variant_qc","n_variants"))
             for key,n in sorted(counts.items()):
                 w.writerow((*key,n))
