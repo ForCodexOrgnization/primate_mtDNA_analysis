@@ -90,8 +90,8 @@ script tries common aliases such as `mt_median_coverage`,
   * heteroplasmy: `AF >= --low-hetero` and `AF < --low-homo`
   * homoplasmy: `AF >= --low-homo`
   * Only variants with `FILTER` exactly equal to `PASS` are counted.
-  * Only variants with sample `FORMAT` `DP > --min-vcf-dp` are counted;
-    the default `--min-vcf-dp` is `100`.
+  * Only variants with sample `FORMAT` `DP >= --min-vcf-dp` are counted;
+    the default `--min-vcf-dp` is `50`.
 
 ## Usage
 
