@@ -63,6 +63,7 @@ def evaluate(
     mtcn_enabled=True,
     percent_column="Percent_100",
     strict_greater_than=False,
+    percent_strict_greater_than=None,
 ):
     vals = {k: value(row, v) for k, v in ALIASES.items()}
     mtcn_qc, nuclear_adj, nuclear_zero = mtcn_from_summary(row)
@@ -70,11 +71,12 @@ def evaluate(
     percent_min = float(thresholds.get("percent_coverage_min", thresholds["percent_100_min"]))
 
     passes = (lambda observed, threshold: observed > threshold if strict_greater_than else observed >= threshold)
-    selected_percent_pass = selected_percent is not None and passes(selected_percent, percent_min)
+    percent_strict = strict_greater_than if percent_strict_greater_than is None else percent_strict_greater_than
+    selected_percent_pass = selected_percent is not None and (selected_percent > percent_min if percent_strict else selected_percent >= percent_min)
 
     legacy_percent_pass = (
         vals["Percent_100"] is not None
-        and passes(vals["Percent_100"], float(thresholds["percent_100_min"]))
+        and (vals["Percent_100"] > float(thresholds["percent_100_min"]) if percent_strict else vals["Percent_100"] >= float(thresholds["percent_100_min"]))
     )
 
     checks = {
@@ -226,6 +228,7 @@ def main():
     nuclear_coverage_enabled = sec.get("nuclear_coverage_enabled", True) is not False
     mtcn_enabled = sec.get("mtcn_enabled", True) is not False
     strict_greater_than = sec.get("strict_greater_than", False) is True
+    percent_strict_greater_than = sec.get("percent_strict_greater_than", strict_greater_than) is True
 
     hom_cfg = (read_simple_yaml(a.config).get("homoplasmy_qc") or {})
     enable_dual = hom_cfg.get("reassess_all_samples", False) is True
@@ -244,6 +247,7 @@ def main():
                 mtcn_enabled=mtcn_enabled,
                 percent_column=percent_column,
                 strict_greater_than=strict_greater_than,
+                percent_strict_greater_than=percent_strict_greater_than,
             )
             result["heteroplasmy_qc_status"] = result["qc_status"]
             if enable_dual:
