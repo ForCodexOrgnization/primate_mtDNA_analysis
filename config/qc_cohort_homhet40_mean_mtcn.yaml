@@ -61,13 +61,13 @@ sample_variant_filtering:
   enabled: true
   input_summary: results/qc_cohort_homhet40_mean_mtcn/updated_collection_summary.tsv
   output_dir: results/qc_cohort_homhet40_mean_mtcn/sample_variant_filtering
-  # Coverage-only sample QC: Percent_100 >= 90, no nuclear coverage or mtCN filter.
+  # HET/HOM sample gate: Percent_100 > 90, nuclear median >= 5, mean-based mtCN >= 40.
   # Independent collection summary snapshot staged by prepare_coverage_only.sh.
   mt_coverage_enabled: false
   nuclear_coverage_enabled: true
   mtcn_enabled: true
   mad_enabled: false
-  # Inclusive >= for Percent_100.
+  # Percent_100 is strict >90; mtCN and nuclear median remain inclusive >=.
   strict_greater_than: false
   percent_strict_greater_than: true
   thresholds:
@@ -172,7 +172,7 @@ homoplasmy_qc:
   enabled: false
   reassess_all_samples: false
   pipeline_call_class: BOTH
-  # HOM gate selects the sample cohort only; retain HOM and HET variant calls.
+  # Combined cohort: both HOM and HET calls, selected by the shared HET/HOM sample gate.
   sample_selection_only: false
   input_summary: results/qc_cohort_homhet40_mean_mtcn/updated_collection_summary.tsv
   output_dir: results/qc_cohort_homhet40_mean_mtcn/homoplasmy_qc_only
