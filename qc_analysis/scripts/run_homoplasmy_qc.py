@@ -20,6 +20,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
+from qc_analysis.lib.mtcn_qc import mtcn_from_summary
 
 
 def path_of(x):
@@ -109,23 +110,19 @@ def main():
         mt = number(sample.get("mt_median_coverage"))
         nuclear = number(sample.get("nuclear_median_coverage"))
         original = number(sample.get("mtcn_median"))
-        nuclear_adjusted = 1.0 if nuclear == 0 else nuclear
-        # Preserve previously calculated mtCN for all samples except
-        # those whose ORIGINAL median nuclear coverage is exactly zero.
-        # This avoids silently changing established QC for other samples.
-        recalculated = original
-        if nuclear == 0:
-            recalculated = 2.0 * mt / 1.0 if mt is not None else None
+        recalculated, nuclear_adjusted, nuclear_zero_adjusted = mtcn_from_summary(sample)
         cov_path = collected / "collected_cov" / f"{name}.merged.max_depth.per_base_coverage.tsv"
         pct, n_positions, coverage_status = percent_50_from_merged_coverage(cov_path, min_positions)
         failures = []
         if recalculated is None or recalculated < threshold_mtcn:
-            failures.append("HOM_mtCN_below_20_or_missing")
+            failures.append("HOM_mtCN_below_threshold_or_missing")
         if pct is None or pct < threshold_percent:
             failures.append("HOM_Percent_50_below_50_or_missing")
         result = {
             "sample": name, "species": sample.get("species", ""),
-            "mt_median_coverage": mt, "nuclear_median_coverage_original": nuclear,
+            "mt_median_coverage": mt, "mt_mean_coverage": number(sample.get("mt_mean_coverage")),
+            "mtcn_qc_value": recalculated, "mtcn_qc_nuclear_zero_adjusted": nuclear_zero_adjusted,
+            "nuclear_median_coverage_original": nuclear,
             "nuclear_median_coverage_adjusted": nuclear_adjusted,
             "mtcn_median_original": original, "mtcn_median_recalculated": recalculated,
             "Percent_50": pct, "n_coverage_positions": n_positions,
