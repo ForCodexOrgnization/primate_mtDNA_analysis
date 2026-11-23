@@ -112,7 +112,7 @@ def main():
     labels = [title for title, vals in (
         ("10 <= mtCN < 20", rescued10), ("mtCN >= 20", original20)) if vals]
     if data:
-        ax.boxplot(data, tick_labels=labels, showfliers=False)
+        ax.boxplot(data, labels=labels, showfliers=False)
         ax.set_ylabel("Mean mtDNA coverage (x)")
         ax.set_title("Mean mtDNA coverage by mean-based mtCN threshold")
         fig.tight_layout()
