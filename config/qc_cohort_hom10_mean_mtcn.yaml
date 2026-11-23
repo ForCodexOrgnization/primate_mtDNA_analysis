@@ -61,7 +61,7 @@ sample_variant_filtering:
   enabled: true
   input_summary: results/qc_cohort_hom10_mean_mtcn/updated_collection_summary.tsv
   output_dir: results/qc_cohort_hom10_mean_mtcn/sample_variant_filtering
-  # Coverage-only sample QC: Percent_100 >= 90, no nuclear coverage or mtCN filter.
+  # HOM gate is independent: mean-based mtCN >= 10 and >=50% mtDNA sites at >=50x.
   # Independent collection summary snapshot staged by prepare_coverage_only.sh.
   mt_coverage_enabled: false
   nuclear_coverage_enabled: false
