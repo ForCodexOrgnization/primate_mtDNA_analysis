@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from qc_analysis.lib.simple_yaml import read_simple_yaml
+from qc_analysis.lib.mtcn_qc import mtcn_from_summary
 
 FIELDS = (
     "sample species mt_median_coverage Percent_100 percent_coverage_metric "
@@ -22,7 +23,8 @@ FIELDS = (
     "pass_nuclear_coverage pass_mtcn pass_mad n_failed_criteria "
     "failed_criteria qc_status collection_status homoplasmy_qc_status homoplasmy_qc_fail_reasons "
     "homoplasmy_mtcn_recalculated homoplasmy_adjusted_nuclear_coverage Percent_50 "
-    "homoplasmy_coverage_positions heteroplasmy_qc_status"
+    "homoplasmy_coverage_positions heteroplasmy_qc_status "
+    "mt_mean_coverage mtcn_qc_value mtcn_qc_nuclear_adjusted mtcn_qc_nuclear_zero_adjusted"
 ).split()
 
 ALIASES = {
@@ -63,6 +65,7 @@ def evaluate(
     strict_greater_than=False,
 ):
     vals = {k: value(row, v) for k, v in ALIASES.items()}
+    mtcn_qc, nuclear_adj, nuclear_zero = mtcn_from_summary(row)
     selected_percent = value(row, (percent_column,))
     percent_min = float(thresholds.get("percent_coverage_min", thresholds["percent_100_min"]))
 
@@ -96,8 +99,8 @@ def evaluate(
             True
             if not mtcn_enabled
             else (
-                vals["mtcn_median"] is not None
-                and passes(vals["mtcn_median"], float(thresholds["mtcn_min"]))
+                mtcn_qc is not None
+                and passes(mtcn_qc, float(thresholds["mtcn_min"]))
             )
         ),
         "pass_mad": (
@@ -125,6 +128,10 @@ def evaluate(
         "sample": row.get("sample", row.get("Sample", "")),
         "species": row.get("species", row.get("Species", "")),
         **{k: "NA" if v is None else v for k, v in vals.items()},
+        "mt_mean_coverage": row.get("mt_mean_coverage", "NA"),
+        "mtcn_qc_value": "NA" if mtcn_qc is None else mtcn_qc,
+        "mtcn_qc_nuclear_adjusted": "NA" if nuclear_adj is None else nuclear_adj,
+        "mtcn_qc_nuclear_zero_adjusted": nuclear_zero,
         "percent_coverage_metric": percent_column,
         "percent_coverage_value": "NA" if selected_percent is None else selected_percent,
         "pass_mt_coverage": checks["pass_mt_coverage"],
@@ -143,11 +150,7 @@ def evaluate(
 
 def homoplasmy_assessment(row, cfg, collected_dir):
     """Independent HOM gate calculated from prior aggregated QC inputs."""
-    mt = value(row, ALIASES["mt_median_coverage"])
-    nuclear = value(row, ALIASES["nuclear_median_coverage"])
-    prior_mtcn = value(row, ALIASES["mtcn_median"])
-    adjusted_nuclear = 1.0 if nuclear == 0 else nuclear
-    mtcn = (2.0 * mt if mt is not None else None) if nuclear == 0 else prior_mtcn
+    mtcn, adjusted_nuclear, nuclear_zero = mtcn_from_summary(row)
 
     sample = row.get("sample", row.get("Sample", ""))
     cov = collected_dir / "collected_cov" / f"{sample}.merged.max_depth.per_base_coverage.tsv"
@@ -170,7 +173,7 @@ def homoplasmy_assessment(row, cfg, collected_dir):
     pct50 = (100.0 * len(passing) / len(seen)) if len(seen) >= min_positions else None
     reasons = []
     if mtcn is None or mtcn < float(cfg.get("min_mtcn", 20)):
-        reasons.append("hom_mtcn_below_20_or_missing")
+        reasons.append("hom_mtcn_below_threshold_or_missing")
     if pct50 is None or pct50 < float(cfg.get("min_percent_50", 50)):
         reasons.append("hom_percent_50_below_50_or_missing")
     return dict(
