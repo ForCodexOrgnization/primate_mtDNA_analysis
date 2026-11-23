@@ -23,7 +23,7 @@ from qc_analysis.lib.simple_yaml import read_simple_yaml
 SAMPLE_COLUMNS = "sample species intraspecies_status human_contamination_status interspecies_status sample_level_qc_status final_sample_status final_sample_fail_reasons final_sample_warnings vcf_source".split()
 VARIANT_COLUMNS = (
     "sample species human_chrom human_pos human_ref human_alt source_chrom source_pos source_ref source_alt "
-    "AF DP source_af source_dp source_call_class target_af liftover_allele_status vcf_filter variant_class call_class snv_type mt_median_coverage Percent_100 nuclear_median_coverage mtcn_median MAD "
+    "AF DP source_af source_dp source_call_class target_af liftover_allele_status vcf_filter variant_class call_class snv_type mt_median_coverage mt_mean_coverage Percent_100 nuclear_median_coverage mtcn_median mtcn_qc_value MAD "
     "sample_level_qc_status sample_failed_criteria final_sample_status final_sample_fail_reasons final_call_status intraspecies_status human_contamination_status interspecies_status "
     "region_type orthology_match_status orthology_fail_reason codon_match_status trna_match_status rrna_match_status "
     "final_variant_status final_variant_fail_reasons original_chrom original_pos original_ref original_alt liftover_status sample_variant_qc_status match_status"
@@ -840,9 +840,11 @@ def main():
                                     call_class=authoritative_class,
                                     snv_type=snv_type,
                                     mt_median_coverage=pick(qc, ["mt_median_coverage"]),
+                                     mt_mean_coverage=pick(qc, ["mt_mean_coverage"]),
                                     Percent_100=pick(qc, ["Percent_100"]),
                                     nuclear_median_coverage=pick(qc, ["nuclear_median_coverage"]),
                                     mtcn_median=pick(qc, ["mtcn_median"]),
+                                     mtcn_qc_value=pick(qc, ["mtcn_qc_value"]),
                                     MAD=pick(qc, ["MAD"]),
                                     sample_level_qc_status=context["sample_level_qc_status"],
                                     sample_failed_criteria=pick(qc, ["failed_criteria"], ""),
