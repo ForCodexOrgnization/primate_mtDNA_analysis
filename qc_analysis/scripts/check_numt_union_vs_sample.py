@@ -80,8 +80,8 @@ def names_from_config(sec):
     fallback=ROOT/'data/numt_besthit'
     if not best.is_dir() and fallback.is_dir():best=fallback
     if not high.is_dir() and fallback.is_dir():high=fallback
-    if not best.is_dir() or not high.is_dir():
-        raise FileNotFoundError(f'NUMT input directories not found: besthit={best}, highconf={high}')
+    if not best.is_dir():
+        raise FileNotFoundError(f'NUMT besthit directory not found: {best}')
     # Same priority as run_local_heteroplasmy_qc.py defaults
     best_pats=sec.get('numt_besthit_pattern') or [
         '{sample}.numt_vs_chrM.besthit.tsv','{sample}.numt_besthit.tsv',
@@ -117,6 +117,15 @@ def analyze(cohort, args, lengths):
     if not catalogue.exists():raise FileNotFoundError(catalogue)
     species_catalog=load_species_catalog(catalogue)
     best_dir,high_dir,best_pats,high_pats=names_from_config(sec)
+    # Prefer a directory with matching sample files, as in production NUMT QC.
+    from qc_analysis.scripts.run_local_heteroplasmy_qc import choose_numt_dir
+    sample_ids = sorted({r['sample'] for r in rows(variants)})
+    best_dir = choose_numt_dir(sec.get('numt_besthit_dir'),best_pats,sample_ids,
+                               [ROOT/'data/numt_besthit'])
+    high_dir = choose_numt_dir(sec.get('numt_highconf_dir'),high_pats,sample_ids,
+                               [best_dir,ROOT/'data/numt_besthit'])
+    print(cohort,'NUMT besthit directory:',best_dir,'highconf directory:',high_dir,
+          'variant sample count:',len(sample_ids))
     # IMPORTANT: no sample without a besthit file is counted as 0 overlap.
     sample_cache={}
     input_rows=0
@@ -181,6 +190,10 @@ def analyze(cohort, args, lengths):
                                   variants=n,sample_hit=c['sample_hits'],sample_pct=round(100*c['sample_hits']/n,4),
                                   species_union_hit=c['species_hits'],species_union_pct=round(100*c['species_hits']/n,4),
                                   reduction_pp=round(100*(c['species_hits']-c['sample_hits'])/n,4)))
+    if not result:
+        print(f'WARNING {cohort}: no comparable sample-specific overlap rows; check '
+              f'{args.output / (cohort + "_missing_numt_inputs.tsv")} and NUMT input directory',
+              file=sys.stderr)
     emit(args.output/f'{cohort}_sample_vs_species_numt_overlap.tsv',
          ['cohort','interval_tier','call_class','stage','variants','sample_hit','sample_pct','species_union_hit','species_union_pct','reduction_pp'],result)
     coverage=[]
