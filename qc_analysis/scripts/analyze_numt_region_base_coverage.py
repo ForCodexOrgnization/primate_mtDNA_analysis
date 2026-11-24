@@ -223,7 +223,8 @@ def main():
         counters = defaultdict(int)
 
         for sample in samples:
-            species, ref = species_map[sample], ref_map.get(sample, species)
+            species = species_map[sample]
+            ref = ref_map.get(sample, species)
             key = (species, ref)
             bestfile = find_sample_file(bestdir, best_pats, sample)
             highfile = find_sample_file(highdir, high_pats, sample)
