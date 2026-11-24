@@ -243,14 +243,14 @@ def main():
             n_records = 0
             for row in read_besthit(bestfile):
                 try:
-                    ns, ne = sorted((finite_int(row["nuclear_start"]),
-                                     finite_int(row["nuclear_end"])))
-                    ms, me = sorted((finite_int(row["chrM_start"]),
-                                     finite_int(row["chrM_end"])))
-                except (KeyError, TypeError, ValueError):
+                    coords = [finite_int(row[k]) for k in (
+                        "nuclear_start", "nuclear_end", "chrM_start", "chrM_end")]
+                except KeyError:
                     continue
-                if any(x is None for x in (ns, ne, ms, me)):
+                if any(x is None for x in coords):
                     continue
+                ns, ne = sorted(coords[:2])
+                ms, me = sorted(coords[2:])
                 n_records += 1
                 by_tier["any_besthit"].append((ms, me))
                 if highbed is not None:
