@@ -90,7 +90,13 @@ def names_from_config(sec):
     def clean(x):
         if isinstance(x,str):return [z.strip() for z in x.split(',') if z.strip()]
         return list(x)
-    return best,high,clean(best_pats),clean(high_pats)
+    # Include original pipeline naming patterns even if a cohort config specifies only a subset.
+    default_best=['{sample}.numt_vs_chrM.besthit.tsv','{sample}.numt_besthit.tsv',
+                  '{sample}.besthit.tsv','{sample}.tsv']
+    default_high=['{sample}.highconf_numt.bed']
+    best_names=list(dict.fromkeys(clean(best_pats)+default_best))
+    high_names=list(dict.fromkeys(clean(high_pats)+default_high))
+    return best,high,best_names,high_names
 
 def find_file(directory,patterns,sample):
     for pat in patterns:
@@ -120,12 +126,20 @@ def analyze(cohort, args, lengths):
     # Prefer a directory with matching sample files, as in production NUMT QC.
     from qc_analysis.scripts.run_local_heteroplasmy_qc import choose_numt_dir
     sample_ids = sorted({r['sample'] for r in rows(variants)})
-    best_dir = choose_numt_dir(sec.get('numt_besthit_dir'),best_pats,sample_ids,
-                               [ROOT/'data/numt_besthit'])
-    high_dir = choose_numt_dir(sec.get('numt_highconf_dir'),high_pats,sample_ids,
-                               [best_dir,ROOT/'data/numt_besthit'])
-    print(cohort,'NUMT besthit directory:',best_dir,'highconf directory:',high_dir,
-          'variant sample count:',len(sample_ids))
+    best_dir = resolve(args.besthit_dir) if args.besthit_dir else choose_numt_dir(
+        sec.get('numt_besthit_dir'),best_pats,sample_ids,[ROOT/'data/numt_besthit'])
+    high_dir = resolve(args.highconf_dir) if args.highconf_dir else choose_numt_dir(
+        sec.get('numt_highconf_dir'),high_pats,sample_ids,[best_dir,ROOT/'data/numt_besthit'])
+    n_best=sum(find_file(best_dir,best_pats,sp) is not None for sp in sample_ids)
+    n_high=sum(find_file(high_dir,high_pats,sp) is not None for sp in sample_ids)
+    print(cohort,'besthit:',best_dir, f'({n_best}/{len(sample_ids)} samples)',
+          'highconf:',high_dir, f'({n_high}/{len(sample_ids)} samples)')
+    if n_best==0:
+        raise RuntimeError(
+            f'{cohort}: 0/{len(sample_ids)} samples have besthit TSVs in {best_dir}. '
+            'The configured NUMT directory is wrong or filenames differ. '
+            'Find actual files and rerun with --besthit-dir PATH --highconf-dir PATH. '
+            'No valid sample-vs-species overlap table can be generated.')
     # IMPORTANT: no sample without a besthit file is counted as 0 overlap.
     sample_cache={}
     input_rows=0
@@ -267,6 +281,8 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--cohort',choices=('hom10','homhet40','both'),default='both')
     p.add_argument('--variant-dir',type=Path,default=ROOT/'results/numt_overlap_before_after')
+    p.add_argument('--besthit-dir',type=Path,help='Override sample NUMT besthit TSV directory')
+    p.add_argument('--highconf-dir',type=Path,help='Override high-confidence nuclear BED directory')
     p.add_argument('--output',type=Path,default=ROOT/'results/numt_union_audit')
     p.add_argument('--mt-length',type=int,default=16569,help='Proxy only; use --lengths-tsv for species-reference-specific lengths')
     p.add_argument('--lengths-tsv',type=Path,help='TSV: species, reference_key, mt_length')
