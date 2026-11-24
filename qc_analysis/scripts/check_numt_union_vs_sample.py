@@ -119,28 +119,34 @@ def analyze(cohort, args, lengths):
     best_dir,high_dir,best_pats,high_pats=names_from_config(sec)
     # IMPORTANT: no sample without a besthit file is counted as 0 overlap.
     sample_cache={}
-    per_variant=[]
+    input_rows=0
+    eligible_rows=0
     counts=defaultdict(Counter)
     per_species=defaultdict(Counter)
     missing=Counter()
     sample_meta={}
     for row in rows(variants):
+        input_rows+=1
         sample=row['sample']; species=row['species']; reference=row['reference_key']
         spec_key=(species,reference)
         if sample not in sample_cache:
             bh=find_file(best_dir,best_pats,sample)
             hc=find_file(high_dir,high_pats,sample)
-            if not bh or not hc:
+            if not bh:
                 sample_cache[sample]=None
             else:
-                ivals=load_sample_numts(sample,species,reference,bh,hc)
+                # A missing highconf BED does not invalidate best-hit overlaps.
+                # Preserve missingness instead of converting unknown to 0%.
+                ivals=load_sample_numts(sample,species,reference,bh,
+                                        hc if hc else high_dir / f'{sample}.highconf_numt.bed')
                 sample_cache[sample]={
                     'any':[(v.chrm_start,v.chrm_end) for v in ivals],
-                    'high':[(v.chrm_start,v.chrm_end) for v in ivals if v.tier=='HIGH_CONF_NUMT']}
+                    'high':[(v.chrm_start,v.chrm_end) for v in ivals if v.tier=='HIGH_CONF_NUMT']
+                             if hc else None}
                 sample_meta[sample]=spec_key
         sample_spans=sample_cache[sample]
         if sample_spans is None:
-            missing['missing_besthit_or_highconf_file']+=1
+            missing['missing_besthit_file']+=1
             continue
         if spec_key not in species_catalog:
             missing['missing_species_catalog']+=1
@@ -149,9 +155,13 @@ def analyze(cohort, args, lengths):
         except ValueError:
             missing['invalid_source_pos']+=1
             continue
+        eligible_rows+=1
         stage='AFTER' if row['final_status']=='PASS' else 'REMOVED'
         cls=row['call_class']
         for kind in ('any','high'):
+            if sample_spans[kind] is None:
+                missing['missing_highconf_file']+=1
+                continue
             sample_hit=in_spans(pos,sample_spans[kind])
             species_hit=in_spans(pos,interval_list(species_catalog[spec_key],kind))
             old_col='numt_besthit_overlap' if kind=='any' else 'numt_highconf_overlap'
@@ -188,6 +198,7 @@ def analyze(cohort, args, lengths):
         if spans is None:continue
         spec_key=sample_meta[sample]; n=lengths.get(spec_key,args.mt_length)
         for kind in ('any','high'):
+            if spans[kind] is None:continue
             bp=union_length(spans[kind],n)
             per_sample.append(dict(cohort=cohort,sample=sample,species=spec_key[0],reference_key=spec_key[1],
                                    interval_tier=kind,mt_length=n,
@@ -197,7 +208,13 @@ def analyze(cohort, args, lengths):
          ['cohort','sample','species','reference_key','interval_tier','mt_length','length_source','numt_bp','numt_pct'],per_sample)
     emit(args.output/f'{cohort}_missing_numt_inputs.tsv',['reason','records'],
          [{'reason':k,'records':v} for k,v in sorted(missing.items())])
-    print(cohort,'samples checked',len(sample_cache),'missing data',dict(missing))
+    print(cohort,'source rows=',input_rows,'assessable besthit rows=',eligible_rows,
+          'samples checked=',len(sample_cache),'missing data=',dict(missing))
+    if input_rows == 0:
+        print('ERROR: upstream per-variant file contains no data rows:',variants,file=sys.stderr)
+    elif eligible_rows == 0:
+        print('ERROR: all rows dropped before overlap assessment. Check missing_numt_inputs.tsv '
+              'and besthit directory/pattern in config.',file=sys.stderr)
     for r in result:
         if r['call_class'] in ('HOM','HET') and r['stage'] in ('BEFORE','AFTER'):
             print(' ',r['interval_tier'],r['call_class'],r['stage'],
