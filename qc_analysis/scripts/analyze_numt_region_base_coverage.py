@@ -351,7 +351,8 @@ def main():
                 species_rows.append(dict(cohort=cohort, species=key[0],
                     reference_key=key[1], tier=tier, mt_length=size,
                     length_source="reference_specific" if key in lengths else "fixed_proxy",
-                    covered_bp=bp, coverage_pct=round(100*bp/size, 4)))
+                    covered_bp=bp, coverage_pct=round(100*bp/size, 4),
+                    n_unique_chrm_numt_intervals=len(set(tiers[tier]))))
 
         print(cohort, "QC-passed samples:", len(qc_pass),
               "with metadata:", len(samples), "with besthit:", counters["samples_with_besthit"],
@@ -364,7 +365,8 @@ def main():
     fields_s = ["cohort","sample","species","reference_key","tier","mt_length",
                 "length_source","covered_bp","coverage_pct","n_besthit_rows"]
     fields_u = ["cohort","species","reference_key","tier","mt_length",
-                "length_source","covered_bp","coverage_pct"]
+                "length_source","covered_bp","coverage_pct",
+                "n_unique_chrm_numt_intervals"]
     write_tsv(out/"sample_numt_region_base_coverage.tsv",sample_rows,fields_s)
     write_tsv(out/"species_union_numt_region_base_coverage.tsv",species_rows,fields_u)
     write_tsv(out/"numt_input_diagnostics.tsv",qc_rows,
