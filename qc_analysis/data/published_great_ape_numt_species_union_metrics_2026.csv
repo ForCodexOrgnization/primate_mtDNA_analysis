@@ -1,0 +1,6 @@
+species,assembly,source,mt_length,genotyped_samples,n_numt_loci_pid90,nuclear_numt_union_bp_pid90,nuclear_numt_sum_bp_pid90,chrM_covered_bp_pid90,chrM_coverage_pct_pid90,unmapped_matrix_ids
+Bonobo,mPanPan1,Torres-Gonzalez_2026_T2T_presence_union_pid90,16569,6,106,118889,118889,16569,100.0000,0
+Chimpanzee,mPanTro3,Torres-Gonzalez_2026_T2T_presence_union_pid90,16620,20,110,74960,74960,16388,98.6041,0
+Gorilla,mGorGor1,Torres-Gonzalez_2026_T2T_presence_union_pid90,16407,10,65,56611,56611,13223,80.5936,0
+Bornean orangutan,mPonPyg2,Torres-Gonzalez_2026_T2T_presence_union_pid90,16461,16,62,36754,36754,13251,80.4994,0
+Sumatran orangutan,mPonAbe1,Torres-Gonzalez_2026_T2T_presence_union_pid90,16496,9,65,36424,36424,13545,82.1108,0
