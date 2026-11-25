@@ -113,6 +113,27 @@ def length_map(filepath):
     return lengths
 
 
+def find_reference_index(folder, names):
+    # The reference root may be variant_calling_ref/Ref_chrM rather than Ref_chrM itself.
+    roots = [folder, folder / "Ref_chrM",
+             folder / "references" / "variant_calling" / "Ref_chrM"]
+    for name in dict.fromkeys(names):
+        for root in roots:
+            p = root / f"{name}.fa.fai"
+            if p.is_file():
+                return p
+    # Do not silently use an unrelated organism's reference.
+    candidates = []
+    for name in dict.fromkeys(names):
+        candidates.extend(folder.rglob(f"{name}.fa.fai"))
+    candidates = sorted(set(p for p in candidates if p.is_file()))
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        raise ValueError(f"Ambiguous reference indexes for {names}: {candidates}")
+    return None
+
+
 def read_fai_mt_length(path):
     if not path.is_file():
         raise FileNotFoundError(f"Missing reference FASTA index: {path}; run samtools faidx on the chrM FASTA")
@@ -235,10 +256,12 @@ def main():
                 k = (species, ref)
                 if k in lengths:
                     continue
-                candidates = [fasta_dir / f"{name}.fa.fai" for name in dict.fromkeys((ref, species))]
-                found = next((p for p in candidates if p.is_file()), None)
+                found = find_reference_index(fasta_dir, (ref, species))
                 if found is None:
-                    raise FileNotFoundError(f"No reference FASTA .fai for {k}; tried {candidates}")
+                    raise FileNotFoundError(
+                        f"No reference FASTA index for {k} under {fasta_dir}. "
+                        "Expected Ref_chrM/{reference_key}.fa.fai or {species}.fa.fai. "
+                        "Inspect reference names with find and build .fai using samtools faidx.")
                 lengths[k] = read_fai_mt_length(found)
         best_pats = patterns(sec.get("numt_besthit_pattern"), [
             "{sample}.numt_vs_chrM.besthit.tsv", "{sample}.numt_besthit.tsv",
