@@ -113,6 +113,23 @@ def length_map(filepath):
     return lengths
 
 
+def read_fai_mt_length(path):
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing reference FASTA index: {path}; run samtools faidx on the chrM FASTA")
+    records=[]
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            fields=line.rstrip("\n").split("\t")
+            if len(fields)>=2:
+                records.append((fields[0],int(fields[1])))
+    chrm=[length for name,length in records if name in ("chrM","MT")]
+    if len(chrm)==1:
+        return chrm[0]
+    if len(records)==1:
+        return records[0][1]
+    raise ValueError(f"Ambiguous mitochondrial contig in {path}: {records[:5]}")
+
+
 def quantile(values, q):
     values = sorted(values)
     if not values:
@@ -184,6 +201,9 @@ def main():
     ap.add_argument("--highconf-dir", type=Path)
     ap.add_argument("--lengths-tsv", type=Path,
                     help="species/reference-specific lengths: species,reference_key,mt_length")
+    ap.add_argument("--ref-chrm-dir", type=Path,
+                    help="Reference FASTA directory (e.g. references/variant_calling/Ref_chrM). "
+                         "Require {reference_key}.fa.fai or {species}.fa.fai; override proxy lengths.")
     ap.add_argument("--mt-length", type=int, default=16569,
                     help="PROXY denominator only; not valid for exact cross-species analysis")
     ap.add_argument("--output", type=Path,
@@ -207,6 +227,19 @@ def main():
         qc_pass = sorted({r["sample"] for r in read_tsv(sample_qc)
                           if r.get("qc_status") == "PASS"})
         samples = [s for s in qc_pass if species_map.get(s)]
+        if args.ref_chrm_dir:
+            fasta_dir = path_from_root(args.ref_chrm_dir)
+            for sample in samples:
+                species = species_map[sample]
+                ref = ref_map.get(sample, species)
+                k = (species, ref)
+                if k in lengths:
+                    continue
+                candidates = [fasta_dir / f"{name}.fa.fai" for name in dict.fromkeys((ref, species))]
+                found = next((p for p in candidates if p.is_file()), None)
+                if found is None:
+                    raise FileNotFoundError(f"No reference FASTA .fai for {k}; tried {candidates}")
+                lengths[k] = read_fai_mt_length(found)
         best_pats = patterns(sec.get("numt_besthit_pattern"), [
             "{sample}.numt_vs_chrM.besthit.tsv", "{sample}.numt_besthit.tsv",
             "{sample}.besthit.tsv", "{sample}.tsv"])
