@@ -59,9 +59,15 @@ def interval_bitset(intervals,length):
  return bits
 
 def fai_length(folder,reference,species):
- candidates=[folder/(name+".fa.fai") for name in dict.fromkeys((reference,species))]
- p=next((p for p in candidates if p.is_file()),None)
- if not p:raise FileNotFoundError(f"Missing mtDNA FAI for species/reference {species}/{reference}; tried {candidates}")
+ roots=[folder,folder/"Ref_chrM",folder/"references"/"variant_calling"/"Ref_chrM"]
+ p=next((root/(name+".fa.fai") for name in dict.fromkeys((reference,species))
+         for root in roots if (root/(name+".fa.fai")).is_file()),None)
+ if p is None:
+  found=sorted({x for name in dict.fromkeys((reference,species))
+                for x in folder.rglob(name+".fa.fai") if x.is_file()})
+  if len(found)==1:p=found[0]
+  elif len(found)>1:raise ValueError(f"Ambiguous mtDNA FAI paths for {species}/{reference}: {found}")
+ if not p:raise FileNotFoundError(f"Missing mtDNA FAI under {folder} for species/reference {species}/{reference}; inspect filenames or create .fai using samtools faidx")
  lines=[x.rstrip("\n").split("\t") for x in p.read_text().splitlines() if x.strip()]
  chrmt=[int(x[1]) for x in lines if x[0] in ("chrM","MT")]
  if len(chrmt)==1:return chrmt[0]
