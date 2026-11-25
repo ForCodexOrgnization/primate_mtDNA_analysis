@@ -1,0 +1,409 @@
+species,assembly,numt_id,chrom,start,end,length_bp,max_identity,n_genotyped_present,n_genotyped_missing,source
+Bonobo,mPanPan1,mPanPan1_numt6,mPanPan1:chr10_mat_hsa12,17760486,17760697,211,94.313,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt7,mPanPan1:chr10_mat_hsa12,31576935,31577003,68,92.647,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt8,mPanPan1:chr10_mat_hsa12,36749903,36749999,96,98.958,5,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt9,mPanPan1:chr10_mat_hsa12,37742848,37743159,311,97.106,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt20,mPanPan1:chr10_mat_hsa12,80547082,80547152,70,92.857,5,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt28,mPanPan1:chr11_mat_hsa9,6471260,6471387,127,97.638,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt29,mPanPan1:chr11_mat_hsa9,9470230,9470305,75,90.667,4,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt59,mPanPan1:chr11_mat_hsa9,102050708,102060072,9364,96.591,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt60,mPanPan1:chr11_mat_hsa9,102060084,102064504,4420,97.558,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt67,mPanPan1:chr11_mat_hsa9,121430181,121430811,630,98.095,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt72,mPanPan1:chr12_mat_hsa2a,27830603,27830688,85,97.647,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt87,mPanPan1:chr12_mat_hsa2a,50820537,50820716,179,97.765,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt99,mPanPan1:chr12_mat_hsa2a,113953847,113954034,187,100.000,4,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt102,mPanPan1:chr13_mat_hsa2b,561750,562175,425,98.588,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt111,mPanPan1:chr13_mat_hsa2b,26411473,26411534,61,95.082,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt127,mPanPan1:chr13_mat_hsa2b,44253844,44253904,60,90.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt130,mPanPan1:chr13_mat_hsa2b,45315646,45315706,60,90.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt133,mPanPan1:chr13_mat_hsa2b,46493455,46493565,110,96.364,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt139,mPanPan1:chr13_mat_hsa2b,51157286,51157392,106,97.170,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt143,mPanPan1:chr13_mat_hsa2b,71064542,71064739,197,100.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt161,mPanPan1:chr13_mat_hsa2b,115547381,115547552,171,94.737,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt167,mPanPan1:chr13_mat_hsa2b,129337689,129337847,158,94.340,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt198,mPanPan1:chr14_pat_hsa13,113493369,113493557,188,97.872,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt205,mPanPan1:chr15_mat_hsa14,22655503,22655588,85,92.941,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt206,mPanPan1:chr15_mat_hsa14,24857695,24857764,69,92.857,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt207,mPanPan1:chr15_mat_hsa14,26833298,26833368,70,100.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt208,mPanPan1:chr15_mat_hsa14,45112131,45112435,304,94.079,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt210,mPanPan1:chr15_mat_hsa14,63947092,63947147,55,100.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt217,mPanPan1:chr16_pat_hsa15,15936206,15939369,3163,92.702,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt230,mPanPan1:chr16_pat_hsa15,33492604,33492645,41,97.561,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt235,mPanPan1:chr16_pat_hsa15,53465619,53465702,83,98.795,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt236,mPanPan1:chr16_pat_hsa15,56294581,56294624,43,93.023,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt237,mPanPan1:chr16_pat_hsa15,73400849,73401817,968,99.793,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt253,mPanPan1:chr18_pat_hsa16,4289076,4289118,42,100.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt262,mPanPan1:chr18_pat_hsa16,84067878,84069309,1431,90.455,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt265,mPanPan1:chr19_pat_hsa17,12091678,12091764,86,96.512,5,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt268,mPanPan1:chr19_pat_hsa17,35483034,35483113,79,93.671,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt273,mPanPan1:chr19_pat_hsa17,58854997,58855067,70,97.143,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt280,mPanPan1:chr19_pat_hsa17,87507048,87507088,40,100.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt294,mPanPan1:chr1_pat_hsa1,61451370,61451453,83,97.590,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt297,mPanPan1:chr1_pat_hsa1,80295067,80295160,93,97.849,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt301,mPanPan1:chr1_pat_hsa1,131332957,131333108,151,98.675,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt313,mPanPan1:chr1_pat_hsa1,160827459,160827649,190,100.000,3,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt317,mPanPan1:chr1_pat_hsa1,193316613,193316691,78,97.436,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt319,mPanPan1:chr1_pat_hsa1,213710622,213719186,8564,97.008,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt320,mPanPan1:chr1_pat_hsa1,214070653,214079219,8566,96.850,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt321,mPanPan1:chr1_pat_hsa1,214241362,214249926,8564,97.008,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt322,mPanPan1:chr1_pat_hsa1,214565370,214573935,8565,97.008,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt323,mPanPan1:chr1_pat_hsa1,215210423,215218986,8563,96.850,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt328,mPanPan1:chr1_pat_hsa1,222382734,222382945,211,90.995,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt339,mPanPan1:chr20_pat_hsa19,19809980,19810041,61,100.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt350,mPanPan1:chr20_pat_hsa19,50309825,50309965,140,93.443,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt351,mPanPan1:chr20_pat_hsa19,54106204,54106244,40,97.500,5,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt353,mPanPan1:chr21_mat_hsa20,2143216,2143281,65,95.385,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt393,mPanPan1:chr23_pat_hsa22,52395405,52396601,1196,99.832,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt398,mPanPan1:chr2_mat_hsa3,23226201,23226278,77,97.403,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt403,mPanPan1:chr2_mat_hsa3,68614119,68614351,232,97.368,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt408,mPanPan1:chr2_mat_hsa3,95942763,95942823,60,100.000,3,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt420,mPanPan1:chr2_mat_hsa3,140643584,140643637,53,92.453,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt431,mPanPan1:chr2_mat_hsa3,166940356,166940440,84,98.810,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt438,mPanPan1:chr2_mat_hsa3,185699069,185699170,101,91.089,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt444,mPanPan1:chr3_pat_hsa4,27973094,27973246,152,92.763,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt461,mPanPan1:chr3_pat_hsa4,93931676,93939051,7375,90.150,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt469,mPanPan1:chr3_pat_hsa4,165143279,165143317,38,100.000,4,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt471,mPanPan1:chr3_pat_hsa4,171064668,171064879,211,96.209,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt487,mPanPan1:chr4_mat_hsa5,34655729,34658081,2352,95.238,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt492,mPanPan1:chr4_mat_hsa5,58390824,58390942,118,99.153,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt495,mPanPan1:chr4_mat_hsa5,82616191,82619403,3212,94.755,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt500,mPanPan1:chr4_mat_hsa5,96975578,96978603,3025,95.492,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt501,mPanPan1:chr4_mat_hsa5,101834752,101834924,172,93.605,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt502,mPanPan1:chr4_mat_hsa5,109096936,109099985,3049,95.898,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt503,mPanPan1:chr4_mat_hsa5,114397694,114397750,56,94.643,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt509,mPanPan1:chr4_mat_hsa5,127140881,127141056,175,97.714,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt512,mPanPan1:chr4_mat_hsa5,148395244,148395308,64,98.438,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt514,mPanPan1:chr4_mat_hsa5,165791757,165791826,69,94.203,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt516,mPanPan1:chr5_pat_hsa6,16710910,16710972,62,91.935,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt517,mPanPan1:chr5_pat_hsa6,19432832,19433048,216,92.130,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt519,mPanPan1:chr5_pat_hsa6,24087528,24087914,386,99.223,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt520,mPanPan1:chr5_pat_hsa6,28165826,28165989,163,95.092,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt521,mPanPan1:chr5_pat_hsa6,30103449,30104922,1473,96.809,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt528,mPanPan1:chr5_pat_hsa6,76420122,76420650,528,91.288,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt529,mPanPan1:chr5_pat_hsa6,81451091,81451216,125,98.400,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt530,mPanPan1:chr5_pat_hsa6,83543024,83543149,125,98.400,2,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt532,mPanPan1:chr5_pat_hsa6,94263101,94263161,60,95.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt534,mPanPan1:chr5_pat_hsa6,97774843,97774914,71,100.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt543,mPanPan1:chr5_pat_hsa6,161450683,161466845,16162,97.810,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt549,mPanPan1:chr5_pat_hsa6,174904975,174905307,332,90.361,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt551,mPanPan1:chr5_pat_hsa6,181737991,181738040,49,92.000,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt553,mPanPan1:chr6_mat_hsa7,9312169,9312238,69,94.203,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt558,mPanPan1:chr6_mat_hsa7,45578796,45578944,148,97.297,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt559,mPanPan1:chr6_mat_hsa7,50165443,50165619,176,92.614,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt578,mPanPan1:chr6_mat_hsa7,91725395,91730422,5027,95.586,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt581,mPanPan1:chr6_mat_hsa7,149738565,149738698,133,99.248,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt595,mPanPan1:chr6_mat_hsa7,192587708,192587773,65,95.385,5,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt599,mPanPan1:chr7_pat_hsa8,15114522,15114816,294,93.919,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt605,mPanPan1:chr7_pat_hsa8,36700737,36700774,37,97.297,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt616,mPanPan1:chr7_pat_hsa8,58525526,58525589,63,95.238,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt618,mPanPan1:chr7_pat_hsa8,60324307,60324378,71,97.183,5,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt631,mPanPan1:chr7_pat_hsa8,88730383,88730529,146,91.096,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt632,mPanPan1:chr7_pat_hsa8,89928171,89928213,42,92.857,5,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt635,mPanPan1:chr7_pat_hsa8,96501502,96501610,108,93.519,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt655,mPanPan1:chr8_mat_hsa10,28842737,28842798,61,98.361,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt663,mPanPan1:chr8_mat_hsa10,38335484,38335557,73,90.411,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt675,mPanPan1:chr8_mat_hsa10,76890578,76890647,69,100.000,5,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt692,mPanPan1:chr9_pat_hsa11,12947321,12949763,2442,94.366,6,0,Torres-Gonzalez_2026
+Bonobo,mPanPan1,mPanPan1_numt716,mPanPan1:chr9_pat_hsa11,120506638,120506958,320,95.625,6,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt7,mPanTro3:chr10_hap1_hsa12,19443787,19443998,211,94.787,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt8,mPanTro3:chr10_hap1_hsa12,33271087,33271155,68,94.118,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt9,mPanTro3:chr10_hap1_hsa12,39429746,39430058,312,97.115,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt19,mPanTro3:chr10_hap1_hsa12,79277985,79278055,70,94.286,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt20,mPanTro3:chr10_hap1_hsa12,109898106,109898337,231,97.403,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt56,mPanTro3:chr11_hap1_hsa9,93412610,93414188,1578,96.958,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt57,mPanTro3:chr11_hap1_hsa9,93414200,93426421,12221,97.130,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt67,mPanTro3:chr12_hap1_hsa2a,22540428,22540513,85,92.941,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt105,mPanTro3:chr13_hap1_hsa2b,29830721,29830831,110,95.455,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt110,mPanTro3:chr13_hap1_hsa2b,31029581,31029710,129,98.450,13,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt111,mPanTro3:chr13_hap1_hsa2b,31855843,31855972,129,98.450,9,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt128,mPanTro3:chr13_hap1_hsa2b,50556376,50556437,61,95.082,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt153,mPanTro3:chr13_hap1_hsa2b,115166124,115166295,171,94.737,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt157,mPanTro3:chr13_hap1_hsa2b,121305160,121305352,192,98.438,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt159,mPanTro3:chr13_hap1_hsa2b,126500126,126500223,97,95.876,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt161,mPanTro3:chr13_hap1_hsa2b,128964052,128964209,157,92.453,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt164,mPanTro3:chr13_hap1_hsa2b,134083741,134084504,763,100.000,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt165,mPanTro3:chr13_hap1_hsa2b,136275567,136275635,68,100.000,11,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt176,mPanTro3:chr14_hap1_hsa13,4612460,4615636,3176,93.453,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt180,mPanTro3:chr14_hap1_hsa13,18956998,18957068,70,98.571,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt198,mPanTro3:chr14_hap1_hsa13,117609445,117609633,188,97.872,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt199,mPanTro3:chr15_hap1_hsa14,8453632,8456808,3176,93.484,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt203,mPanTro3:chr15_hap1_hsa14,19589471,19589556,85,95.294,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt204,mPanTro3:chr15_hap1_hsa14,21797400,21797468,68,91.304,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt205,mPanTro3:chr15_hap1_hsa14,23772634,23772704,70,100.000,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt206,mPanTro3:chr15_hap1_hsa14,42021330,42021634,304,94.408,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt214,mPanTro3:chr16_hap1_hsa15,18759159,18762322,3163,92.952,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt224,mPanTro3:chr16_hap1_hsa15,36218895,36218941,46,93.478,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt227,mPanTro3:chr16_hap1_hsa15,44705834,44705899,65,95.385,12,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt231,mPanTro3:chr16_hap1_hsa15,56203666,56203749,83,96.386,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt232,mPanTro3:chr16_hap1_hsa15,59035187,59035230,43,93.023,16,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt233,mPanTro3:chr16_hap1_hsa15,74114398,74114592,194,99.485,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt242,mPanTro3:chr17_hap1_hsa18,82444657,82444721,64,92.188,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt250,mPanTro3:chr18_hap1_hsa16,17198461,17198646,185,97.143,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt256,mPanTro3:chr18_hap1_hsa16,82616212,82616281,69,97.101,14,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt257,mPanTro3:chr19_hap1_hsa17,14428769,14428959,190,98.947,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt258,mPanTro3:chr19_hap1_hsa17,14997861,14997947,86,95.349,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt261,mPanTro3:chr19_hap1_hsa17,38607212,38607291,79,91.139,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt273,mPanTro3:chr19_hap1_hsa17,55804342,55804412,70,100.000,14,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt285,mPanTro3:chr1_hap1_hsa1,17135499,17135587,88,94.318,15,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt291,mPanTro3:chr1_hap1_hsa1,49718722,49718797,75,96.000,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt294,mPanTro3:chr1_hap1_hsa1,60836895,60836977,82,95.122,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt298,mPanTro3:chr1_hap1_hsa1,79640804,79640897,93,96.774,16,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt302,mPanTro3:chr1_hap1_hsa1,135484029,135484180,151,100.000,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt317,mPanTro3:chr1_hap1_hsa1,185263714,185263921,207,93.237,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt318,mPanTro3:chr1_hap1_hsa1,185264153,185264468,315,93.968,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt319,mPanTro3:chr1_hap1_hsa1,197464065,197464143,78,97.436,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt325,mPanTro3:chr1_hap1_hsa1,226162326,226162537,211,91.469,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt334,mPanTro3:chr20_hap1_hsa19,17588286,17588348,62,98.387,16,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt344,mPanTro3:chr20_hap1_hsa19,47105778,47105918,140,91.803,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt345,mPanTro3:chr20_hap1_hsa19,50885030,50885070,40,97.500,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt351,mPanTro3:chr21_hap1_hsa20,13669435,13669516,81,98.765,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt369,mPanTro3:chr22_hap1_hsa21,7924700,7927872,3172,93.296,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt370,mPanTro3:chr22_hap1_hsa21,14402410,14402546,136,97.794,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt386,mPanTro3:chr23_hap1_hsa22,8870963,8874121,3158,92.760,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt391,mPanTro3:chr23_hap1_hsa22,35931389,35931632,243,95.062,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt401,mPanTro3:chr2_hap1_hsa3,18954837,18954920,83,97.590,12,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt402,mPanTro3:chr2_hap1_hsa3,27257372,27257449,77,97.403,16,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt407,mPanTro3:chr2_hap1_hsa3,56102349,56102447,98,97.959,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt410,mPanTro3:chr2_hap1_hsa3,72645037,72645269,232,96.053,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt412,mPanTro3:chr2_hap1_hsa3,80455611,80455675,64,98.438,6,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt415,mPanTro3:chr2_hap1_hsa3,94055465,94055535,70,98.571,15,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt428,mPanTro3:chr2_hap1_hsa3,145943148,145943201,53,92.453,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt447,mPanTro3:chr2_hap1_hsa3,191003054,191003155,101,90.099,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt448,mPanTro3:chr2_hap1_hsa3,194550048,194550197,149,98.658,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt450,mPanTro3:chr3_hap1_hsa4,4769865,4770055,190,100.000,16,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt456,mPanTro3:chr3_hap1_hsa4,28181701,28181853,152,92.763,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt472,mPanTro3:chr3_hap1_hsa4,97312056,97319434,7378,90.220,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt476,mPanTro3:chr3_hap1_hsa4,155595535,155595588,53,100.000,15,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt479,mPanTro3:chr3_hap1_hsa4,169033508,169033546,38,100.000,14,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt484,mPanTro3:chr3_hap1_hsa4,187115639,187115785,146,97.260,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt498,mPanTro3:chr4_hap1_hsa5,35407447,35409799,2352,95.806,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt499,mPanTro3:chr4_hap1_hsa5,36475709,36475937,228,97.403,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt503,mPanTro3:chr4_hap1_hsa5,59105721,59105839,118,99.153,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt506,mPanTro3:chr4_hap1_hsa5,83620454,83620491,37,97.297,15,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt507,mPanTro3:chr4_hap1_hsa5,85053184,85056125,2941,95.477,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt512,mPanTro3:chr4_hap1_hsa5,99425627,99428648,3021,96.266,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt513,mPanTro3:chr4_hap1_hsa5,104273362,104273534,172,93.605,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt514,mPanTro3:chr4_hap1_hsa5,111555276,111557267,1991,94.676,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt515,mPanTro3:chr4_hap1_hsa5,116867734,116867790,56,94.643,15,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt521,mPanTro3:chr4_hap1_hsa5,129589338,129589513,175,98.857,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt525,mPanTro3:chr4_hap1_hsa5,168290733,168290802,69,94.203,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt526,mPanTro3:chr5_hap1_hsa6,2965566,2967607,2041,99.020,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt528,mPanTro3:chr5_hap1_hsa6,8029626,8029688,62,93.548,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt529,mPanTro3:chr5_hap1_hsa6,10759461,10759684,223,91.480,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt531,mPanTro3:chr5_hap1_hsa6,15938989,15939180,191,99.057,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt533,mPanTro3:chr5_hap1_hsa6,33532740,33532822,82,97.561,15,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt537,mPanTro3:chr5_hap1_hsa6,67264344,67264872,528,90.909,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt539,mPanTro3:chr5_hap1_hsa6,86170511,86170571,60,95.000,16,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt542,mPanTro3:chr5_hap1_hsa6,103728833,103729651,818,90.654,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt552,mPanTro3:chr5_hap1_hsa6,166855086,166855418,332,90.060,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt554,mPanTro3:chr5_hap1_hsa6,173652190,173652239,49,92.000,15,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt555,mPanTro3:chr5_hap1_hsa6,179813588,179813664,76,100.000,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt556,mPanTro3:chr5_hap1_hsa6,180219614,180223247,3633,99.312,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt560,mPanTro3:chr6_hap1_hsa7,34741914,34743481,1567,95.385,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt561,mPanTro3:chr6_hap1_hsa7,40270898,40270978,80,98.750,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt564,mPanTro3:chr6_hap1_hsa7,51121042,51121206,164,94.512,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt585,mPanTro3:chr6_hap1_hsa7,83261186,83266213,5027,95.408,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt586,mPanTro3:chr6_hap1_hsa7,108202765,108202803,38,100.000,12,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt603,mPanTro3:chr6_hap1_hsa7,171204645,171204712,67,95.522,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt604,mPanTro3:chr7_hap1_hsa8,7309266,7309560,294,92.203,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt619,mPanTro3:chr7_hap1_hsa8,48368855,48368918,63,95.238,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt621,mPanTro3:chr7_hap1_hsa8,50173255,50173326,71,97.183,17,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt636,mPanTro3:chr7_hap1_hsa8,81637534,81637680,146,92.466,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt667,mPanTro3:chr8_hap1_hsa10,38639711,38639784,73,90.411,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt685,mPanTro3:chr8_hap1_hsa10,97212489,97212562,73,97.260,18,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt698,mPanTro3:chr9_hap1_hsa11,14657743,14660187,2444,94.368,20,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt703,mPanTro3:chr9_hap1_hsa11,45802596,45802678,82,93.902,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt722,mPanTro3:chr9_hap1_hsa11,94065403,94065524,121,99.174,19,0,Torres-Gonzalez_2026
+Chimpanzee,mPanTro3,mPanTro3_numt728,mPanTro3:chr9_hap1_hsa11,130000690,130000742,52,90.385,17,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt6,mGorGor1:chr10_mat_hsa12,38590517,38590588,71,95.775,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt8,mGorGor1:chr10_mat_hsa12,54173857,54173925,68,100.000,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt47,mGorGor1:chr11_mat_hsa2b,44131134,44131471,337,93.175,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt59,mGorGor1:chr11_mat_hsa2b,92357590,92357715,125,96.800,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt104,mGorGor1:chr12_pat_hsa2a,106319414,106322296,2882,92.404,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt105,mGorGor1:chr12_pat_hsa2a,106323593,106326475,2882,92.473,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt106,mGorGor1:chr12_pat_hsa2a,106327772,106330653,2881,92.366,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt107,mGorGor1:chr12_pat_hsa2a,106331942,106334823,2881,92.540,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt108,mGorGor1:chr12_pat_hsa2a,106336112,106338993,2881,92.471,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt109,mGorGor1:chr12_pat_hsa2a,106340282,106343163,2881,92.332,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt122,mGorGor1:chr13_pat_hsa9,37422127,37422247,120,100.000,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt126,mGorGor1:chr13_pat_hsa9,52285279,52285606,327,97.248,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt127,mGorGor1:chr13_pat_hsa9,52285611,52286379,768,99.112,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt148,mGorGor1:chr13_pat_hsa9,126275010,126275085,75,92.000,7,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt154,mGorGor1:chr14_pat_hsa13,30264731,30269099,4368,95.677,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt168,mGorGor1:chr14_pat_hsa13,96056763,96057193,430,91.395,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt177,mGorGor1:chr14_pat_hsa13,115951087,115951158,71,97.183,6,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt178,mGorGor1:chr15_pat_hsa14,33213856,33213913,57,96.491,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt197,mGorGor1:chr16_pat_hsa15,67828037,67828080,43,93.023,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt214,mGorGor1:chr18_pat_hsa16,28675914,28676452,538,97.955,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt215,mGorGor1:chr18_pat_hsa16,30688554,30689092,538,98.141,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt220,mGorGor1:chr18_pat_hsa16,91745479,91745528,49,97.959,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt225,mGorGor1:chr18_pat_hsa16,113206449,113206499,50,92.000,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt227,mGorGor1:chr18_pat_hsa16,115608166,115608307,141,95.745,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt239,mGorGor1:chr1_pat_hsa1,18177857,18177903,46,97.826,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt247,mGorGor1:chr1_pat_hsa1,39679088,39680428,1340,93.541,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt255,mGorGor1:chr1_pat_hsa1,117547209,117552752,5543,94.592,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt257,mGorGor1:chr1_pat_hsa1,122656514,122656728,214,91.589,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt258,mGorGor1:chr1_pat_hsa1,124058197,124058388,191,98.953,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt259,mGorGor1:chr1_pat_hsa1,125568083,125573628,5545,94.628,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt260,mGorGor1:chr1_pat_hsa1,129453779,129459325,5546,94.664,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt270,mGorGor1:chr1_pat_hsa1,155344582,155344771,189,93.651,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt281,mGorGor1:chr1_pat_hsa1,231706507,231706673,166,91.566,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt282,mGorGor1:chr1_pat_hsa1,234779395,234779614,219,90.498,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt338,mGorGor1:chr2_pat_hsa3,39157336,39157677,341,95.601,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt343,mGorGor1:chr2_pat_hsa3,78544897,78545129,232,96.053,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt357,mGorGor1:chr2_pat_hsa3,133537268,133537330,62,91.935,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt381,mGorGor1:chr3_pat_hsa4,35883723,35883875,152,93.421,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt383,mGorGor1:chr3_pat_hsa4,52379739,52380000,261,92.337,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt439,mGorGor1:chr4_pat_hsa17x5,103160560,103162076,1516,96.702,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt441,mGorGor1:chr4_pat_hsa17x5,103704900,103705075,175,99.429,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt444,mGorGor1:chr4_pat_hsa17x5,122997362,122997418,56,92.857,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt445,mGorGor1:chr4_pat_hsa17x5,124910484,124910818,334,91.935,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt449,mGorGor1:chr4_pat_hsa17x5,127708629,127709086,457,90.753,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt452,mGorGor1:chr4_pat_hsa17x5,157158111,157158559,448,96.875,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt454,mGorGor1:chr4_pat_hsa17x5,174455454,174455523,69,92.754,6,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt457,mGorGor1:chr5_mat_hsa6,49535637,49535694,57,91.228,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt462,mGorGor1:chr5_mat_hsa6,82807681,82808208,527,90.512,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt463,mGorGor1:chr5_mat_hsa6,98328238,98328298,60,93.333,7,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt465,mGorGor1:chr5_mat_hsa6,102094197,102094376,179,98.883,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt469,mGorGor1:chr5_mat_hsa6,115885056,115885879,823,94.393,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt481,mGorGor1:chr5_mat_hsa6,185902492,185902543,51,90.385,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt483,mGorGor1:chr6_mat_hsa7,21054758,21055156,398,97.739,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt487,mGorGor1:chr6_mat_hsa7,53075801,53075965,164,93.902,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt515,mGorGor1:chr6_mat_hsa7,134655366,134655494,128,99.219,7,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt551,mGorGor1:chr7_pat_hsa8,81433105,81433203,98,97.500,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt584,mGorGor1:chr8_pat_hsa10,45277366,45277446,80,96.250,8,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt585,mGorGor1:chr8_pat_hsa10,45807664,45807708,44,95.455,7,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt597,mGorGor1:chr8_pat_hsa10,84054538,84054595,57,91.228,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt601,mGorGor1:chr8_pat_hsa10,91852425,91852493,68,91.176,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt612,mGorGor1:chr9_pat_hsa11,16896629,16899080,2451,95.326,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt614,mGorGor1:chr9_pat_hsa11,19066207,19066484,277,96.029,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt635,mGorGor1:chr9_pat_hsa11,96308205,96310639,2434,94.579,10,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt669,mGorGor1:chrX_mat_hsaX,96188031,96188125,94,90.426,9,0,Torres-Gonzalez_2026
+Gorilla,mGorGor1,mGorGor1_numt671,mGorGor1:chrX_mat_hsaX,108496527,108496582,55,100.000,8,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt15,mPonPyg2:chr10_hap1_hsa12,45227389,45227545,156,91.667,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt17,mPonPyg2:chr10_hap1_hsa12,56140740,56140898,158,93.671,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt19,mPonPyg2:chr10_hap1_hsa12,104163440,104168593,5153,93.758,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt20,mPonPyg2:chr10_hap1_hsa12,104168606,104169813,1207,93.714,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt53,mPonPyg2:chr11_hap1_hsa2b,48317111,48317197,86,93.023,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt54,mPonPyg2:chr11_hap1_hsa2b,48650742,48650834,92,93.548,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt94,mPonPyg2:chr12_hap1_hsa2a,52612345,52612533,188,95.213,15,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt95,mPonPyg2:chr12_hap1_hsa2a,58413857,58413963,106,90.566,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt102,mPonPyg2:chr12_hap1_hsa2a,92965543,92965707,164,92.073,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt107,mPonPyg2:chr12_hap1_hsa2a,125205808,125206102,294,92.517,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt108,mPonPyg2:chr12_hap1_hsa2a,128028518,128028643,125,92.000,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt119,mPonPyg2:chr13_hap1_hsa9,56606896,56612986,6090,92.467,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt129,mPonPyg2:chr13_hap1_hsa9,86327037,86327088,51,92.157,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt183,mPonPyg2:chr16_hap1_hsa15,39592885,39593228,343,92.420,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt198,mPonPyg2:chr16_hap1_hsa15,103400317,103400351,34,100.000,12,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt202,mPonPyg2:chr17_hap1_hsa18,68014343,68014516,173,93.642,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt218,mPonPyg2:chr18_hap1_hsa16,43232776,43232876,100,95.000,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt278,mPonPyg2:chr1_hap1_hsa1,46157705,46157790,85,92.941,15,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt283,mPonPyg2:chr1_hap1_hsa1,72015880,72015949,69,91.304,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt311,mPonPyg2:chr1_hap1_hsa1,225370416,225370627,211,90.995,15,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt333,mPonPyg2:chr20_hap1_hsa19,44364835,44364931,96,96.875,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt352,mPonPyg2:chr22_hap1_hsa21,26957614,26957962,348,92.697,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt354,mPonPyg2:chr22_hap1_hsa21,35625257,35625330,73,94.521,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt358,mPonPyg2:chr22_hap1_hsa21,54529043,54529377,334,98.503,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt381,mPonPyg2:chr2_hap1_hsa3,9283337,9283414,77,92.208,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt393,mPonPyg2:chr2_hap1_hsa3,70024376,70024447,71,91.549,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt395,mPonPyg2:chr2_hap1_hsa3,84761678,84761912,234,93.590,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt397,mPonPyg2:chr2_hap1_hsa3,111299538,111299789,251,91.633,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt402,mPonPyg2:chr2_hap1_hsa3,124291343,124291397,54,98.148,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt409,mPonPyg2:chr2_hap1_hsa3,164508571,164509226,655,92.061,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt419,mPonPyg2:chr2_hap1_hsa3,177024411,177024519,108,92.593,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt430,mPonPyg2:chr3_hap1_hsa4,7901599,7901664,65,93.846,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt433,mPonPyg2:chr3_hap1_hsa4,14543916,14544061,145,91.034,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt436,mPonPyg2:chr3_hap1_hsa4,26878999,26879149,150,91.333,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt457,mPonPyg2:chr3_hap1_hsa4,149743564,149751257,7693,93.924,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt461,mPonPyg2:chr3_hap1_hsa4,176742791,176742920,129,100.000,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt466,mPonPyg2:chr3_hap1_hsa4,199489958,199491716,1758,91.321,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt490,mPonPyg2:chr4_hap1_hsa5,123475171,123475226,55,92.727,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt494,mPonPyg2:chr4_hap1_hsa5,170304868,170305389,521,91.102,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt503,mPonPyg2:chr5_hap1_hsa6,34572798,34572932,134,94.776,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt507,mPonPyg2:chr5_hap1_hsa6,73575883,73575943,60,90.000,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt523,mPonPyg2:chr5_hap1_hsa6,118196628,118196910,282,94.326,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt525,mPonPyg2:chr5_hap1_hsa6,121387215,121387460,245,96.356,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt536,mPonPyg2:chr5_hap1_hsa6,162250013,162250059,46,91.489,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt570,mPonPyg2:chr6_hap1_hsa7,41334208,41334366,158,91.824,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt574,mPonPyg2:chr6_hap1_hsa7,55971782,55975372,3590,93.628,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt575,mPonPyg2:chr6_hap1_hsa7,60475476,60476023,547,90.230,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt578,mPonPyg2:chr6_hap1_hsa7,85888006,85888315,309,94.498,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt587,mPonPyg2:chr6_hap1_hsa7,119067083,119067284,201,92.040,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt645,mPonPyg2:chr7_hap1_hsa8,140507068,140507264,196,91.327,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt651,mPonPyg2:chr8_hap1_hsa10,2162860,2162924,64,95.312,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt655,mPonPyg2:chr8_hap1_hsa10,7381378,7382664,1286,96.034,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt686,mPonPyg2:chr8_hap1_hsa10,96585297,96585438,141,90.071,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt691,mPonPyg2:chr8_hap1_hsa10,113296489,113296746,257,94.553,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt695,mPonPyg2:chr8_hap1_hsa10,136974300,136974472,172,91.279,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt696,mPonPyg2:chr9_hap1_hsa11,5010766,5010808,42,92.857,15,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt699,mPonPyg2:chr9_hap1_hsa11,22593127,22593397,270,90.037,15,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt701,mPonPyg2:chr9_hap1_hsa11,28675097,28675164,67,91.045,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt704,mPonPyg2:chr9_hap1_hsa11,42750638,42751095,457,100.000,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt758,mPonPyg2:chrX_hap1_hsaX,110817808,110817964,156,93.590,16,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt805,mPonPyg2:chrY_hap2_hsaY,32850844,32851030,186,95.161,10,0,Torres-Gonzalez_2026
+Bornean orangutan,mPonPyg2,mPonPyg2_numt806,mPonPyg2:chrY_hap2_hsaY,41136965,41137151,186,95.699,13,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt12,mPonAbe1:chr10_hap1_hsa12,45358378,45358534,156,92.308,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt15,mPonAbe1:chr10_hap1_hsa12,104292763,104299135,6372,94.229,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt16,mPonAbe1:chr10_hap1_hsa12,124902367,124902561,194,93.299,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt50,mPonAbe1:chr11_hap1_hsa2b,51288242,51288328,86,94.186,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt51,mPonAbe1:chr11_hap1_hsa2b,51625221,51625313,92,92.473,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt59,mPonAbe1:chr11_hap1_hsa2b,86829537,86829746,209,96.172,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt85,mPonAbe1:chr12_hap1_hsa2a,27000834,27000914,80,95.000,7,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt93,mPonAbe1:chr12_hap1_hsa2a,51395732,51395920,188,90.426,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt94,mPonAbe1:chr12_hap1_hsa2a,57224719,57224825,106,91.509,7,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt99,mPonAbe1:chr12_hap1_hsa2a,79056782,79056968,186,91.935,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt101,mPonAbe1:chr12_hap1_hsa2a,82467338,82467401,63,90.769,7,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt102,mPonAbe1:chr12_hap1_hsa2a,91790075,91790236,161,91.925,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt104,mPonAbe1:chr12_hap1_hsa2a,97778013,97778203,190,91.579,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt108,mPonAbe1:chr12_hap1_hsa2a,124069736,124070030,294,94.558,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt109,mPonAbe1:chr12_hap1_hsa2a,126916894,126917019,125,91.200,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt120,mPonAbe1:chr13_hap1_hsa9,57385154,57391242,6088,92.774,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt161,mPonAbe1:chr14_hap1_hsa13,113279584,113279628,44,93.182,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt185,mPonAbe1:chr16_hap1_hsa15,37305158,37305501,343,91.545,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt218,mPonAbe1:chr18_hap1_hsa16,28705159,28705324,165,97.590,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt221,mPonAbe1:chr18_hap1_hsa16,45404973,45405073,100,94.000,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt275,mPonAbe1:chr1_hap1_hsa1,72060030,72060100,70,92.857,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt276,mPonAbe1:chr1_hap1_hsa1,72247741,72247860,119,93.277,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt305,mPonAbe1:chr1_hap1_hsa1,228378158,228378369,211,90.047,7,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt324,mPonAbe1:chr20_hap1_hsa19,44458104,44458199,95,98.947,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt326,mPonAbe1:chr20_hap1_hsa19,59308152,59308351,199,90.452,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt335,mPonAbe1:chr21_hap1_hsa20,35087125,35087272,147,95.238,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt345,mPonAbe1:chr22_hap1_hsa21,24308443,24308716,273,92.737,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt346,mPonAbe1:chr22_hap1_hsa21,24308717,24308791,74,93.243,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt394,mPonAbe1:chr2_hap1_hsa3,70853237,70853308,71,98.592,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt396,mPonAbe1:chr2_hap1_hsa3,85610206,85610440,234,96.154,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt397,mPonAbe1:chr2_hap1_hsa3,112130145,112130396,251,93.625,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt402,mPonAbe1:chr2_hap1_hsa3,125091794,125091848,54,100.000,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt409,mPonAbe1:chr2_hap1_hsa3,165297021,165297676,655,92.977,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt419,mPonAbe1:chr2_hap1_hsa3,177829743,177829848,105,94.286,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt426,mPonAbe1:chr2_hap1_hsa3,197296564,197296635,71,98.592,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt429,mPonAbe1:chr3_hap1_hsa4,7897876,7897941,65,96.923,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt431,mPonAbe1:chr3_hap1_hsa4,14527844,14527989,145,91.034,7,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt435,mPonAbe1:chr3_hap1_hsa4,26868330,26868480,150,92.667,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt458,mPonAbe1:chr3_hap1_hsa4,158655216,158662901,7685,94.910,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt467,mPonAbe1:chr3_hap1_hsa4,208395317,208397078,1761,92.146,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt494,mPonAbe1:chr4_hap1_hsa5,127331608,127331663,55,92.727,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt498,mPonAbe1:chr4_hap1_hsa5,174172227,174172748,521,90.678,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt507,mPonAbe1:chr5_hap1_hsa6,34461506,34461640,134,94.776,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt510,mPonAbe1:chr5_hap1_hsa6,48660819,48661455,636,93.553,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt513,mPonAbe1:chr5_hap1_hsa6,74782229,74782289,60,91.667,7,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt529,mPonAbe1:chr5_hap1_hsa6,119365254,119365531,277,94.224,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt531,mPonAbe1:chr5_hap1_hsa6,122567258,122567503,245,95.528,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt546,mPonAbe1:chr6_hap1_hsa7,8710735,8710940,205,91.748,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt569,mPonAbe1:chr6_hap1_hsa7,39791417,39791565,148,93.289,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt572,mPonAbe1:chr6_hap1_hsa7,54399589,54403180,3591,96.074,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt585,mPonAbe1:chr6_hap1_hsa7,117484876,117485077,201,96.517,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt588,mPonAbe1:chr6_hap1_hsa7,138065688,138065952,264,97.727,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt623,mPonAbe1:chr7_hap1_hsa8,87597317,87597423,106,92.453,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt649,mPonAbe1:chr8_hap1_hsa10,2146481,2146546,65,95.385,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt652,mPonAbe1:chr8_hap1_hsa10,7168460,7168666,206,90.291,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt683,mPonAbe1:chr8_hap1_hsa10,98227479,98227621,142,90.141,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt688,mPonAbe1:chr8_hap1_hsa10,114937753,114938010,257,93.774,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt691,mPonAbe1:chr8_hap1_hsa10,129312685,129312755,70,92.857,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt694,mPonAbe1:chr8_hap1_hsa10,138612031,138612203,172,90.698,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt695,mPonAbe1:chr9_hap1_hsa11,4993955,4993997,42,92.857,7,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt724,mPonAbe1:chr9_hap1_hsa11,106430902,106430946,44,90.909,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt735,mPonAbe1:chrX_hap1_hsaX,45862901,45863679,778,92.737,9,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt765,mPonAbe1:chrX_hap1_hsaX,112487287,112487443,156,94.872,8,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt816,mPonAbe1:chrY_hap2_hsaY,43678711,43678897,186,96.774,3,0,Torres-Gonzalez_2026
+Sumatran orangutan,mPonAbe1,mPonAbe1_numt818,mPonAbe1:chrY_hap2_hsaY,54108096,54108282,186,97.312,6,0,Torres-Gonzalez_2026
