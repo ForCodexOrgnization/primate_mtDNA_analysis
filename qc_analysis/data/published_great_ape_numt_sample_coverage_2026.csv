@@ -1,0 +1,62 @@
+species,assembly,sample,source,mt_length,covered_bp_all,coverage_pct_all,covered_bp_pid90,coverage_pct_pid90,numts_present,numts_absent,numts_missing,numts_unmapped_present
+Bonobo,mPanPan1,Catherine,Torres-Gonzalez_2026,16569,16569,100.0000,16569,100.0000,755,76,9,0
+Bonobo,mPanPan1,Hermien,Torres-Gonzalez_2026,16569,16569,100.0000,16569,100.0000,768,63,9,0
+Bonobo,mPanPan1,Hortense,Torres-Gonzalez_2026,16569,16569,100.0000,16569,100.0000,750,81,9,0
+Bonobo,mPanPan1,Kombote,Torres-Gonzalez_2026,16569,16569,100.0000,16569,100.0000,777,54,9,0
+Bonobo,mPanPan1,Natalie,Torres-Gonzalez_2026,16569,16569,100.0000,16569,100.0000,771,60,9,0
+Bonobo,mPanPan1,Desmond,Torres-Gonzalez_2026,16569,16569,100.0000,16569,100.0000,814,17,9,0
+Chimpanzee,mPanTro3,Andromeda,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,760,47,15,0
+Chimpanzee,mPanTro3,Brigitta,Torres-Gonzalez_2026,16620,16620,100.0000,16222,97.6053,685,122,15,0
+Chimpanzee,mPanTro3,Cindytroglodytes,Torres-Gonzalez_2026,16620,16620,100.0000,16142,97.1239,654,153,15,0
+Chimpanzee,mPanTro3,Cleo,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,762,45,15,0
+Chimpanzee,mPanTro3,Harriet,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,750,57,15,0
+Chimpanzee,mPanTro3,Jimmie,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,764,43,15,0
+Chimpanzee,mPanTro3,Kopongo,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,753,54,15,0
+Chimpanzee,mPanTro3,Lara,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,674,133,15,0
+Chimpanzee,mPanTro3,Luky,Torres-Gonzalez_2026,16620,16620,100.0000,16264,97.8580,622,185,15,0
+Chimpanzee,mPanTro3,Mirinda,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,667,140,15,0
+Chimpanzee,mPanTro3,Nakuu,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,747,60,15,0
+Chimpanzee,mPanTro3,Tobi,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,760,47,15,0
+Chimpanzee,mPanTro3,Ula,Torres-Gonzalez_2026,16620,16620,100.0000,16018,96.3779,633,174,15,0
+Chimpanzee,mPanTro3,Athanga,Torres-Gonzalez_2026,16620,16620,100.0000,16269,97.8881,740,67,15,0
+Chimpanzee,mPanTro3,Bosco,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,797,10,15,0
+Chimpanzee,mPanTro3,Damian,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,798,9,15,0
+Chimpanzee,mPanTro3,Gamin,Torres-Gonzalez_2026,16620,16620,100.0000,16269,97.8881,678,129,15,0
+Chimpanzee,mPanTro3,Koby,Torres-Gonzalez_2026,16620,16620,100.0000,16264,97.8580,737,70,15,0
+Chimpanzee,mPanTro3,PD0427,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,803,4,15,0
+Chimpanzee,mPanTro3,SeppToni,Torres-Gonzalez_2026,16620,16620,100.0000,16388,98.6041,805,2,15,0
+Gorilla,mGorGor1,Amani,Torres-Gonzalez_2026,16407,16407,100.0000,13223,80.5936,689,9,3,0
+Gorilla,mGorGor1,Carolyn,Torres-Gonzalez_2026,16407,16407,100.0000,13223,80.5936,689,9,3,0
+Gorilla,mGorGor1,Delphi,Torres-Gonzalez_2026,16407,16407,100.0000,12953,78.9480,620,78,3,0
+Gorilla,mGorGor1,Dian,Torres-Gonzalez_2026,16407,16407,100.0000,13055,79.5697,536,162,3,0
+Gorilla,mGorGor1,Helen,Torres-Gonzalez_2026,16407,16407,100.0000,13152,80.1609,626,72,3,0
+Gorilla,mGorGor1,Kokomo,Torres-Gonzalez_2026,16407,16407,100.0000,13027,79.3990,626,72,3,0
+Gorilla,mGorGor1,Kolo,Torres-Gonzalez_2026,16407,16407,100.0000,13095,79.8135,682,16,3,0
+Gorilla,mGorGor1,Mimi,Torres-Gonzalez_2026,16407,16407,100.0000,12852,78.3324,630,68,3,0
+Gorilla,mGorGor1,Vila,Torres-Gonzalez_2026,16407,16407,100.0000,13095,79.8135,689,9,3,0
+Gorilla,mGorGor1,Mkubwa,Torres-Gonzalez_2026,16407,16407,100.0000,13223,80.5936,688,10,3,0
+Bornean orangutan,mPonPyg2,Barong,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,759,36,12,0
+Bornean orangutan,mPonPyg2,Dinah,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,761,34,12,0
+Bornean orangutan,mPonPyg2,Dolly,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,759,36,12,0
+Bornean orangutan,mPonPyg2,Lotti,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,754,41,12,0
+Bornean orangutan,mPonPyg2,Micelle,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,756,39,12,0
+Bornean orangutan,mPonPyg2,Sarawak,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,756,39,12,0
+Bornean orangutan,mPonPyg2,Sari,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,760,35,12,0
+Bornean orangutan,mPonPyg2,Tilda,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,753,42,12,0
+Bornean orangutan,mPonPyg2,Ampal,Torres-Gonzalez_2026,16461,16461,100.0000,13217,80.2928,763,32,12,0
+Bornean orangutan,mPonPyg2,Billy,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,794,1,12,0
+Bornean orangutan,mPonPyg2,Claus,Torres-Gonzalez_2026,16461,16461,100.0000,13217,80.2928,794,1,12,0
+Bornean orangutan,mPonPyg2,Dennis,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,793,2,12,0
+Bornean orangutan,mPonPyg2,Kajan,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,789,6,12,0
+Bornean orangutan,mPonPyg2,Kala,Torres-Gonzalez_2026,16461,16461,100.0000,13217,80.2928,794,1,12,0
+Bornean orangutan,mPonPyg2,Louis,Torres-Gonzalez_2026,16461,16461,100.0000,13251,80.4994,793,2,12,0
+Bornean orangutan,mPonPyg2,Napoleon,Torres-Gonzalez_2026,16461,16461,100.0000,13217,80.2928,787,8,12,0
+Sumatran orangutan,mPonAbe1,DORIS,Torres-Gonzalez_2026,16496,16496,100.0000,13545,82.1108,759,44,16,0
+Sumatran orangutan,mPonAbe1,Kiki,Torres-Gonzalez_2026,16496,16496,100.0000,13106,79.4496,517,286,16,0
+Sumatran orangutan,mPonAbe1,Miky,Torres-Gonzalez_2026,16496,16496,100.0000,13545,82.1108,767,36,16,0
+Sumatran orangutan,mPonAbe1,SIBU,Torres-Gonzalez_2026,16496,16496,100.0000,13545,82.1108,762,41,16,0
+Sumatran orangutan,mPonAbe1,Suma,Torres-Gonzalez_2026,16496,16496,100.0000,13545,82.1108,760,43,16,0
+Sumatran orangutan,mPonAbe1,Vicky,Torres-Gonzalez_2026,16496,16496,100.0000,13545,82.1108,747,56,16,0
+Sumatran orangutan,mPonAbe1,BALDY,Torres-Gonzalez_2026,16496,16496,100.0000,13545,82.1108,803,0,16,0
+Sumatran orangutan,mPonAbe1,Jeff,Torres-Gonzalez_2026,16496,16496,100.0000,13479,81.7107,667,136,16,0
+Sumatran orangutan,mPonAbe1,LIKOE,Torres-Gonzalez_2026,16496,16496,100.0000,13545,82.1108,801,2,16,0
